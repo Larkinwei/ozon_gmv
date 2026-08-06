@@ -49,10 +49,11 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
   & (Join-Path $NodeSource "npm.cmd") run typecheck
   if ($LASTEXITCODE -ne 0) { throw "Type checking failed." }
-  & (Join-Path $NodeSource "npm.cmd") test
-  if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
+  # Integration tests verify the generated static assets, so build them first.
   & (Join-Path $NodeSource "npm.cmd") run build
   if ($LASTEXITCODE -ne 0) { throw "Application build failed." }
+  & (Join-Path $NodeSource "npm.cmd") test
+  if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
 } finally {
   Pop-Location
 }
