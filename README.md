@@ -12,8 +12,9 @@
 - `127.0.0.1:3001` 只提供本机完整管理后台。
 - `0.0.0.0:3002` 只提供经过一次性配对的局域网只读大屏。
 - 普通覆盖升级保留全部数据；卸载默认也保留数据。
+- 从 `1.1.0` 起，管理后台自动检查稳定版，管理员确认后可以一键更新。
 
-Windows 构建及安装细节见 [Windows 本地版说明](docs/windows-local-edition.md)。
+Windows 安装细节见 [Windows 本地版说明](docs/windows-local-edition.md)，发布与 OSS 权限见 [Windows 稳定版发布](docs/windows-release.md)。
 
 ## macOS 登录后常驻
 

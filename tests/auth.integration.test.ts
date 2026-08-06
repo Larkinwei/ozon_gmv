@@ -12,6 +12,7 @@ import { DashboardEventBus } from "../src/server/realtime/event-bus";
 import { ProxySettingsService } from "../src/server/services/proxy-settings-service";
 import { ProductImageService } from "../src/server/services/product-image-service";
 import { SyncService } from "../src/server/services/sync-service";
+import { UpdateService } from "../src/server/services/update-service";
 import { createTestDatabase } from "./test-context";
 
 describe("administrator setup and session API", () => {
@@ -36,6 +37,7 @@ describe("administrator setup and session API", () => {
       events,
       syncService,
       proxySettings,
+      updates: new UpdateService(context.config, proxySettings),
     });
 
     try {
@@ -59,6 +61,7 @@ describe("administrator setup and session API", () => {
       expect(status.json()).toEqual({ authenticated: false, setupRequired: true });
       const unauthorized = await app.inject({ method: "GET", url: "/api/dashboard/overview" });
       expect(unauthorized.statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: "/api/settings/update" })).statusCode).toBe(401);
 
       const setupResponse = await app.inject({
         method: "POST",
@@ -83,6 +86,12 @@ describe("administrator setup and session API", () => {
         cookies: { ozon_session: cookie?.value ?? "" },
       });
       expect(sessionResponse.json()).toEqual({ authenticated: true, username: "admin", setupRequired: false });
+      const updateResponse = await app.inject({
+        method: "GET",
+        url: "/api/settings/update",
+        cookies: { ozon_session: cookie?.value ?? "" },
+      });
+      expect(updateResponse.json()).toMatchObject({ supported: false, state: "unsupported", currentVersion: "1.1.0" });
     } finally {
       await app.close();
       context.cleanup();

@@ -9,6 +9,15 @@ const booleanString = z
   .default("true")
   .transform((value) => value === "true");
 
+const disabledBooleanString = z
+  .enum(["true", "false"])
+  .default("false")
+  .transform((value) => value === "true");
+
+const packageVersion = z.string().regex(/^\d+\.\d+\.\d+$/).parse(
+  (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version?: unknown }).version,
+);
+
 const environmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATA_DIR: z.string().min(1),
@@ -21,6 +30,14 @@ const environmentSchema = z.object({
   PUBLIC_BASE_URL: z.string().url().default("http://127.0.0.1:3001"),
   OZON_API_BASE_URL: z.string().url().default("https://api-seller.ozon.ru"),
   LOCAL_MODE: booleanString,
+  APP_VERSION: z.string().regex(/^\d+\.\d+\.\d+$/),
+  UPDATE_ENABLED: disabledBooleanString,
+  UPDATE_PRIMARY_MANIFEST_URL: z.string().url().default(
+    "https://haodian-ozon-images.oss-cn-beijing.aliyuncs.com/ozon-gmv/releases/latest.json",
+  ),
+  UPDATE_FALLBACK_MANIFEST_URL: z.string().url().default(
+    "https://github.com/Larkinwei/ozon_gmv/releases/latest/download/latest.json",
+  ),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 
@@ -65,6 +82,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     DATA_DIR: dataDir,
     COOKIE_SECRET: environment.COOKIE_SECRET ?? storedSecrets?.cookieSecret,
     ENCRYPTION_KEY: environment.ENCRYPTION_KEY ?? storedSecrets?.encryptionKey,
+    APP_VERSION: environment.APP_VERSION ?? packageVersion,
   });
   return {
     ...parsed,

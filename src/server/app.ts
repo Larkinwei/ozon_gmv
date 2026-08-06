@@ -23,6 +23,7 @@ import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } fro
 import { wallboardAuthorization } from "./security/wallboard-session";
 import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
+import type { UpdateService } from "./services/update-service";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -30,6 +31,7 @@ export interface AppDependencies {
   events: DashboardEventBus;
   syncService: SyncService;
   proxySettings: ProxySettingsService;
+  updates: UpdateService;
 }
 
 interface SqliteError extends Error {
@@ -105,7 +107,7 @@ function registerErrorHandler(app: FastifyInstance): void {
 
 /** Builds the loopback-only management application. */
 export async function buildAdminApp(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, database, events, syncService, proxySettings } = dependencies;
+  const { config, database, events, syncService, proxySettings, updates } = dependencies;
   const app = await createBaseApp(config);
   const administrators = new AdminRepository(database);
   const stores = new StoresRepository(database);
@@ -115,7 +117,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerAuthRoutes(app, config, administrators);
   registerStoreRoutes(app, config, stores, syncService);
   registerDashboardRoutes(app, new DashboardRepository(database), events);
-  registerSettingsRoutes(app, proxySettings);
+  registerSettingsRoutes(app, proxySettings, updates);
   registerWallboardManagementRoutes(app, config, pairings);
   app.get("/api/runtime", async () => ({ role: "admin" as const }));
   registerHealthRoutes(app, database);

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { ProxySettingsService } from "../services/proxy-settings-service";
+import type { UpdateService } from "../services/update-service";
 import { requireSession } from "../security/session";
 
 const proxySettingsSchema = z.object({
@@ -10,7 +11,11 @@ const proxySettingsSchema = z.object({
 });
 
 /** Registers administrator-only local network settings. */
-export function registerSettingsRoutes(app: FastifyInstance, proxySettings: ProxySettingsService): void {
+export function registerSettingsRoutes(
+  app: FastifyInstance,
+  proxySettings: ProxySettingsService,
+  updates: UpdateService,
+): void {
   app.get("/api/settings/network", { preHandler: requireSession }, async () => proxySettings.view());
 
   app.put("/api/settings/network", { preHandler: requireSession }, async (request, reply) => {
@@ -34,5 +39,20 @@ export function registerSettingsRoutes(app: FastifyInstance, proxySettings: Prox
         message: error instanceof Error ? error.message : "无法连接 Ozon",
       });
     }
+  });
+
+  app.get("/api/settings/update", { preHandler: requireSession }, async () => updates.view());
+
+  app.post("/api/settings/update/check", { preHandler: requireSession }, async () => updates.check());
+
+  app.post("/api/settings/update/install", { preHandler: requireSession }, async (_request, reply) => {
+    const current = updates.view();
+    if (!current.supported) {
+      return reply.code(409).send({ error: "UPDATE_UNSUPPORTED", message: "当前系统不支持在线更新" });
+    }
+    if (current.state !== "available") {
+      return reply.code(409).send({ error: "UPDATE_NOT_AVAILABLE", message: "当前没有可安装的新版本" });
+    }
+    return reply.code(202).send(updates.beginInstall());
   });
 }

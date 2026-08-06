@@ -156,6 +156,39 @@ export interface RuntimeView {
   role: "admin" | "wallboard";
 }
 
+export interface UpdateManifest {
+  schemaVersion: 1;
+  version: string;
+  publishedAt: string;
+  notes: string;
+  size: number;
+  sha256: string;
+  urls: [ossUrl: string, githubUrl: string];
+}
+
+export type UpdateState =
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "available"
+  | "downloading"
+  | "installing"
+  | "failed"
+  | "unsupported";
+
+export interface UpdateView {
+  supported: boolean;
+  currentVersion: string;
+  latestVersion: string | null;
+  state: UpdateState;
+  notes: string | null;
+  publishedAt: string | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  lastCheckedAt: string | null;
+  error: string | null;
+}
+
 export interface StoreCreateInput {
   name: string;
   clientId: string;

@@ -17,6 +17,7 @@ import { ProxySettingsService } from "./services/proxy-settings-service";
 import { ProductImageService } from "./services/product-image-service";
 import { startScheduler } from "./services/scheduler";
 import { SyncService } from "./services/sync-service";
+import { UpdateService } from "./services/update-service";
 
 const config = loadConfig();
 const database = openDatabase(join(config.DATA_DIR, "data"));
@@ -35,7 +36,8 @@ const syncService = new SyncService(
   proxySettings,
   productImages,
 );
-const dependencies = { config, database, events, syncService, proxySettings };
+const updates = new UpdateService(config, proxySettings);
+const dependencies = { config, database, events, syncService, proxySettings, updates };
 const adminApp = await buildAdminApp(dependencies);
 const wallboardApp = await buildWallboardApp(dependencies);
 const scheduler = startScheduler(syncService);
@@ -44,6 +46,7 @@ backups.start();
 
 await adminApp.listen({ host: config.ADMIN_HOST, port: config.ADMIN_PORT });
 await wallboardApp.listen({ host: config.WALLBOARD_HOST, port: config.WALLBOARD_PORT });
+await updates.start();
 adminApp.log.info(
   { adminPort: config.ADMIN_PORT, wallboardPort: config.WALLBOARD_PORT },
   "Ozon GMV local service is ready",
@@ -63,6 +66,7 @@ async function shutdown(signal: string): Promise<void> {
   adminApp.log.info({ signal }, "Shutting down");
   scheduler.stop();
   backups.stop();
+  updates.stop();
   await Promise.all([adminApp.close(), wallboardApp.close()]);
   closeDatabase(database);
 }
