@@ -12,6 +12,7 @@ import { DashboardEventBus } from "../src/server/realtime/event-bus";
 import { ProductImageService } from "../src/server/services/product-image-service";
 import { ProxySettingsService } from "../src/server/services/proxy-settings-service";
 import { SyncService } from "../src/server/services/sync-service";
+import { UpdateService } from "../src/server/services/update-service";
 import { createTestDatabase } from "./test-context";
 
 const STORE_ID = "8f9dc7d2-35a8-45d5-b199-c39c5a100021";
@@ -125,7 +126,14 @@ describe("order details and product image cache", () => {
       proxySettings,
       productImages,
     );
-    const dependencies = { config: context.config, database: context.database, events, syncService, proxySettings };
+    const dependencies = {
+      config: context.config,
+      database: context.database,
+      events,
+      syncService,
+      proxySettings,
+      updates: new UpdateService(context.config, proxySettings),
+    };
     const adminApp = await buildAdminApp(dependencies);
     const wallboardApp = await buildWallboardApp(dependencies);
 

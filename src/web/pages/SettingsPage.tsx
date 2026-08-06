@@ -1,12 +1,15 @@
-import { Check, Clipboard, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
+import { Check, Clipboard, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import type { ProxyMode } from "../../shared/contracts";
 import {
+  checkSoftwareUpdate,
   createWallboardPairing,
   fetchNetworkSettings,
+  fetchUpdateStatus,
+  installSoftwareUpdate,
   revokeWallboardSessions,
   testNetworkSettings,
   updateNetworkSettings,
@@ -17,9 +20,15 @@ import { AppNav } from "../components/AppNav";
 export default function SettingsPage(): React.JSX.Element {
   const queryClient = useQueryClient();
   const settingsQuery = useQuery({ queryKey: ["network-settings"], queryFn: fetchNetworkSettings });
+  const updateQuery = useQuery({
+    queryKey: ["software-update"],
+    queryFn: fetchUpdateStatus,
+    refetchInterval: (query) => ["checking", "downloading", "installing"].includes(query.state.data?.state ?? "") ? 1_000 : 30_000,
+  });
   const [mode, setMode] = useState<ProxyMode>("auto");
   const [manualProxy, setManualProxy] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [installingVersion, setInstallingVersion] = useState<string | null>(null);
   useEffect(() => {
     if (settingsQuery.data) {
       setMode(settingsQuery.data.mode);
@@ -43,13 +52,72 @@ export default function SettingsPage(): React.JSX.Element {
       setNotice("所有已配对大屏会话已撤销。");
     },
   });
+  const checkUpdateMutation = useMutation({
+    mutationFn: checkSoftwareUpdate,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["software-update"], data);
+      setNotice(data.state === "available" ? `发现新版本 ${data.latestVersion}。` : "当前已经是最新版本。");
+    },
+  });
+  const installUpdateMutation = useMutation({
+    mutationFn: installSoftwareUpdate,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["software-update"], data);
+      setInstallingVersion(data.latestVersion);
+      setNotice("安装包正在下载并校验，完成后服务会短暂离线并自动恢复。");
+    },
+  });
+
+  useEffect(() => {
+    if (!installingVersion) {
+      return undefined;
+    }
+    const startedAt = Date.now();
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      if (Date.now() - startedAt > 120_000) {
+        window.clearInterval(timer);
+        if (!cancelled) {
+          setNotice("更新后服务尚未恢复，请查看 %ProgramData%\\Ozon GMV Dashboard\\updates\\update.log。");
+        }
+        return;
+      }
+      try {
+        const [readyResponse, updateResponse] = await Promise.all([
+          fetch("/readyz", { cache: "no-store" }),
+          fetch("/api/settings/update", { cache: "no-store" }),
+        ]);
+        if (!readyResponse.ok || !updateResponse.ok) {
+          return;
+        }
+        const update = await updateResponse.json() as { currentVersion?: string };
+        if (update.currentVersion === installingVersion) {
+          window.location.reload();
+        }
+      } catch {
+        // A brief connection failure is expected while the Windows service is replaced.
+      }
+    }, 1_500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [installingVersion]);
 
   async function copyLink(link: string): Promise<void> {
     await navigator.clipboard.writeText(link);
     setNotice("配对链接已复制，有效期 10 分钟且只能使用一次。");
   }
 
-  const error = saveMutation.error ?? testMutation.error ?? pairingMutation.error ?? revokeMutation.error;
+  const error = saveMutation.error
+    ?? testMutation.error
+    ?? pairingMutation.error
+    ?? revokeMutation.error
+    ?? checkUpdateMutation.error
+    ?? installUpdateMutation.error;
+  const update = updateQuery.data;
+  const updateBusy = update?.state === "checking" || update?.state === "downloading" || update?.state === "installing";
+  const progress = update?.totalBytes ? Math.min(100, Math.round((update.downloadedBytes / update.totalBytes) * 100)) : 0;
   return (
     <div className="admin-page">
       <a className="skip-link" href="#settings-main">跳到主要内容</a>
@@ -67,6 +135,34 @@ export default function SettingsPage(): React.JSX.Element {
         </div>
         {notice && <div className="notice notice--success" role="status"><Check size={17} />{notice}</div>}
         {error && <div className="field-error" role="alert">{error.message}</div>}
+
+        <section className="settings-card" aria-labelledby="update-heading">
+          <div className="settings-card__heading"><div className="settings-icon"><Download size={21} /></div><div><p className="eyebrow">SOFTWARE UPDATE</p><h3 id="update-heading">软件更新</h3><p>Windows 安装版会自动检查稳定版更新，只有管理员确认后才会安装。</p></div></div>
+          {updateQuery.isLoading ? <div className="settings-skeleton settings-skeleton--compact" aria-busy="true" /> : (
+            <div className="update-panel">
+              <dl className="update-facts">
+                <div><dt>当前版本</dt><dd>v{update?.currentVersion ?? "-"}</dd></div>
+                <div><dt>最新版本</dt><dd>{update?.latestVersion ? `v${update.latestVersion}` : "尚未检查"}</dd></div>
+                <div><dt>更新状态</dt><dd>{updateStateLabel(update?.state ?? "idle")}</dd></div>
+                <div><dt>检查时间</dt><dd>{update?.lastCheckedAt ? new Date(update.lastCheckedAt).toLocaleString("zh-CN") : "尚未检查"}</dd></div>
+              </dl>
+              {!update?.supported && <div className="update-message"><strong>当前环境不启用在线更新</strong><p>Windows 正式安装版支持此功能；macOS 本机服务继续使用 <code>npm run service:mac:update</code>。</p></div>}
+              {update?.notes && <div className="update-notes"><strong>更新说明</strong><p>{update.notes}</p>{update.publishedAt && <small>发布于 {new Date(update.publishedAt).toLocaleString("zh-CN")}</small>}</div>}
+              {(update?.state === "downloading" || update?.state === "installing") && (
+                <div className="update-progress" aria-live="polite">
+                  <div><span>{update.state === "installing" ? "正在安装并重启服务" : "正在下载安装包"}</span><strong>{progress}%</strong></div>
+                  <progress max="100" value={progress}>{progress}%</progress>
+                  <small>服务恢复后页面会自动刷新，店铺、订单和设置不会丢失。</small>
+                </div>
+              )}
+              {update?.error && <div className="field-error" role="alert">{update.error}</div>}
+              <div className="settings-actions">
+                <button className="secondary-button" type="button" onClick={() => checkUpdateMutation.mutate()} disabled={!update?.supported || updateBusy || checkUpdateMutation.isPending}><RefreshCw className={update?.state === "checking" ? "sync-spinner" : undefined} size={17} />{update?.state === "checking" ? "正在检查…" : "检查更新"}</button>
+                {update?.state === "available" && <button className="primary-button" type="button" onClick={() => { if (window.confirm("服务将短暂离线，店铺、订单和设置不会丢失。是否继续更新？")) installUpdateMutation.mutate(); }} disabled={installUpdateMutation.isPending}><Download size={17} />一键更新</button>}
+              </div>
+            </div>
+          )}
+        </section>
 
         <section className="settings-card" aria-labelledby="proxy-heading">
           <div className="settings-card__heading"><div className="settings-icon"><Network size={21} /></div><div><p className="eyebrow">OZON NETWORK</p><h3 id="proxy-heading">代理与连接</h3><p>仅影响后台访问 Ozon Seller API，不改变浏览器网络设置。</p></div></div>
@@ -113,4 +209,18 @@ export default function SettingsPage(): React.JSX.Element {
       </main>
     </div>
   );
+}
+
+function updateStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    idle: "等待检查",
+    checking: "正在检查",
+    "up-to-date": "已是最新版本",
+    available: "发现新版本",
+    downloading: "正在下载",
+    installing: "正在安装",
+    failed: "更新失败",
+    unsupported: "当前环境不支持",
+  };
+  return labels[state] ?? state;
 }

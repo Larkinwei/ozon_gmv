@@ -13,6 +13,7 @@ import { encryptSecret } from "../src/server/security/encryption";
 import { ProxySettingsService } from "../src/server/services/proxy-settings-service";
 import { ProductImageService } from "../src/server/services/product-image-service";
 import { SyncService } from "../src/server/services/sync-service";
+import { UpdateService } from "../src/server/services/update-service";
 import { createTestDatabase } from "./test-context";
 
 const STORE_ID = "8f9dc7d2-35a8-45d5-b199-c39c5a100001";
@@ -73,6 +74,7 @@ describe("store synchronization API", () => {
       events,
       syncService,
       proxySettings,
+      updates: new UpdateService(context.config, proxySettings),
     });
 
     try {

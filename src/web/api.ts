@@ -10,6 +10,7 @@ import type {
   StoreCreateInput,
   StoreCreateResult,
   StoreView,
+  UpdateView,
   WallboardPairingView,
 } from "../shared/contracts";
 import { createDemoOrderDetail, createDemoSnapshot, demoStores } from "./demo-data";
@@ -185,6 +186,32 @@ export async function updateNetworkSettings(mode: ProxyMode, manualProxy?: strin
 
 export async function testNetworkSettings(): Promise<ProxyTestResult> {
   return apiFetch("/api/settings/network/test", { method: "POST" });
+}
+
+export async function fetchUpdateStatus(): Promise<UpdateView> {
+  if (DEMO_MODE) {
+    return {
+      supported: false,
+      currentVersion: "1.1.0",
+      latestVersion: null,
+      state: "unsupported",
+      notes: null,
+      publishedAt: null,
+      downloadedBytes: 0,
+      totalBytes: 0,
+      lastCheckedAt: null,
+      error: null,
+    };
+  }
+  return apiFetch("/api/settings/update");
+}
+
+export async function checkSoftwareUpdate(): Promise<UpdateView> {
+  return apiFetch("/api/settings/update/check", { method: "POST" });
+}
+
+export async function installSoftwareUpdate(): Promise<UpdateView> {
+  return apiFetch("/api/settings/update/install", { method: "POST" });
 }
 
 export async function createWallboardPairing(): Promise<WallboardPairingView> {

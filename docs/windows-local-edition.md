@@ -16,10 +16,10 @@
 运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\windows\build-installer.ps1 -Version 1.0.0
+powershell -ExecutionPolicy Bypass -File installer\windows\build-installer.ps1 -Version 1.1.0
 ```
 
-产物位于 `installer\windows\output\OzonGMV-Setup-1.0.0.exe`。也可在 GitHub Actions 中手动触发 `windows-installer.yml` 并下载 Artifact。
+产物位于 `installer\windows\output\OzonGMV-Setup-1.1.0.exe`。正式发布不接受手动输入版本，只由 `vX.Y.Z` 标签触发 `windows-installer.yml`，自动发布 GitHub Release 和 OSS 下载文件。
 
 ## 安装过程
 
@@ -40,6 +40,7 @@ powershell -ExecutionPolicy Bypass -File installer\windows\build-installer.ps1 -
 - SQLite 在线备份保留 30 天。
 - 卸载时默认选择“否”以保留 ProgramData；只有明确确认删除时才清除全部数据。
 - 重新安装会识别固定 `AppId`，并继续使用保留的数据。
+- Windows 正式安装版每 6 小时检查稳定版；管理员点击“一键更新”后会验证 Ed25519 清单签名、文件大小和 SHA-256，再静默执行同一套覆盖安装与回滚流程。
 
 ## 内测注意事项
 

@@ -1,9 +1,9 @@
 import { BarChart3, LogOut, Maximize2, Menu, Minimize2, Settings, Store, X } from "lucide-react";
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { logout } from "../api";
+import { fetchUpdateStatus, logout } from "../api";
 
 interface AppNavProps {
   compact?: boolean;
@@ -15,6 +15,14 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
   const queryClient = useQueryClient();
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
   const [menuOpen, setMenuOpen] = useState(false);
+  const updateQuery = useQuery({
+    queryKey: ["software-update"],
+    queryFn: fetchUpdateStatus,
+    enabled: !compact,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const updateAvailable = updateQuery.data?.state === "available";
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: async () => {
@@ -45,6 +53,7 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
           </Link>
           <Link className={location.pathname === "/settings" ? "nav-link is-active" : "nav-link"} to="/settings">
             <Settings size={18} aria-hidden="true" /> 本机设置
+            {updateAvailable && <span className="nav-update-badge"><span aria-hidden="true" />有更新</span>}
           </Link>
         </>
       )}
@@ -63,7 +72,7 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
             <div className="mobile-nav-drawer" id="mobile-navigation">
               <Link className={location.pathname === "/dashboard" ? "is-active" : ""} to="/dashboard" onClick={() => setMenuOpen(false)}><BarChart3 size={18} />运营总览</Link>
               <Link className={location.pathname === "/stores" ? "is-active" : ""} to="/stores" onClick={() => setMenuOpen(false)}><Store size={18} />店铺管理</Link>
-              <Link className={location.pathname === "/settings" ? "is-active" : ""} to="/settings" onClick={() => setMenuOpen(false)}><Settings size={18} />本机设置</Link>
+              <Link className={location.pathname === "/settings" ? "is-active" : ""} to="/settings" onClick={() => setMenuOpen(false)}><Settings size={18} />本机设置{updateAvailable && <span className="nav-update-badge"><span aria-hidden="true" />有更新</span>}</Link>
               <button type="button" onClick={() => logoutMutation.mutate()}><LogOut size={18} />退出登录</button>
             </div>
           )}

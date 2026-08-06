@@ -10,6 +10,7 @@ import { DashboardEventBus } from "../src/server/realtime/event-bus";
 import { ProxySettingsService } from "../src/server/services/proxy-settings-service";
 import { ProductImageService } from "../src/server/services/product-image-service";
 import { SyncService } from "../src/server/services/sync-service";
+import { UpdateService } from "../src/server/services/update-service";
 import { createTestDatabase } from "./test-context";
 
 describe("LAN wallboard isolation", () => {
@@ -28,7 +29,14 @@ describe("LAN wallboard isolation", () => {
       proxySettings,
       new ProductImageService(new ProductImagesRepository(context.database)),
     );
-    const dependencies = { config: context.config, database: context.database, events, syncService, proxySettings };
+    const dependencies = {
+      config: context.config,
+      database: context.database,
+      events,
+      syncService,
+      proxySettings,
+      updates: new UpdateService(context.config, proxySettings),
+    };
     const adminApp = await buildAdminApp(dependencies);
     const wallboardApp = await buildWallboardApp(dependencies);
 
@@ -61,6 +69,7 @@ describe("LAN wallboard isolation", () => {
       expect(overview.statusCode).toBe(200);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/stores" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/settings/network" })).statusCode).toBe(404);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/settings/update" })).statusCode).toBe(404);
 
       await adminApp.inject({
         method: "POST",

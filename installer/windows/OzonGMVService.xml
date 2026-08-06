@@ -12,6 +12,7 @@
   <env name="WALLBOARD_HOST" value="0.0.0.0" />
   <env name="WALLBOARD_PORT" value="3002" />
   <env name="LOCAL_MODE" value="true" />
+  <env name="UPDATE_ENABLED" value="true" />
   <startmode>Automatic</startmode>
   <delayedAutoStart>true</delayedAutoStart>
   <stoptimeout>30 sec</stoptimeout>

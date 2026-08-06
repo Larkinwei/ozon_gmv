@@ -1,6 +1,6 @@
 #define AppName "Ozon GMV Dashboard"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 
 [Setup]
@@ -41,6 +41,7 @@ Name: "{commonappdata}\Ozon GMV Dashboard\data"
 Name: "{commonappdata}\Ozon GMV Dashboard\config"
 Name: "{commonappdata}\Ozon GMV Dashboard\logs"
 Name: "{commonappdata}\Ozon GMV Dashboard\backups"
+Name: "{commonappdata}\Ozon GMV Dashboard\updates"
 
 [Icons]
 Name: "{autoprograms}\Ozon GMV Dashboard"; Filename: "http://127.0.0.1:3001"

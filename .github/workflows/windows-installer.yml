@@ -1,19 +1,52 @@
-name: Build Windows installer
+name: Publish Windows installer
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Installer version
-        required: true
-        default: 1.0.0
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: windows-2022
+    environment: release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+      UPDATE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_BASE64 }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Inno Setup
+
+      - name: Verify tag and package version
+        id: version
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.Substring(1)
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -ne $packageVersion) {
+            throw "Tag $tag does not match package.json version $packageVersion."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Verify protected release secrets
+        shell: powershell
+        run: |
+          $required = @(
+            "OSS_ACCESS_KEY_ID",
+            "OSS_ACCESS_KEY_SECRET",
+            "UPDATE_SIGNING_PRIVATE_KEY_BASE64"
+          )
+          foreach ($name in $required) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) {
+              throw "Missing GitHub release environment secret: $name"
+            }
+          }
+
+      - name: Install pinned Inno Setup
         shell: powershell
         run: |
           $installer = Join-Path $env:RUNNER_TEMP "innosetup-7.0.2-x64.exe"
@@ -27,11 +60,107 @@ jobs:
           if ($process.ExitCode -ne 0) {
             throw "Inno Setup installation failed with exit code $($process.ExitCode)."
           }
+
       - name: Build and verify installer
         shell: powershell
-        run: .\installer\windows\build-installer.ps1 -Version '${{ inputs.version }}'
+        run: .\installer\windows\build-installer.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      - name: Smoke-test silent installation
+        shell: powershell
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $installer = Join-Path $PWD "installer\windows\output\OzonGMV-Setup-$version.exe"
+          $process = Start-Process $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Silent installation failed with exit code $($process.ExitCode)."
+          }
+          $service = Get-CimInstance Win32_Service -Filter "Name='OzonGMVService'"
+          if (-not $service -or $service.State -ne "Running") {
+            throw "OzonGMVService is not running after installation."
+          }
+          if ($service.PathName -notmatch "Ozon GMV Dashboard") {
+            throw "The service is not using the bundled runtime."
+          }
+          $ready = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3001/readyz" -TimeoutSec 10
+          if ($ready.StatusCode -ne 200) {
+            throw "Installed service readiness check failed."
+          }
+
+      - name: Generate release notes and signed manifests
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $notes = gh api --method POST "repos/${{ github.repository }}/releases/generate-notes" -f tag_name=$tag --jq .body
+          $env:RELEASE_NOTES = $notes
+          $version = "${{ steps.version.outputs.version }}"
+          $installer = "installer\windows\output\OzonGMV-Setup-$version.exe"
+          node scripts/create-update-manifest.mjs --version $version --installer $installer --output installer\windows\output
+          $notes | Set-Content -Encoding utf8 installer\windows\output\release-notes.md
+
+      - name: Create draft GitHub release
+        shell: powershell
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $output = "installer\windows\output"
+          gh release create "${{ github.ref_name }}" `
+            "$output\OzonGMV-Setup-$version.exe" `
+            "$output\update.json" `
+            "$output\update.sig" `
+            "$output\latest.json" `
+            "$output\latest.sig" `
+            --draft `
+            --title "Ozon GMV Dashboard v$version" `
+            --notes-file "$output\release-notes.md"
+
+      - name: Install pinned ossutil
+        shell: powershell
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "ossutil-2.3.0-windows-amd64.zip"
+          Invoke-WebRequest "https://gosspublic.alicdn.com/ossutil/v2/2.3.0/ossutil-2.3.0-windows-amd64.zip" -OutFile $archive
+          $expectedHash = "98209156987667b39fd12a0c7b940342900daef61a9306ea7f34acf17f287da2"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) {
+            throw "ossutil checksum mismatch."
+          }
+          Expand-Archive $archive -DestinationPath (Join-Path $env:RUNNER_TEMP "ossutil")
+          $binary = Get-ChildItem (Join-Path $env:RUNNER_TEMP "ossutil") -Filter "ossutil.exe" -Recurse | Select-Object -First 1
+          if (-not $binary) { throw "ossutil.exe was not found." }
+          "OSSUTIL_PATH=$($binary.FullName)" >> $env:GITHUB_ENV
+
+      - name: Upload immutable version files to OSS
+        shell: powershell
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $output = "installer\windows\output"
+          $prefix = "oss://haodian-ozon-images/ozon-gmv/releases/v$version"
+          $common = @("--region", "cn-beijing", "--endpoint", "https://oss-cn-beijing.aliyuncs.com", "--force")
+          & $env:OSSUTIL_PATH cp "$output\OzonGMV-Setup-$version.exe" "$prefix/OzonGMV-Setup-$version.exe" @common --cache-control "max-age=31536000,immutable" --content-type "application/vnd.microsoft.portable-executable"
+          if ($LASTEXITCODE -ne 0) { throw "Installer OSS upload failed." }
+          & $env:OSSUTIL_PATH cp "$output\update.json" "$prefix/update.json" @common --cache-control "max-age=31536000,immutable" --content-type "application/json"
+          if ($LASTEXITCODE -ne 0) { throw "Manifest OSS upload failed." }
+          & $env:OSSUTIL_PATH cp "$output\update.sig" "$prefix/update.sig" @common --cache-control "max-age=31536000,immutable" --content-type "text/plain"
+          if ($LASTEXITCODE -ne 0) { throw "Signature OSS upload failed." }
+
+      - name: Publish GitHub release
+        shell: powershell
+        run: gh release edit "${{ github.ref_name }}" --draft=false
+
+      - name: Publish latest OSS pointers last
+        shell: powershell
+        run: |
+          $output = "installer\windows\output"
+          $prefix = "oss://haodian-ozon-images/ozon-gmv/releases"
+          $common = @("--region", "cn-beijing", "--endpoint", "https://oss-cn-beijing.aliyuncs.com", "--force", "--cache-control", "no-store, max-age=0")
+          & $env:OSSUTIL_PATH cp "$output\latest.sig" "$prefix/latest.sig" @common --content-type "text/plain"
+          if ($LASTEXITCODE -ne 0) { throw "Latest signature OSS upload failed." }
+          & $env:OSSUTIL_PATH cp "$output\latest.json" "$prefix/latest.json" @common --content-type "application/json"
+          if ($LASTEXITCODE -ne 0) { throw "Latest manifest OSS upload failed." }
+
       - uses: actions/upload-artifact@v4
         with:
-          name: OzonGMV-Setup-${{ inputs.version }}
-          path: installer/windows/output/OzonGMV-Setup-${{ inputs.version }}.exe
+          name: OzonGMV-Setup-${{ steps.version.outputs.version }}
+          path: |
+            installer/windows/output/OzonGMV-Setup-${{ steps.version.outputs.version }}.exe
+            installer/windows/output/update.json
+            installer/windows/output/update.sig
           if-no-files-found: error
+          retention-days: 30
