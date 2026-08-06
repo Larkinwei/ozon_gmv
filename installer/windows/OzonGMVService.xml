@@ -1,0 +1,27 @@
+<service>
+  <id>OzonGMVService</id>
+  <name>Ozon GMV Dashboard Service</name>
+  <description>Ozon multi-store GMV dashboard local background service.</description>
+  <executable>%BASE%\runtime\node.exe</executable>
+  <arguments>--enable-source-maps "%BASE%\app\dist\server\index.js"</arguments>
+  <workingdirectory>%BASE%\app</workingdirectory>
+  <env name="NODE_ENV" value="production" />
+  <env name="DATA_DIR" value="%PROGRAMDATA%\Ozon GMV Dashboard" />
+  <env name="ADMIN_HOST" value="127.0.0.1" />
+  <env name="ADMIN_PORT" value="3001" />
+  <env name="WALLBOARD_HOST" value="0.0.0.0" />
+  <env name="WALLBOARD_PORT" value="3002" />
+  <env name="LOCAL_MODE" value="true" />
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>30 sec</stoptimeout>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <resetfailure>1 day</resetfailure>
+  <logpath>%PROGRAMDATA%\Ozon GMV Dashboard\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold>
+    <keepFiles>10</keepFiles>
+  </log>
+</service>

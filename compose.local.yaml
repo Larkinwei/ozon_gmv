@@ -1,0 +1,8 @@
+services:
+  app:
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    environment:
+      ADMIN_HOST: 0.0.0.0
+      PUBLIC_BASE_URL: http://localhost:3001

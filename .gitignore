@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.local
+.data/
+installer/windows/stage/
+installer/windows/output/
+*.log
+*.tsbuildinfo
+.DS_Store
+backups/
