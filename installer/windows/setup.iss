@@ -43,8 +43,8 @@ Name: "{commonappdata}\Ozon GMV Dashboard\logs"
 Name: "{commonappdata}\Ozon GMV Dashboard\backups"
 
 [Icons]
-Name: "{autoprograms}\Ozon GMV Dashboard"; Filename: "http://127.0.0.1:3001"; Flags: shellexec
-Name: "{autodesktop}\Ozon GMV Dashboard"; Filename: "http://127.0.0.1:3001"; Flags: shellexec
+Name: "{autoprograms}\Ozon GMV Dashboard"; Filename: "http://127.0.0.1:3001"
+Name: "{autodesktop}\Ozon GMV Dashboard"; Filename: "http://127.0.0.1:3001"
 
 [Run]
 Filename: "http://127.0.0.1:3001/setup"; Description: "打开 Ozon GMV Dashboard"; Flags: shellexec postinstall skipifsilent nowait
