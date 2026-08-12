@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,8 @@ import {
   verifyUpdateManifest,
 } from "../src/server/services/update-service";
 import { createTestDatabase } from "./test-context";
+
+const AVAILABLE_VERSION = "99.0.0";
 
 function signedManifest(manifest: UpdateManifest): { raw: string; signature: string; publicKey: string } {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -51,14 +53,14 @@ describe("signed Windows updates", () => {
     const installer = Buffer.from("signed installer");
     const manifest: UpdateManifest = {
       schemaVersion: 1,
-      version: "1.1.1",
+      version: AVAILABLE_VERSION,
       publishedAt: "2026-08-06T08:00:00.000Z",
       notes: "安全更新",
       size: installer.length,
       sha256: createHash("sha256").update(installer).digest("hex"),
       urls: [
-        "https://haodian-ozon-images.oss-cn-beijing.aliyuncs.com/ozon-gmv/releases/v1.1.1/OzonGMV-Setup-1.1.1.exe",
-        "https://github.com/Larkinwei/ozon_gmv/releases/download/v1.1.1/OzonGMV-Setup-1.1.1.exe",
+        `https://haodian-ozon-images.oss-cn-beijing.aliyuncs.com/ozon-gmv/releases/v${AVAILABLE_VERSION}/OzonGMV-Setup-${AVAILABLE_VERSION}.exe`,
+        `https://github.com/Larkinwei/ozon_gmv/releases/download/v${AVAILABLE_VERSION}/OzonGMV-Setup-${AVAILABLE_VERSION}.exe`,
       ],
     };
     const signed = signedManifest(manifest);
@@ -74,14 +76,14 @@ describe("signed Windows updates", () => {
     const installer = Buffer.from("valid windows installer bytes");
     const manifest: UpdateManifest = {
       schemaVersion: 1,
-      version: "1.1.1",
+      version: AVAILABLE_VERSION,
       publishedAt: "2026-08-06T08:00:00.000Z",
       notes: "修复和稳定性更新",
       size: installer.length,
       sha256: createHash("sha256").update(installer).digest("hex"),
       urls: [
-        "https://haodian-ozon-images.oss-cn-beijing.aliyuncs.com/ozon-gmv/releases/v1.1.1/OzonGMV-Setup-1.1.1.exe",
-        "https://github.com/Larkinwei/ozon_gmv/releases/download/v1.1.1/OzonGMV-Setup-1.1.1.exe",
+        `https://haodian-ozon-images.oss-cn-beijing.aliyuncs.com/ozon-gmv/releases/v${AVAILABLE_VERSION}/OzonGMV-Setup-${AVAILABLE_VERSION}.exe`,
+        `https://github.com/Larkinwei/ozon_gmv/releases/download/v${AVAILABLE_VERSION}/OzonGMV-Setup-${AVAILABLE_VERSION}.exe`,
       ],
     };
     const signed = signedManifest(manifest);
@@ -131,14 +133,14 @@ describe("signed Windows updates", () => {
     const expectedInstaller = Buffer.from("expected installer");
     const manifest: UpdateManifest = {
       schemaVersion: 1,
-      version: "1.1.1",
+      version: AVAILABLE_VERSION,
       publishedAt: "2026-08-06T08:00:00.000Z",
       notes: "安全更新",
       size: expectedInstaller.length,
       sha256: createHash("sha256").update(expectedInstaller).digest("hex"),
       urls: [
-        "https://haodian-ozon-images.oss-cn-beijing.aliyuncs.com/ozon-gmv/releases/v1.1.1/OzonGMV-Setup-1.1.1.exe",
-        "https://github.com/Larkinwei/ozon_gmv/releases/download/v1.1.1/OzonGMV-Setup-1.1.1.exe",
+        `https://haodian-ozon-images.oss-cn-beijing.aliyuncs.com/ozon-gmv/releases/v${AVAILABLE_VERSION}/OzonGMV-Setup-${AVAILABLE_VERSION}.exe`,
+        `https://github.com/Larkinwei/ozon_gmv/releases/download/v${AVAILABLE_VERSION}/OzonGMV-Setup-${AVAILABLE_VERSION}.exe`,
       ],
     };
     const signed = signedManifest(manifest);
@@ -166,6 +168,8 @@ describe("signed Windows updates", () => {
       service.beginInstall();
       await waitForState(service, "failed");
       expect(service.view().error).toContain("SHA-256");
+      await expect(readFile(join(context.config.DATA_DIR, "updates", "update.log"), "utf8"))
+        .resolves.toContain("SHA-256");
     } finally {
       context.cleanup();
     }
@@ -174,7 +178,7 @@ describe("signed Windows updates", () => {
   it("resumes an existing partial installer with an HTTP range request", async () => {
     const context = createTestDatabase();
     const installer = Buffer.from("resumable windows installer");
-    const version = "1.1.1";
+    const version = AVAILABLE_VERSION;
     const manifest: UpdateManifest = {
       schemaVersion: 1,
       version,

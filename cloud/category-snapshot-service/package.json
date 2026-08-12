@@ -1,0 +1,24 @@
+{
+  "name": "ozon-category-snapshot-service",
+  "version": "1.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/server.ts src/configure-lifecycle.ts --format esm --platform node --target node20 --out-dir dist",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "oss:lifecycle": "node dist/configure-lifecycle.js"
+  },
+  "dependencies": {
+    "ali-oss": "^6.23.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/ali-oss": "^6.23.3",
+    "@types/node": "^24.3.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

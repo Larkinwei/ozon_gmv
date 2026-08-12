@@ -91,7 +91,7 @@ describe("administrator setup and session API", () => {
         url: "/api/settings/update",
         cookies: { ozon_session: cookie?.value ?? "" },
       });
-      expect(updateResponse.json()).toMatchObject({ supported: false, state: "unsupported", currentVersion: "1.1.0" });
+      expect(updateResponse.json()).toMatchObject({ supported: false, state: "unsupported", currentVersion: "1.4.0" });
     } finally {
       await app.close();
       context.cleanup();

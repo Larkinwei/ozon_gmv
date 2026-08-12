@@ -16,10 +16,10 @@
 运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\windows\build-installer.ps1 -Version 1.1.0
+powershell -ExecutionPolicy Bypass -File installer\windows\build-installer.ps1 -Version 1.4.0
 ```
 
-产物位于 `installer\windows\output\OzonGMV-Setup-1.1.0.exe`。正式发布不接受手动输入版本，只由 `vX.Y.Z` 标签触发 `windows-installer.yml`，自动发布 GitHub Release 和 OSS 下载文件。
+产物位于 `installer\windows\output\OzonGMV-Setup-1.4.0.exe`。正式发布不接受手动输入版本，只由 `vX.Y.Z` 标签触发 `windows-installer.yml`，自动发布 GitHub Release 和 OSS 下载文件。
 
 ## 安装过程
 
@@ -41,6 +41,8 @@ powershell -ExecutionPolicy Bypass -File installer\windows\build-installer.ps1 -
 - 卸载时默认选择“否”以保留 ProgramData；只有明确确认删除时才清除全部数据。
 - 重新安装会识别固定 `AppId`，并继续使用保留的数据。
 - Windows 正式安装版每 6 小时检查稳定版；管理员点击“一键更新”后会验证 Ed25519 清单签名、文件大小和 SHA-256，再静默执行同一套覆盖安装与回滚流程。
+- 选品关键词、全市场商品、Wordstat、候选池及类目快照均保存在同一 SQLite 文件的隔离表中，现有每日备份与升级前备份会自动覆盖；原始报表不会长期保存。
+- Windows 设备默认是类目只读客户端，只从已配置的云端服务下载标准化快照；OpenCLI 主采集功能仅在用户明确启用的 macOS 设备运行。
 
 ## 内测注意事项
 

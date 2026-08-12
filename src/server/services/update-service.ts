@@ -444,8 +444,9 @@ export class UpdateService {
 
   private async fail(error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message : "更新任务失败";
-    this.state = { ...this.state, state: "failed", error: message };
     await this.log(`failed: ${message}`);
+    // Only expose the terminal state after all failure side effects are durable.
+    this.state = { ...this.state, state: "failed", error: message };
   }
 
   private async writeJsonAtomically(path: string, value: unknown): Promise<void> {

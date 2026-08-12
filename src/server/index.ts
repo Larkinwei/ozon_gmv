@@ -12,6 +12,9 @@ import { SettingsRepository } from "./db/settings-repository";
 import { StoresRepository } from "./db/stores-repository";
 import { SyncCheckpointsRepository } from "./db/sync-checkpoints-repository";
 import { DashboardEventBus } from "./realtime/event-bus";
+import { SelectionModule } from "./selection/selection-module";
+import { CategoryAnalysisModule } from "./selection/category-analysis-module";
+import { WordstatClient } from "./selection/wordstat-client";
 import { BackupService } from "./services/backup-service";
 import { ProxySettingsService } from "./services/proxy-settings-service";
 import { ProductImageService } from "./services/product-image-service";
@@ -37,7 +40,19 @@ const syncService = new SyncService(
   productImages,
 );
 const updates = new UpdateService(config, proxySettings);
-const dependencies = { config, database, events, syncService, proxySettings, updates };
+const selection = new SelectionModule(config, database, {
+  wordstatFactory: (folderId, apiKey) => new WordstatClient({
+    folderId,
+    apiKey,
+    fetchImplementation: proxySettings.createFetch(),
+  }),
+});
+selection.start();
+const categories = new CategoryAnalysisModule(config, database, {
+  fetchImplementation: proxySettings.createFetch(),
+});
+categories.start();
+const dependencies = { config, database, events, syncService, proxySettings, updates, selection, categories };
 const adminApp = await buildAdminApp(dependencies);
 const wallboardApp = await buildWallboardApp(dependencies);
 const scheduler = startScheduler(syncService);
@@ -67,6 +82,8 @@ async function shutdown(signal: string): Promise<void> {
   scheduler.stop();
   backups.stop();
   updates.stop();
+  await selection.stop();
+  await categories.stop();
   await Promise.all([adminApp.close(), wallboardApp.close()]);
   closeDatabase(database);
 }

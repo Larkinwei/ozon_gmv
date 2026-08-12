@@ -7,6 +7,7 @@ import { fetchRuntime, fetchSession } from "./api";
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const SelectionPage = lazy(() => import("./pages/SelectionPage"));
 const SetupPage = lazy(() => import("./pages/SetupPage"));
 const StoresPage = lazy(() => import("./pages/StoresPage"));
 
@@ -81,6 +82,7 @@ export function App(): React.JSX.Element {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/wallboard" element={<DashboardPage wallboard />} />
         <Route path="/stores" element={<StoresPage />} />
+        <Route path="/selection" element={<SelectionPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

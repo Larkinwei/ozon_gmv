@@ -1,4 +1,4 @@
-import { BarChart3, LogOut, Maximize2, Menu, Minimize2, Settings, Store, X } from "lucide-react";
+import { BarChart3, Lightbulb, LogOut, Maximize2, Menu, Minimize2, Settings, Store, X } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -51,6 +51,9 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
           <Link className={location.pathname === "/stores" ? "nav-link is-active" : "nav-link"} to="/stores">
             <Store size={18} aria-hidden="true" /> 店铺管理
           </Link>
+          <Link className={location.pathname === "/selection" ? "nav-link is-active" : "nav-link"} to="/selection">
+            <Lightbulb size={18} aria-hidden="true" /> 选品分析
+          </Link>
           <Link className={location.pathname === "/settings" ? "nav-link is-active" : "nav-link"} to="/settings">
             <Settings size={18} aria-hidden="true" /> 本机设置
             {updateAvailable && <span className="nav-update-badge"><span aria-hidden="true" />有更新</span>}
@@ -72,6 +75,7 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
             <div className="mobile-nav-drawer" id="mobile-navigation">
               <Link className={location.pathname === "/dashboard" ? "is-active" : ""} to="/dashboard" onClick={() => setMenuOpen(false)}><BarChart3 size={18} />运营总览</Link>
               <Link className={location.pathname === "/stores" ? "is-active" : ""} to="/stores" onClick={() => setMenuOpen(false)}><Store size={18} />店铺管理</Link>
+              <Link className={location.pathname === "/selection" ? "is-active" : ""} to="/selection" onClick={() => setMenuOpen(false)}><Lightbulb size={18} />选品分析</Link>
               <Link className={location.pathname === "/settings" ? "is-active" : ""} to="/settings" onClick={() => setMenuOpen(false)}><Settings size={18} />本机设置{updateAvailable && <span className="nav-update-badge"><span aria-hidden="true" />有更新</span>}</Link>
               <button type="button" onClick={() => logoutMutation.mutate()}><LogOut size={18} />退出登录</button>
             </div>

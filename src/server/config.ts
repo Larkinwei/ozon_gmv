@@ -38,6 +38,9 @@ const environmentSchema = z.object({
   UPDATE_FALLBACK_MANIFEST_URL: z.string().url().default(
     "https://github.com/Larkinwei/ozon_gmv/releases/latest/download/latest.json",
   ),
+  CATEGORY_CLOUD_BASE_URL: z.string().url().default(
+    "https://ozon-canapshots-zswncgotoh.cn-beijing.fcapp.run",
+  ),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 
