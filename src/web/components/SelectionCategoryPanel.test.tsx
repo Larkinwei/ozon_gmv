@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { CategoryOpportunityMap } from "./CategoryOpportunityMap";
 import { SelectionCategoryPanel, SelectionCategorySourceCard } from "./SelectionCategoryPanel";
 
 const { refreshCloud, startSync } = vi.hoisted(() => ({
@@ -35,6 +36,23 @@ afterEach(() => {
 });
 
 describe("SelectionCategoryPanel", () => {
+  it("explains how to read the category opportunity map", () => {
+    render(<CategoryOpportunityMap points={[{
+      name: "旅行收纳",
+      growth: 24.5,
+      concentration: 31.2,
+      gmv: 180000,
+      currency: "RUB",
+    }]} />);
+    expect(screen.getByRole("heading", { name: "类目机会地图" })).toBeInTheDocument();
+    expect(screen.getByText("优先关注")).toBeInTheDocument();
+    expect(screen.getByText("增长但集中")).toBeInTheDocument();
+    expect(screen.getByText("竞争分散")).toBeInTheDocument();
+    expect(screen.getByText("谨慎进入")).toBeInTheDocument();
+    expect(screen.getByText("GMV 增长越快")).toBeInTheDocument();
+    expect(screen.getByText("头部卖家越不集中")).toBeInTheDocument();
+  });
+
   it("keeps synchronization actions out of category analysis and exposes the two period choices", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(<QueryClientProvider client={queryClient}><SelectionCategoryPanel onNotice={vi.fn()} /></QueryClientProvider>);

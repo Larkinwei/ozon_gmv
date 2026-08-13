@@ -11,17 +11,6 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  CartesianGrid,
-  ReferenceLine,
-  ResponsiveContainer,
-  Scatter,
-  ScatterChart,
-  Tooltip,
-  XAxis,
-  YAxis,
-  ZAxis,
-} from "recharts";
 
 import type {
   SelectionCategoryPeriod,
@@ -37,7 +26,8 @@ import {
   startSelectionDiscoverySync,
   updateSelectionDiscoverySettings,
 } from "../api";
-import { formatCompactNumber, formatMoney } from "../format";
+import { formatMoney } from "../format";
+import { CategoryOpportunityMap } from "./CategoryOpportunityMap";
 
 interface CategoryNotice {
   tone: "success" | "error";
@@ -128,6 +118,7 @@ export function SelectionCategoryPanel(props: {
     growth: (item.gmvGrowth ?? 0) * 100,
     concentration: (item.topFiveSellerShare ?? 0) * 100,
     gmv: Number(item.gmv.amount),
+    currency: item.gmv.currency,
   })), [pageQuery.data?.items]);
 
   function resetFilters(): void {
@@ -166,7 +157,7 @@ export function SelectionCategoryPanel(props: {
         </div></details>
       </div>
       {pageQuery.isLoading ? <div className="selection-table-loading" aria-busy="true">正在读取类目快照…</div> : pageQuery.error ? <div className="page-error"><h3>类目数据加载失败</h3><p>{pageQuery.error.message}</p></div> : !pageQuery.data?.snapshotId ? <div className="selection-empty"><ChartScatter size={31} /><h3>还没有类目快照</h3><p>{isCollector ? "请前往“数据源”发起统一市场同步。" : "请前往“数据源”刷新主采集机发布的云端快照。"}</p></div> : pageQuery.data.items.length === 0 ? <div className="selection-empty"><Search size={31} /><h3>没有匹配的类目</h3><p>当前搜索或筛选条件没有结果。</p><button className="secondary-button compact-button" type="button" onClick={resetFilters}>清除筛选</button></div> : <>
-        <article className="category-quadrant-card"><div className="selection-section-heading"><div><p className="eyebrow">OPPORTUNITY QUADRANT</p><h3>GMV 增幅 × 前五卖家份额</h3><span>左上区域代表增幅较高、头部集中度较低；气泡大小仅表示 GMV，不是综合机会分。</span></div></div><div className="category-quadrant" role="img" aria-label="当前筛选前一百个三级类目的 GMV 增幅和前五卖家份额象限图"><ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 20, right: 28, bottom: 20, left: 8 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,.16)" /><XAxis type="number" dataKey="concentration" name="前五卖家份额" unit="%" tick={{ fill: "#8fa1bd", fontSize: 11 }} /><YAxis type="number" dataKey="growth" name="GMV 增幅" unit="%" tick={{ fill: "#8fa1bd", fontSize: 11 }} /><ZAxis type="number" dataKey="gmv" range={[45, 900]} /><ReferenceLine x={50} stroke="#64748b" strokeDasharray="4 4" /><ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" /><Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(value, name) => name === "gmv" ? formatCompactNumber(Number(value)) : `${Number(value).toFixed(1)}%`} /><Scatter data={chartData} fill="#41d7e7" fillOpacity={0.7} /></ScatterChart></ResponsiveContainer></div></article>
+        <CategoryOpportunityMap points={chartData} />
         <CategoryTable items={pageQuery.data.items} periodDays={periodDays} onOpen={props.onOpenCategory} />
         <div className="selection-pagination"><span>共 {pageQuery.data.total.toLocaleString("zh-CN")} 个三级类目</span><div><button className="icon-button" type="button" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="上一页"><ChevronLeft size={18} /></button><strong>{page} / {totalPages}</strong><button className="icon-button" type="button" disabled={page >= totalPages} onClick={() => setPage(page + 1)} aria-label="下一页"><ChevronRight size={18} /></button></div></div>
       </>}

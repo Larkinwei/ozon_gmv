@@ -46,13 +46,17 @@ function formatAmount(amount: string, currency: string): string {
   return `${amount} ${currency}`;
 }
 
-function showMacNotification(title: string, message: string, path: string): void {
+function showMacNotification(title: string, message: string, path: string, imageUrl: string | null = null): void {
   const helper = process.env.MAC_NOTIFIER_BIN;
   if (!helper) {
     void reportStatus({ error: "macOS 通知助手尚未安装" });
     return;
   }
-  const child = spawn(helper, ["--title", title, "--message", message, "--open", new URL(path, ADMIN_BASE_URL).toString()], {
+  const argumentsList = ["--title", title, "--message", message, "--open", new URL(path, ADMIN_BASE_URL).toString()];
+  if (imageUrl) {
+    argumentsList.push("--image", imageUrl);
+  }
+  const child = spawn(helper, argumentsList, {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let delivered = false;
@@ -97,7 +101,7 @@ function showOrder(event: OrderNotificationEvent): void {
     );
     return;
   }
-  showMacNotification(title, message, path);
+  showMacNotification(title, message, path, event.imageUrl);
 }
 
 function showSummary(summary: NotificationSummary): void {

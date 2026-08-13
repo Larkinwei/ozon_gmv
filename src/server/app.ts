@@ -11,6 +11,7 @@ import { ZodError } from "zod";
 import type { AppConfig } from "./config";
 import { AdminRepository } from "./db/admin-repository";
 import { DashboardRepository } from "./db/dashboard-repository";
+import { ProductImagesRepository } from "./db/product-images-repository";
 import type { AppDatabase } from "./db/database";
 import { SettingsRepository } from "./db/settings-repository";
 import { StoresRepository } from "./db/stores-repository";
@@ -128,7 +129,12 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const administrators = new AdminRepository(database);
   const stores = new StoresRepository(database);
   const pairings = new WallboardPairingsRepository(database);
-  const notifications = new OrderNotificationService(new SettingsRepository(database), events);
+  const notifications = new OrderNotificationService(
+    new SettingsRepository(database),
+    events,
+    process.platform,
+    new ProductImagesRepository(database),
+  );
   const selection = dependencies.selection ?? new SelectionModule(config, database, {
     wordstatFactory: (folderId, apiKey) => new WordstatClient({
       folderId,

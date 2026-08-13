@@ -147,6 +147,7 @@ export class SyncService {
         status: posting.status,
         storeColor: store.color,
         productNames: posting.items.map((item) => item.name),
+        productSkus: posting.items.map((item) => item.sku),
         itemCount: posting.items.reduce((total, item) => total + item.quantity, 0),
       });
     }

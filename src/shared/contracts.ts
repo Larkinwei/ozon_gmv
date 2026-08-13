@@ -208,6 +208,7 @@ export interface OrderNotificationEvent {
   orderAt: string;
   fulfillment: FulfillmentMode;
   productName: string;
+  imageUrl: string | null;
   itemCount: number;
 }
 

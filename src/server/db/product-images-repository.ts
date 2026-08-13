@@ -17,6 +17,19 @@ interface ProductImageCandidateRow {
 export class ProductImagesRepository {
   public constructor(private readonly database: AppDatabase) {}
 
+  /** Returns one safe cached image URL for desktop notification enrichment. */
+  public findImageUrl(storeId: string, sku: string | undefined): string | null {
+    if (!sku) {
+      return null;
+    }
+    const row = this.database.prepare(
+      `SELECT primary_image_url
+       FROM product_images
+       WHERE store_id = ? AND sku = ?`,
+    ).get(storeId, sku) as { primary_image_url: string | null } | undefined;
+    return row?.primary_image_url ?? null;
+  }
+
   /** Lists recently ordered products whose image cache is missing or stale. */
   public listStale(storeId: string, refreshedBefore: number, limit: number): ProductImageCandidate[] {
     const rows = this.database.prepare(

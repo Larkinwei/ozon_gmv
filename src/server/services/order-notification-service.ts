@@ -9,6 +9,7 @@ import type {
   OrderNotificationSettings,
 } from "../../shared/contracts";
 import type { SettingsRepository } from "../db/settings-repository";
+import type { ProductImagesRepository } from "../db/product-images-repository";
 import type { DashboardEventBus } from "../realtime/event-bus";
 
 const ENABLED_KEY = "notifications.orders_enabled";
@@ -20,12 +21,14 @@ const AGENT_CONNECTED_WINDOW_MS = 90 * 1000;
 
 interface PostingCreatedData {
   id: string;
+  storeId: string;
   storeName: string;
   storeColor: string;
   amount: Money;
   orderAt: string;
   fulfillment: FulfillmentMode;
   productNames: string[];
+  productSkus: string[];
   itemCount: number;
 }
 
@@ -40,6 +43,7 @@ export class OrderNotificationService {
     private readonly settings: SettingsRepository,
     events: DashboardEventBus,
     private readonly platform: NodeJS.Platform = process.platform,
+    private readonly productImages?: ProductImagesRepository,
   ) {
     this.unsubscribeDashboard = events.subscribe((event) => this.handleDashboardEvent(event));
   }
@@ -71,6 +75,7 @@ export class OrderNotificationService {
       orderAt: new Date().toISOString(),
       fulfillment: "FBS",
       productName: "系统通知连接正常",
+      imageUrl: null,
       itemCount: 1,
     };
     this.emit(event);
@@ -134,6 +139,7 @@ export class OrderNotificationService {
       orderAt: data.orderAt,
       fulfillment: data.fulfillment,
       productName: data.productNames[0] ?? "商品信息待更新",
+      imageUrl: this.productImages?.findImageUrl(data.storeId, data.productSkus[0]) ?? null,
       itemCount: data.itemCount,
     });
   }

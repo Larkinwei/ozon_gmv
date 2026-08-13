@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OrderNotificationEvent } from "../src/shared/contracts";
 import { SettingsRepository } from "../src/server/db/settings-repository";
+import { ProductImagesRepository } from "../src/server/db/product-images-repository";
 import { NotificationBatcher } from "../src/server/desktop-notifications/notification-batcher";
 import { DashboardEventBus } from "../src/server/realtime/event-bus";
 import { OrderNotificationService } from "../src/server/services/order-notification-service";
@@ -19,6 +20,7 @@ function orderEvent(id: string, amount: string, currency = "RUB"): OrderNotifica
     orderAt: new Date().toISOString(),
     fulfillment: "FBS",
     productName: "测试商品",
+    imageUrl: null,
     itemCount: 1,
   };
 }
@@ -31,34 +33,41 @@ describe("order notification service", () => {
     vi.setSystemTime(new Date("2026-08-13T03:00:00.000Z"));
     const context = createTestDatabase();
     const events = new DashboardEventBus();
-    const service = new OrderNotificationService(new SettingsRepository(context.database), events, "darwin");
+    const images = new ProductImagesRepository(context.database);
+    vi.spyOn(images, "findImageUrl").mockReturnValue("https://cdn.example.com/product.jpg");
+    const service = new OrderNotificationService(new SettingsRepository(context.database), events, "darwin", images);
     const received: OrderNotificationEvent[] = [];
     service.subscribe((event) => received.push(event));
 
     expect(service.view()).toMatchObject({ supported: true, enabled: true, agentConnected: false });
     events.publish("posting.created", {
-      id: crypto.randomUUID(), storeName: "店铺 A", storeColor: "#F43F5E",
+      id: crypto.randomUUID(), storeId: "store-a", storeName: "店铺 A", storeColor: "#F43F5E",
       amount: { amount: "100.00", currency: "RUB" }, orderAt: "2026-08-13T02:59:00.000Z",
-      fulfillment: "FBS", productNames: ["商品 A"], itemCount: 2,
+      fulfillment: "FBS", productNames: ["商品 A"], productSkus: ["sku-a"], itemCount: 2,
     });
     events.publish("posting.updated", {
-      id: crypto.randomUUID(), storeName: "店铺 A", storeColor: "#F43F5E",
+      id: crypto.randomUUID(), storeId: "store-a", storeName: "店铺 A", storeColor: "#F43F5E",
       amount: { amount: "100.00", currency: "RUB" }, orderAt: "2026-08-13T02:59:00.000Z",
-      fulfillment: "FBS", productNames: ["商品 A"], itemCount: 2,
+      fulfillment: "FBS", productNames: ["商品 A"], productSkus: ["sku-a"], itemCount: 2,
     });
     events.publish("posting.created", {
-      id: crypto.randomUUID(), storeName: "店铺 A", storeColor: "#F43F5E",
+      id: crypto.randomUUID(), storeId: "store-a", storeName: "店铺 A", storeColor: "#F43F5E",
       amount: { amount: "50.00", currency: "RUB" }, orderAt: "2026-08-13T02:00:00.000Z",
-      fulfillment: "FBO", productNames: ["历史商品"], itemCount: 1,
+      fulfillment: "FBO", productNames: ["历史商品"], productSkus: ["sku-old"], itemCount: 1,
     });
 
     expect(received).toHaveLength(1);
-    expect(received[0]).toMatchObject({ storeName: "店铺 A", productName: "商品 A", itemCount: 2 });
+    expect(received[0]).toMatchObject({
+      storeName: "店铺 A",
+      productName: "商品 A",
+      imageUrl: "https://cdn.example.com/product.jpg",
+      itemCount: 2,
+    });
     service.update(false);
     events.publish("posting.created", {
-      id: crypto.randomUUID(), storeName: "店铺 B", storeColor: "#22C55E",
+      id: crypto.randomUUID(), storeId: "store-b", storeName: "店铺 B", storeColor: "#22C55E",
       amount: { amount: "20.00", currency: "RUB" }, orderAt: new Date().toISOString(),
-      fulfillment: "RFBS", productNames: ["商品 B"], itemCount: 1,
+      fulfillment: "RFBS", productNames: ["商品 B"], productSkus: ["sku-b"], itemCount: 1,
     });
     expect(received).toHaveLength(1);
 

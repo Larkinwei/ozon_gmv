@@ -17,6 +17,7 @@ NOTIFIER_TARGET="gui/$(id -u)/$NOTIFIER_LABEL"
 NOTIFIER_APP="$DATA_DIR/bin/OzonGMVNotifier.app"
 NOTIFIER_BIN="$NOTIFIER_APP/Contents/MacOS/OzonGMVNotifier"
 NOTIFIER_INFO_PLIST="$SCRIPT_DIR/OzonGMVNotifier.Info.plist"
+NOTIFIER_ICON_SOURCE="$SCRIPT_DIR/OzonGMVNotifierIcon.svg"
 DOMAIN_TARGET="gui/$(id -u)"
 ADMIN_READY_URL="http://127.0.0.1:3001/readyz"
 ACTION="${1:-}"
@@ -141,12 +142,22 @@ function render_notifier_plist() {
 
 function build_macos_notifier() {
   local swift_source="$SCRIPT_DIR/OzonGMVNotifier.swift"
+  local iconset="$DATA_DIR/bin/OzonGMVNotifier.iconset"
   if ! xcrun --find swiftc >/dev/null 2>&1; then
     echo "Apple Command Line Tools are required to build the macOS notification helper." >&2
     exit 1
   fi
-  mkdir -p "$NOTIFIER_APP/Contents/MacOS"
+  mkdir -p "$NOTIFIER_APP/Contents/MacOS" "$NOTIFIER_APP/Contents/Resources" "$iconset"
   cp "$NOTIFIER_INFO_PLIST" "$NOTIFIER_APP/Contents/Info.plist"
+  local icon_size
+  for icon_size in 16 32 128 256 512; do
+    sips -s format png -z "$icon_size" "$icon_size" "$NOTIFIER_ICON_SOURCE" \
+      --out "$iconset/icon_${icon_size}x${icon_size}.png" >/dev/null
+    sips -s format png -z "$((icon_size * 2))" "$((icon_size * 2))" "$NOTIFIER_ICON_SOURCE" \
+      --out "$iconset/icon_${icon_size}x${icon_size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$iconset" -o "$NOTIFIER_APP/Contents/Resources/OzonGMVNotifier.icns"
+  rm -r "$iconset"
   xcrun --sdk macosx swiftc -suppress-warnings \
     -framework AppKit \
     -framework UserNotifications \

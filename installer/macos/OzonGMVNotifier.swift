@@ -5,6 +5,7 @@ struct NotificationInput {
   let title: String
   let message: String
   let destination: URL
+  let imageURL: URL?
 }
 
 /**
@@ -66,11 +67,11 @@ final class NotificationAppDelegate: NSObject, NSApplicationDelegate, UNUserNoti
           NSApplication.shared.activate(ignoringOtherApps: true)
           self.requestAuthorizationAndDeliver(input)
         case .authorized, .provisional:
-          self.deliver(input)
+          self.prepareAttachmentAndDeliver(input)
         case .denied:
           self.fail("macOS 通知权限未开启，请在系统设置 > 通知 > Ozon GMV 中允许通知")
         case .ephemeral:
-          self.deliver(input)
+          self.prepareAttachmentAndDeliver(input)
         @unknown default:
           self.fail("无法识别当前 macOS 通知权限状态")
         }
@@ -90,17 +91,66 @@ final class NotificationAppDelegate: NSObject, NSApplicationDelegate, UNUserNoti
           self.fail("macOS 通知权限未开启，请在系统设置 > 通知 > Ozon GMV 中允许通知")
           return
         }
-        self.deliver(input)
+        self.prepareAttachmentAndDeliver(input)
       }
     }
   }
 
-  private func deliver(_ input: NotificationInput) {
+  private func prepareAttachmentAndDeliver(_ input: NotificationInput) {
+    guard let imageURL = input.imageURL else {
+      deliver(input, attachment: nil)
+      return
+    }
+    var request = URLRequest(url: imageURL)
+    request.timeoutInterval = 5
+    URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, _ in
+      guard let self = self else { return }
+      let attachment = self.createImageAttachment(temporaryURL: temporaryURL, response: response)
+      DispatchQueue.main.async {
+        self.deliver(input, attachment: attachment)
+      }
+    }.resume()
+  }
+
+  private func createImageAttachment(temporaryURL: URL?, response: URLResponse?) -> UNNotificationAttachment? {
+    guard
+      let temporaryURL = temporaryURL,
+      let response = response,
+      response.expectedContentLength < 0 || response.expectedContentLength <= 5 * 1024 * 1024,
+      let fileSize = try? FileManager.default.attributesOfItem(atPath: temporaryURL.path)[.size] as? NSNumber,
+      fileSize.int64Value <= 5 * 1024 * 1024
+    else {
+      return nil
+    }
+    let fileExtension: String
+    switch response.mimeType?.lowercased() {
+    case "image/jpeg": fileExtension = "jpg"
+    case "image/png": fileExtension = "png"
+    case "image/gif": fileExtension = "gif"
+    case "image/webp": fileExtension = "webp"
+    default: return nil
+    }
+    let attachmentsDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("OzonGMVNotificationAttachments", isDirectory: true)
+    let localURL = attachmentsDirectory.appendingPathComponent("\(UUID().uuidString).\(fileExtension)")
+    do {
+      try FileManager.default.createDirectory(at: attachmentsDirectory, withIntermediateDirectories: true)
+      try FileManager.default.copyItem(at: temporaryURL, to: localURL)
+      return try UNNotificationAttachment(identifier: "product-image", url: localURL)
+    } catch {
+      return nil
+    }
+  }
+
+  private func deliver(_ input: NotificationInput, attachment: UNNotificationAttachment?) {
     let content = UNMutableNotificationContent()
     content.title = input.title
     content.body = input.message
     content.sound = .default
     content.userInfo = ["destination": input.destination.absoluteString]
+    if let attachment = attachment {
+      content.attachments = [attachment]
+    }
 
     let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
     center.add(request) { [weak self] error in
@@ -142,8 +192,9 @@ func parseNotificationInput() -> NotificationInput? {
   let title = argument(after: "--title")
   let message = argument(after: "--message")
   let destinationValue = argument(after: "--open")
+  let imageValue = argument(after: "--image")
 
-  if title == nil && message == nil && destinationValue == nil {
+  if title == nil && message == nil && destinationValue == nil && imageValue == nil {
     return nil
   }
   guard
@@ -152,10 +203,11 @@ func parseNotificationInput() -> NotificationInput? {
     let destinationValue = destinationValue,
     let destination = URL(string: destinationValue)
   else {
-    fputs("Usage: OzonGMVNotifier --title TITLE --message MESSAGE --open URL\n", stderr)
+    fputs("Usage: OzonGMVNotifier --title TITLE --message MESSAGE --open URL [--image HTTPS_URL]\n", stderr)
     exit(EXIT_FAILURE)
   }
-  return NotificationInput(title: title, message: message, destination: destination)
+  let imageURL = imageValue.flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
+  return NotificationInput(title: title, message: message, destination: destination, imageURL: imageURL)
 }
 
 let application = NSApplication.shared

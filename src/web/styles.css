@@ -3384,7 +3384,86 @@ td {
 }
 
 .category-quadrant-card .selection-section-heading span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
-.category-quadrant { height: 350px; margin-top: 8px; }
+.category-chart-guide {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.category-chart-guide > span {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  min-height: 54px;
+  align-content: center;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  background: rgb(30 41 59 / 48%);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+
+.category-chart-guide i {
+  grid-row: 1 / 3;
+  align-self: center;
+  width: 20px;
+  height: 20px;
+  color: #67e8f9;
+  font-style: normal;
+  line-height: 18px;
+  text-align: center;
+  background: rgb(34 211 238 / 10%);
+  border: 1px solid rgb(34 211 238 / 30%);
+  border-radius: 50%;
+}
+
+.category-chart-guide strong { color: var(--text); font-size: 11px; }
+.category-quadrant { height: 390px; margin-top: 8px; }
+
+.category-opportunity-tooltip {
+  min-width: 230px;
+  padding: 12px;
+  color: var(--text);
+  background: rgb(8 18 34 / 96%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgb(0 0 0 / 30%);
+}
+
+.category-opportunity-tooltip > strong,
+.category-opportunity-tooltip > span { display: block; }
+.category-opportunity-tooltip > strong { max-width: 300px; font-size: 13px; }
+.category-opportunity-tooltip > span { margin-top: 4px; color: #67e8f9; font-size: 11px; }
+.category-opportunity-tooltip dl { margin: 10px 0 0; }
+.category-opportunity-tooltip dl > div { display: flex; justify-content: space-between; gap: 18px; margin-top: 5px; }
+.category-opportunity-tooltip dt { color: var(--muted); font-size: 11px; }
+.category-opportunity-tooltip dd { margin: 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.category-quadrant-legend {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.category-quadrant-legend article {
+  min-height: 86px;
+  padding: 10px 12px;
+  background: rgb(15 23 42 / 62%);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+
+.category-quadrant-legend article.is-focus { border-color: rgb(34 211 238 / 38%); }
+.category-quadrant-legend article.is-caution { border-color: rgb(245 158 11 / 32%); }
+.category-quadrant-legend strong,
+.category-quadrant-legend span,
+.category-quadrant-legend small { display: block; }
+.category-quadrant-legend strong { font-size: 12px; }
+.category-quadrant-legend span { margin-top: 3px; color: #67e8f9; font-size: 10px; }
+.category-quadrant-legend article.is-caution span { color: #fbbf24; }
+.category-quadrant-legend small { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .category-table { min-width: 1160px; }
 .category-table td strong,
 .category-table td small { display: block; }
@@ -4350,6 +4429,8 @@ td {
   .keyword-metric-grid > div:nth-child(-n + 2),
   .wordstat-summary-grid > div:nth-child(-n + 2) { border-bottom: 1px solid var(--border-soft); }
   .related-query-grid { grid-template-columns: 1fr; }
+  .category-chart-guide,
+  .category-quadrant-legend { grid-template-columns: 1fr 1fr; }
   .market-product-metric-grid > div:nth-child(2n) { border-right: 0; }
   .market-product-metric-grid > div:nth-child(4n) { border-right: 1px solid var(--border-soft); }
   .market-product-metric-grid > div:nth-last-child(-n + 4) { border-bottom: 1px solid var(--border-soft); }
@@ -4405,6 +4486,8 @@ td {
   .category-advanced-filters { grid-column: auto; }
   .category-advanced-filters > div { position: static; width: 100%; grid-template-columns: 1fr; margin-top: 8px; }
   .category-quadrant { height: 300px; }
+  .category-chart-guide,
+  .category-quadrant-legend { grid-template-columns: 1fr; }
   .selection-keyword-table.category-table td:first-child { position: static; width: 100%; min-width: 0; padding: 6px 0; border-bottom: 1px solid var(--border-soft); }
   .selection-keyword-table.category-table td:nth-child(2) { padding-right: 0; }
   .selection-keyword-table.category-table td:nth-child(n + 2)::before { content: attr(data-label); color: var(--muted); font-size: 10px; }

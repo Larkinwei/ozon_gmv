@@ -22,7 +22,10 @@ describe("desktop notification service installers", () => {
     const nativeHelper = readFileSync("installer/macos/OzonGMVNotifier.swift", "utf8");
     expect(appInfo).toContain("com.ozon.gmv-notifier");
     expect(appInfo).toContain("<key>LSUIElement</key>");
+    expect(appInfo).toContain("<key>CFBundleIconFile</key>");
+    expect(manager).toContain("OzonGMVNotifier.icns");
     expect(nativeHelper).toContain("UNUserNotificationCenter.current()");
+    expect(nativeHelper).toContain("UNNotificationAttachment");
     expect(nativeHelper).toContain('writeStandardOutput("DELIVERED")');
   });
 
