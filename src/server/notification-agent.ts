@@ -3,12 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
-import notifier from "node-notifier";
-
 import type { OrderNotificationEvent } from "../shared/contracts";
 import { NotificationBatcher, type NotificationSummary } from "./desktop-notifications/notification-batcher";
+import { NotificationImageCache } from "./desktop-notifications/notification-image-cache";
+import { showWindowsToast } from "./desktop-notifications/windows-toast";
 
-const APP_ID = "com.ozon.gmv-dashboard";
 const ADMIN_BASE_URL = process.env.OZON_GMV_ADMIN_URL ?? "http://127.0.0.1:3001";
 const STATE_DIR = process.env.NOTIFIER_DATA_DIR ?? join(homedir(), ".ozon-gmv-dashboard");
 const PID_PATH = join(STATE_DIR, "notifier.pid");
@@ -89,47 +88,41 @@ function showMacNotification(title: string, message: string, path: string, image
   });
 }
 
-function showOrder(event: OrderNotificationEvent): void {
+const notificationImages = process.platform === "win32" ? new NotificationImageCache() : null;
+
+async function showOrder(event: OrderNotificationEvent): Promise<void> {
   const path = event.orderId ? `/dashboard?order=${encodeURIComponent(event.orderId)}` : "/dashboard";
   const title = event.kind === "test" ? "Ozon GMV 通知测试" : `新订单 · ${event.storeName}`;
   const message = `${formatAmount(event.amount.amount, event.amount.currency)}\n${event.productName} · ${event.itemCount} 件 · ${event.fulfillment}`;
   if (process.platform === "win32") {
-    void reportStatus({ deliveredAt: new Date().toISOString(), error: null });
-    new notifier.WindowsToaster().notify(
-      { title, message, appID: APP_ID, sound: true, wait: true },
-      windowsNotificationCallback(path),
-    );
+    try {
+      const imagePath = await notificationImages?.resolve(event.imageUrl) ?? null;
+      await showWindowsToast({ title, message, imagePath, onActivate: () => openDashboard(path) });
+      void reportStatus({ deliveredAt: new Date().toISOString(), error: null });
+    } catch (error) {
+      void reportStatus({ error: error instanceof Error ? error.message : "Windows 通知发送失败" });
+    }
     return;
   }
   showMacNotification(title, message, path, event.imageUrl);
 }
 
-function showSummary(summary: NotificationSummary): void {
+async function showSummary(summary: NotificationSummary): Promise<void> {
   const totals = summary.amounts.map((money) => formatAmount(money.amount, money.currency)).join(" · ");
   if (process.platform === "win32") {
-    void reportStatus({ deliveredAt: new Date().toISOString(), error: null });
-    new notifier.WindowsToaster().notify({
-      title: `另外 ${summary.count} 笔新订单`,
-      message: totals,
-      appID: APP_ID,
-      sound: true,
-      wait: true,
-    }, windowsNotificationCallback("/dashboard"));
+    try {
+      await showWindowsToast({
+        title: `另外 ${summary.count} 笔新订单`,
+        message: totals,
+        onActivate: () => openDashboard("/dashboard"),
+      });
+      void reportStatus({ deliveredAt: new Date().toISOString(), error: null });
+    } catch (error) {
+      void reportStatus({ error: error instanceof Error ? error.message : "Windows 通知发送失败" });
+    }
     return;
   }
   showMacNotification(`另外 ${summary.count} 笔新订单`, totals, "/dashboard");
-}
-
-function windowsNotificationCallback(path: string): (error: Error | null, response: string) => void {
-  return (error, response) => {
-    if (error) {
-      void reportStatus({ error: error.message });
-      return;
-    }
-    if (response === "activate" || response === "click" || response === "clicked") {
-      openDashboard(path);
-    }
-  };
 }
 
 async function reportStatus(status: { deliveredAt?: string; error?: string | null } = {}): Promise<void> {
@@ -180,6 +173,7 @@ async function consumeStream(
 
 async function run(): Promise<void> {
   acquireProcessLock();
+  await notificationImages?.cleanup();
   const controller = new AbortController();
   const batcher = new NotificationBatcher({ onOrder: showOrder, onSummary: showSummary });
   const heartbeat = setInterval(() => void reportStatus(), 30_000);

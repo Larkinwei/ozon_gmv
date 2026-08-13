@@ -8,8 +8,8 @@ export interface NotificationSummary {
 }
 
 interface NotificationBatcherOptions {
-  onOrder: (event: OrderNotificationEvent) => void;
-  onSummary: (summary: NotificationSummary) => void;
+  onOrder: (event: OrderNotificationEvent) => unknown;
+  onSummary: (summary: NotificationSummary) => unknown;
   windowMs?: number;
   immediateLimit?: number;
 }
@@ -36,7 +36,7 @@ export class NotificationBatcher {
     }
     if (this.immediateCount < this.immediateLimit) {
       this.immediateCount += 1;
-      this.options.onOrder(event);
+      void Promise.resolve(this.options.onOrder(event)).catch(() => undefined);
       return;
     }
     this.buffered.push(event);
@@ -53,10 +53,10 @@ export class NotificationBatcher {
       this.flushTimer = null;
     }
     if (this.buffered.length > 0) {
-      this.options.onSummary({
+      void Promise.resolve(this.options.onSummary({
         count: this.buffered.length,
         amounts: summarizeAmounts(this.buffered),
-      });
+      })).catch(() => undefined);
       this.buffered = [];
     }
     this.windowStartedAt = 0;

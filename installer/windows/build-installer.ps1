@@ -66,6 +66,8 @@ Push-Location $StageApp
 try {
   & (Join-Path $NodeSource "npm.cmd") ci --omit=dev --ignore-scripts=false
   if ($LASTEXITCODE -ne 0) { throw "Production dependency installation failed." }
+  & (Join-Path $NodeSource "node.exe") -e "const sharp = require('sharp'); if (!sharp.format.png) { process.exit(1); }"
+  if ($LASTEXITCODE -ne 0) { throw "Sharp image processing module failed to load." }
 } finally {
   Pop-Location
 }
