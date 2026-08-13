@@ -45,5 +45,8 @@ describe("desktop notification service installers", () => {
     expect(launcher).toContain("notification-agent.js");
     expect(launcher).toContain('InStr(LCase(process.CommandLine), "notification-agent.js")');
     expect(launcher).toContain("shell.Run(command, 0, True)");
+    expect(launcher).toContain('firstArgument = ""');
+    expect(launcher).toContain("If WScript.Arguments.Count > 0 Then");
+    expect(launcher).not.toMatch(/Arguments\.Count > 0 And/);
   });
 });

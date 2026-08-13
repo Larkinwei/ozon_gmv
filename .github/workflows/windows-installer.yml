@@ -87,6 +87,12 @@ jobs:
             if ($ready.StatusCode -ne 200) {
               throw "Service readiness check failed after $Label."
             }
+            Start-Sleep -Seconds 3
+            $notifierTask = Get-ScheduledTask -TaskName "OzonGMVNotifications" -ErrorAction SilentlyContinue
+            if (-not $notifierTask -or $notifierTask.State -ne "Running") {
+              $taskResult = if ($notifierTask) { (Get-ScheduledTaskInfo -TaskName "OzonGMVNotifications").LastTaskResult } else { "missing" }
+              throw "Notification helper is not running after $Label (result: $taskResult)."
+            }
           }
 
           Install-OzonPackage "Fresh install"

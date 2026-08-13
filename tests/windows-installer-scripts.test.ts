@@ -36,6 +36,7 @@ describe("Windows upgrade recovery scripts", () => {
     expect(workflow).toContain('Install-OzonPackage "Fresh install"');
     expect(workflow).toContain('Install-OzonPackage "In-place upgrade"');
     expect(workflow).toContain('ozon-gmv-upgrade-*.db');
+    expect(workflow).toContain('$notifierTask.State -ne "Running"');
   });
 
   it("keeps a manual data and program backup before the clean reinstall", () => {

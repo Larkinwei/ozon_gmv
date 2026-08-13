@@ -1,18 +1,22 @@
 Option Explicit
 
-Dim shell, fso, localDataDir, pidPath, installDir, command, processId, exitCode
+Dim shell, fso, localDataDir, pidPath, installDir, command, processId, exitCode, firstArgument
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 localDataDir = shell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Ozon GMV Dashboard"
 pidPath = localDataDir & "\notifier.pid"
 installDir = fso.GetParentFolderName(WScript.ScriptFullName)
+firstArgument = ""
+If WScript.Arguments.Count > 0 Then
+  firstArgument = LCase(WScript.Arguments(0))
+End If
 
-If WScript.Arguments.Count > 0 And LCase(WScript.Arguments(0)) = "/open" Then
+If firstArgument = "/open" Then
   shell.Run "http://127.0.0.1:3001", 1, False
   WScript.Quit 0
 End If
 
-If WScript.Arguments.Count > 0 And LCase(WScript.Arguments(0)) = "/stop" Then
+If firstArgument = "/stop" Then
   If fso.FileExists(pidPath) Then
     Dim pidFile, processes, process
     Set pidFile = fso.OpenTextFile(pidPath, 1)
