@@ -155,8 +155,24 @@ if ($Phase -eq "prepare") {
       $maintenance = Join-Path $InstallDir "app\dist\server\maintenance.js"
       if (Test-Path $maintenance) {
         $env:DATA_DIR = $DataDir
-        $databaseBackup = & (Join-Path $InstallDir "runtime\node.exe") $maintenance backup-upgrade
-        if ($LASTEXITCODE -ne 0) { throw "Upgrade backup failed." }
+        $maintenanceOutput = $null
+        $maintenanceExitCode = 0
+        Push-Location (Join-Path $InstallDir "app")
+        try {
+          $maintenanceOutput = & (Join-Path $InstallDir "runtime\node.exe") $maintenance backup-upgrade 2>&1
+          $maintenanceExitCode = $LASTEXITCODE
+        } finally {
+          Pop-Location
+        }
+        if ($maintenanceExitCode -ne 0) {
+          $maintenanceDetail = ($maintenanceOutput | Out-String).Trim()
+          Write-InstallLog "Upgrade backup command failed: $maintenanceDetail"
+          throw "Upgrade backup failed."
+        }
+        $databaseBackup = ([string]($maintenanceOutput | Select-Object -Last 1)).Trim()
+        if (-not $databaseBackup -or -not (Test-Path $databaseBackup)) {
+          throw "Upgrade backup file was not created."
+        }
       }
       New-Item -ItemType Directory -Force -Path $RollbackRoot | Out-Null
       if (Test-Path $RollbackProgram) {

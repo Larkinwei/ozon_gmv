@@ -18,6 +18,26 @@ describe("Windows upgrade recovery scripts", () => {
     expect(installerDefinition).toContain("logs\\installer.log");
   });
 
+  it("runs upgrade maintenance from the installed app directory and preserves its error output", () => {
+    const serviceScript = installerFile("install-service.ps1");
+    const enterDirectoryIndex = serviceScript.indexOf('Push-Location (Join-Path $InstallDir "app")');
+    const maintenanceIndex = serviceScript.indexOf("$maintenanceOutput = &");
+    const leaveDirectoryIndex = serviceScript.indexOf("Pop-Location", maintenanceIndex);
+
+    expect(enterDirectoryIndex).toBeGreaterThan(-1);
+    expect(maintenanceIndex).toBeGreaterThan(enterDirectoryIndex);
+    expect(leaveDirectoryIndex).toBeGreaterThan(maintenanceIndex);
+    expect(serviceScript).toContain('Write-InstallLog "Upgrade backup command failed: $maintenanceDetail"');
+  });
+
+  it("tests a second in-place installation and verifies that an upgrade backup was created", () => {
+    const workflow = readFileSync(resolve(".github", "workflows", "windows-installer.yml"), "utf8");
+
+    expect(workflow).toContain('Install-OzonPackage "Fresh install"');
+    expect(workflow).toContain('Install-OzonPackage "In-place upgrade"');
+    expect(workflow).toContain('ozon-gmv-upgrade-*.db');
+  });
+
   it("keeps a manual data and program backup before the clean reinstall", () => {
     const repairScript = readFileSync(resolve("scripts", "repair-windows-upgrade.ps1"), "utf8");
     const backupIndex = repairScript.lastIndexOf("Backup-OzonData");

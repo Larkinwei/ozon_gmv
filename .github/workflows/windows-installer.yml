@@ -65,25 +65,36 @@ jobs:
         shell: powershell
         run: .\installer\windows\build-installer.ps1 -Version '${{ steps.version.outputs.version }}'
 
-      - name: Smoke-test silent installation
+      - name: Smoke-test fresh and in-place installation
         shell: powershell
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $installer = Join-Path $PWD "installer\windows\output\OzonGMV-Setup-$version.exe"
-          $process = Start-Process $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "Silent installation failed with exit code $($process.ExitCode)."
+
+          function Install-OzonPackage([string]$Label) {
+            $process = Start-Process $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "$Label failed with exit code $($process.ExitCode)."
+            }
+            $service = Get-CimInstance Win32_Service -Filter "Name='OzonGMVService'"
+            if (-not $service -or $service.State -ne "Running") {
+              throw "OzonGMVService is not running after $Label."
+            }
+            if ($service.PathName -notmatch "Ozon GMV Dashboard") {
+              throw "The service is not using the bundled runtime after $Label."
+            }
+            $ready = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3001/readyz" -TimeoutSec 10
+            if ($ready.StatusCode -ne 200) {
+              throw "Service readiness check failed after $Label."
+            }
           }
-          $service = Get-CimInstance Win32_Service -Filter "Name='OzonGMVService'"
-          if (-not $service -or $service.State -ne "Running") {
-            throw "OzonGMVService is not running after installation."
-          }
-          if ($service.PathName -notmatch "Ozon GMV Dashboard") {
-            throw "The service is not using the bundled runtime."
-          }
-          $ready = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:3001/readyz" -TimeoutSec 10
-          if ($ready.StatusCode -ne 200) {
-            throw "Installed service readiness check failed."
+
+          Install-OzonPackage "Fresh install"
+          Install-OzonPackage "In-place upgrade"
+
+          $upgradeBackup = Get-ChildItem "$env:ProgramData\Ozon GMV Dashboard\backups" -Filter "ozon-gmv-upgrade-*.db" | Select-Object -First 1
+          if (-not $upgradeBackup) {
+            throw "In-place upgrade did not create an upgrade database backup."
           }
 
       - name: Generate release notes and signed manifests

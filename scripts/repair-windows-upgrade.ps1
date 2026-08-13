@@ -102,7 +102,7 @@ if (Test-Path $InstallDir) {
 }
 
 Write-Host ""
-Write-Host "修复完成。现在请右键以管理员身份运行 OzonGMV-Setup-1.4.0.exe。" -ForegroundColor Green
+Write-Host "修复完成。现在请右键以管理员身份运行新版 Ozon GMV 安装器。" -ForegroundColor Green
 Write-Host "业务数据备份：$BackupDir"
 if (Test-Path $PreviousProgramDir) {
   Write-Host "旧程序备份：$PreviousProgramDir"

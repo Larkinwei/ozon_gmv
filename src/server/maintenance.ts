@@ -1,9 +1,12 @@
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { loadConfig } from "./config";
 import { closeDatabase, openDatabase } from "./db/database";
 import { runMigrations } from "./db/migrate";
 import { BackupService } from "./services/backup-service";
+
+const MIGRATIONS_DIR = fileURLToPath(new URL("../../migrations", import.meta.url));
 
 /** Runs service-safe maintenance commands used by the Windows installer. */
 async function main(): Promise<void> {
@@ -14,7 +17,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const database = openDatabase(join(config.DATA_DIR, "data"));
   try {
-    runMigrations(database);
+    runMigrations(database, MIGRATIONS_DIR);
     if (command === "checkpoint") {
       database.pragma("wal_checkpoint(TRUNCATE)");
       return;
