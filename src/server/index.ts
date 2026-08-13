@@ -56,7 +56,6 @@ categories.start();
 const discovery = new DiscoveryModule(config, database, {
   fetchImplementation: proxySettings.createFetch(),
 });
-discovery.start();
 const dependencies = { config, database, events, syncService, proxySettings, updates, selection, categories, discovery };
 const adminApp = await buildAdminApp(dependencies);
 const wallboardApp = await buildWallboardApp(dependencies);
@@ -67,6 +66,13 @@ backups.start();
 await adminApp.listen({ host: config.ADMIN_HOST, port: config.ADMIN_PORT });
 await wallboardApp.listen({ host: config.WALLBOARD_HOST, port: config.WALLBOARD_PORT });
 await updates.start();
+void discovery.start().then((refreshed) => {
+  if (refreshed) {
+    adminApp.log.info("Latest shared market snapshot loaded into SQLite");
+  }
+}).catch((error: unknown) => {
+  adminApp.log.warn({ err: error }, "Startup market snapshot refresh failed; retaining local cache");
+});
 adminApp.log.info(
   { adminPort: config.ADMIN_PORT, wallboardPort: config.WALLBOARD_PORT },
   "Ozon GMV local service is ready",

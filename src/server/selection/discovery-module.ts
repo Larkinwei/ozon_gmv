@@ -156,12 +156,18 @@ export class DiscoveryModule {
     ));
   }
 
-  /** Marks an interrupted task resumable after an application restart. */
-  public start(): void {
+  /** Restores interrupted jobs and hydrates read-only clients from the shared cloud snapshot. */
+  public async start(): Promise<boolean> {
     this.database.prepare(
       `UPDATE selection_discovery_jobs SET status = 'failed', error_message = ?, finished_at_ms = ?
        WHERE status = 'running'`,
     ).run("应用重启导致同步中断，已保留分页进度", Date.now());
+    const settings = this.viewSettings();
+    if (settings.collectorEnabled || !settings.cloudBaseUrl) {
+      return false;
+    }
+    await this.refreshCloud();
+    return true;
   }
 
   public async stop(): Promise<void> {

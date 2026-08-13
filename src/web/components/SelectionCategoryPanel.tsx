@@ -9,7 +9,7 @@ import {
   Search,
   ShieldAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type {
@@ -54,7 +54,6 @@ export function SelectionCategoryPanel(props: {
   onOpenCategory?: (category: { id: string; name: string; level1Name: string }, period: SelectionCategoryPeriod) => void;
 }): React.JSX.Element {
   const queryClient = useQueryClient();
-  const checkedCloud = useRef(false);
   const [periodDays, setPeriodDays] = useState<SelectionCategoryPeriod>(28);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<SelectionCategorySort>("gmv");
@@ -100,16 +99,6 @@ export function SelectionCategoryPanel(props: {
       queryClient.invalidateQueries({ queryKey: ["selection-discovery-sync"] }),
     ]);
   };
-  useEffect(() => {
-    const settings = settingsQuery.data;
-    if (checkedCloud.current || !settings?.cloudBaseUrl || settings.collectorEnabled) {
-      return;
-    }
-    checkedCloud.current = true;
-    void refreshSelectionDiscoveryFromCloud().then(invalidate).catch(() => {
-      // Offline clients intentionally retain the last verified SQLite snapshot.
-    });
-  }, [settingsQuery.data]);
   const totalPages = Math.max(1, Math.ceil((pageQuery.data?.total ?? 0) / 100));
   const chartData = useMemo(() => (pageQuery.data?.items ?? []).filter((item) => (
     item.gmvGrowth !== null && item.topFiveSellerShare !== null

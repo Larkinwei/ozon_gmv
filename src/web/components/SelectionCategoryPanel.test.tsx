@@ -57,7 +57,8 @@ describe("SelectionCategoryPanel", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(<QueryClientProvider client={queryClient}><SelectionCategoryPanel onNotice={vi.fn()} /></QueryClientProvider>);
 
-    await waitFor(() => expect(refreshCloud).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "近 28 天" })).toBeInTheDocument());
+    expect(refreshCloud).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "刷新云端数据" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /一键同步/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "近 28 天" })).toHaveAttribute("aria-pressed", "true");

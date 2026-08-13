@@ -61,6 +61,43 @@ async function waitForCompletion(module: DiscoveryModule): Promise<void> {
 }
 
 describe("discovery module", () => {
+  it("hydrates a fresh read-only client from the latest cloud snapshot on startup", async () => {
+    const context = createTestDatabase();
+    const snapshot: SelectionCategoryCloudSnapshot = {
+      schemaVersion: 1,
+      snapshotId: "a".repeat(64),
+      collectedAt: "2026-08-13T06:17:58.095Z",
+      periods: [7, 28],
+      rowCount: categoryMetrics.length,
+      metrics: categoryMetrics,
+      products,
+      queries,
+      categoryLinks,
+      discoveryCounts: {
+        categoryMetrics: categoryMetrics.length,
+        productRankings: products.length,
+        queryRankings: queries.length,
+        categoryLinks: categoryLinks.length,
+      },
+    };
+    const cloud: CategoryCloudPort = {
+      upload: async () => { throw new Error("not used"); },
+      downloadLatest: async () => snapshot,
+    };
+    const module = new DiscoveryModule(context.config, context.database, { cloudFactory: () => cloud });
+
+    try {
+      expect(module.listQueries({ page: 1, pageSize: 20, sort: "searchCount" }).total).toBe(0);
+      await expect(module.start()).resolves.toBe(true);
+      expect(module.listQueries({ page: 1, pageSize: 20, sort: "searchCount" })).toMatchObject({
+        total: 1,
+        snapshotId: snapshot.snapshotId,
+      });
+    } finally {
+      context.cleanup();
+    }
+  });
+
   it("atomically persists and publishes category, product and query rankings", async () => {
     const context = createTestDatabase();
     const uploads: SelectionCategoryCloudSnapshot[] = [];
