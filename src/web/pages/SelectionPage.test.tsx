@@ -6,7 +6,8 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { SelectionMarketProductPage } from "../../shared/contracts";
-import { MarketProductsPanel } from "./SelectionPage";
+import type { SelectionDiscoverySyncJob } from "../../shared/contracts";
+import { DiscoverySyncBanner, MarketProductsPanel } from "./SelectionPage";
 
 const emptyPage: SelectionMarketProductPage = {
   items: [],
@@ -115,5 +116,48 @@ describe("MarketProductsPanel", () => {
 
     expect(screen.getByText("Святой Источник Hair Shampoo")).toBeInTheDocument();
     expect(screen.queryByText("没有匹配的热销商品")).not.toBeInTheDocument();
+  });
+});
+
+const cloudSync: SelectionDiscoverySyncJob = {
+  id: "cloud-refresh:1",
+  source: "cloud",
+  status: "running",
+  stage: "publishing",
+  totalSteps: 1,
+  completedSteps: 0,
+  currentItem: "正在下载云端市场快照…",
+  stageProgress: {
+    categories: { completed: 0, total: 0 },
+    products: { completed: 0, total: 0 },
+    queries: { completed: 0, total: 0 },
+  },
+  error: null,
+  cloudPublished: false,
+  resumable: false,
+  startedAt: "2026-08-13T08:00:00.000Z",
+  finishedAt: null,
+};
+
+describe("DiscoverySyncBanner", () => {
+  it("identifies a cloud download and explains the automatic refresh", () => {
+    render(<DiscoverySyncBanner sync={cloudSync} retrying={false} onRetry={noOp} onOpenSources={noOp} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("正在同步云端市场数据");
+    expect(screen.getByText("完成后页面会自动刷新")).toBeInTheDocument();
+  });
+
+  it("offers a retry after a cloud refresh failure", () => {
+    const onRetry = vi.fn();
+    render(<DiscoverySyncBanner
+      sync={{ ...cloudSync, status: "failed", error: "云端连接超时", finishedAt: "2026-08-13T08:01:00.000Z" }}
+      retrying={false}
+      onRetry={onRetry}
+      onOpenSources={noOp}
+    />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("云端连接超时");
+    fireEvent.click(screen.getByRole("button", { name: "重新同步" }));
+    expect(onRetry).toHaveBeenCalledOnce();
   });
 });

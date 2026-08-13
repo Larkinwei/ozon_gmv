@@ -52,6 +52,24 @@ const categoryLinks: SelectionCategoryLink[] = [{
   productTypeIds: ["93950"], queryGroups: ["Красота и здоровье"], queryScope: "category_level_1",
 }];
 
+const cloudSnapshot: SelectionCategoryCloudSnapshot = {
+  schemaVersion: 1,
+  snapshotId: "a".repeat(64),
+  collectedAt: "2026-08-13T06:17:58.095Z",
+  periods: [7, 28],
+  rowCount: categoryMetrics.length,
+  metrics: categoryMetrics,
+  products,
+  queries,
+  categoryLinks,
+  discoveryCounts: {
+    categoryMetrics: categoryMetrics.length,
+    productRankings: products.length,
+    queryRankings: queries.length,
+    categoryLinks: categoryLinks.length,
+  },
+};
+
 async function waitForCompletion(module: DiscoveryModule): Promise<void> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (module.getSync().status !== "running") return;
@@ -63,26 +81,9 @@ async function waitForCompletion(module: DiscoveryModule): Promise<void> {
 describe("discovery module", () => {
   it("hydrates a fresh read-only client from the latest cloud snapshot on startup", async () => {
     const context = createTestDatabase();
-    const snapshot: SelectionCategoryCloudSnapshot = {
-      schemaVersion: 1,
-      snapshotId: "a".repeat(64),
-      collectedAt: "2026-08-13T06:17:58.095Z",
-      periods: [7, 28],
-      rowCount: categoryMetrics.length,
-      metrics: categoryMetrics,
-      products,
-      queries,
-      categoryLinks,
-      discoveryCounts: {
-        categoryMetrics: categoryMetrics.length,
-        productRankings: products.length,
-        queryRankings: queries.length,
-        categoryLinks: categoryLinks.length,
-      },
-    };
     const cloud: CategoryCloudPort = {
       upload: async () => { throw new Error("not used"); },
-      downloadLatest: async () => snapshot,
+      downloadLatest: async () => cloudSnapshot,
     };
     const module = new DiscoveryModule(context.config, context.database, { cloudFactory: () => cloud });
 
@@ -91,8 +92,34 @@ describe("discovery module", () => {
       await expect(module.start()).resolves.toBe(true);
       expect(module.listQueries({ page: 1, pageSize: 20, sort: "searchCount" })).toMatchObject({
         total: 1,
-        snapshotId: snapshot.snapshotId,
+        snapshotId: cloudSnapshot.snapshotId,
       });
+      expect(module.getSync()).toMatchObject({ source: "cloud", status: "completed", completedSteps: 1 });
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("reports cloud refresh progress while the shared snapshot is downloading", async () => {
+    const context = createTestDatabase();
+    let finishDownload: ((snapshot: SelectionCategoryCloudSnapshot) => void) | undefined;
+    const download = new Promise<SelectionCategoryCloudSnapshot>((resolve) => { finishDownload = resolve; });
+    const cloud: CategoryCloudPort = {
+      upload: async () => { throw new Error("not used"); },
+      downloadLatest: async () => download,
+    };
+    const module = new DiscoveryModule(context.config, context.database, { cloudFactory: () => cloud });
+
+    try {
+      const startup = module.start();
+      expect(module.getSync()).toMatchObject({
+        source: "cloud",
+        status: "running",
+        currentItem: "正在下载云端市场快照…",
+      });
+      finishDownload?.(cloudSnapshot);
+      await expect(startup).resolves.toBe(true);
+      expect(module.getSync()).toMatchObject({ source: "cloud", status: "completed", completedSteps: 1 });
     } finally {
       context.cleanup();
     }

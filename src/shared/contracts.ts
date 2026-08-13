@@ -615,6 +615,7 @@ export type SelectionDiscoveryStage = "categories" | "products" | "queries" | "p
 
 export interface SelectionDiscoverySyncJob {
   id: string | null;
+  source: "collector" | "cloud" | null;
   status: SelectionCategorySyncStatus;
   stage: SelectionDiscoveryStage | null;
   totalSteps: number;

@@ -10,12 +10,12 @@ import { SelectionCategoryPanel, SelectionCategorySourceCard } from "./Selection
 
 const { refreshCloud, startSync } = vi.hoisted(() => ({
   refreshCloud: vi.fn(async () => ({
-    id: null, status: "idle" as const, stage: null, totalSteps: 0, completedSteps: 0, currentItem: null,
+    id: null, source: null, status: "idle" as const, stage: null, totalSteps: 0, completedSteps: 0, currentItem: null,
     stageProgress: { categories: { completed: 0, total: 0 }, products: { completed: 0, total: 0 }, queries: { completed: 0, total: 0 } },
     error: null, cloudPublished: false, resumable: false, startedAt: null, finishedAt: null,
   })),
   startSync: vi.fn(async () => ({
-    id: "sync-1", status: "running" as const, stage: "categories" as const, totalSteps: 320, completedSteps: 0, currentItem: "正在读取一级类目",
+    id: "sync-1", source: "collector" as const, status: "running" as const, stage: "categories" as const, totalSteps: 320, completedSteps: 0, currentItem: "正在读取一级类目",
     stageProgress: { categories: { completed: 0, total: 62 }, products: { completed: 0, total: 57 }, queries: { completed: 0, total: 201 } },
     error: null, cloudPublished: false, resumable: false, startedAt: new Date().toISOString(), finishedAt: null,
   })),
@@ -25,7 +25,7 @@ vi.mock("../api", () => ({
   fetchSelectionCategories: vi.fn(async () => ({ items: [], facets: { categoryLevel1: [] }, page: 1, pageSize: 100, total: 0, snapshotId: null, collectedAt: null })),
   fetchSelectionCategoryOverview: vi.fn(async (periodDays: 7 | 28) => ({ snapshotId: null, collectedAt: null, source: null, periodDays, categoryCount: 0, totalGmv: { amount: "0.00", currency: "RUB" }, totalOrderedUnits: 0, summaries: [] })),
   fetchSelectionDiscoverySettings: vi.fn(async () => ({ collectorEnabled: false, opencliPath: "/usr/local/bin/opencli", cloudBaseUrl: "https://categories.example.com", hasUploadToken: false, estimatedDurationMinutes: [8, 15] })),
-  fetchSelectionDiscoverySync: vi.fn(async () => ({ id: null, status: "idle", stage: null, totalSteps: 0, completedSteps: 0, currentItem: null, stageProgress: { categories: { completed: 0, total: 0 }, products: { completed: 0, total: 0 }, queries: { completed: 0, total: 0 } }, error: null, cloudPublished: false, resumable: false, startedAt: null, finishedAt: null })),
+  fetchSelectionDiscoverySync: vi.fn(async () => ({ id: null, source: null, status: "idle", stage: null, totalSteps: 0, completedSteps: 0, currentItem: null, stageProgress: { categories: { completed: 0, total: 0 }, products: { completed: 0, total: 0 }, queries: { completed: 0, total: 0 } }, error: null, cloudPublished: false, resumable: false, startedAt: null, finishedAt: null })),
   refreshSelectionDiscoveryFromCloud: refreshCloud,
   startSelectionDiscoverySync: startSync,
   updateSelectionDiscoverySettings: vi.fn(),

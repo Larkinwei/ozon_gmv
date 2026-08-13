@@ -777,7 +777,7 @@ const demoSelectionCategoryLink = {
   productTypeIds: ["93950"], queryGroups: ["Красота и здоровье"], queryScope: "category_level_1" as const,
 };
 const demoSelectionDiscoverySync: SelectionDiscoverySyncJob = {
-  id: "demo-discovery-job", status: "completed", stage: "publishing", totalSteps: 320, completedSteps: 320,
+  id: "demo-discovery-job", source: "collector", status: "completed", stage: "publishing", totalSteps: 320, completedSteps: 320,
   currentItem: null, stageProgress: {
     categories: { completed: 62, total: 62 }, products: { completed: 57, total: 57 }, queries: { completed: 201, total: 201 },
   },

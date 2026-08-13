@@ -144,6 +144,8 @@ function categoryMetricForCollector(metric: SelectionCategoryCloudMetric): Selec
 export class DiscoveryModule {
   private readonly settings: SettingsRepository;
   private activeTask: Promise<void> | null = null;
+  private activeCloudTask: Promise<void> | null = null;
+  private cloudSync: SelectionDiscoverySyncJob | null = null;
 
   public constructor(
     private readonly config: AppConfig,
@@ -171,7 +173,10 @@ export class DiscoveryModule {
   }
 
   public async stop(): Promise<void> {
-    await this.activeTask?.catch(() => undefined);
+    await Promise.all([
+      this.activeTask?.catch(() => undefined),
+      this.activeCloudTask?.catch(() => undefined),
+    ]);
   }
 
   public viewSettings(): SelectionDiscoverySourceSettings {
@@ -194,18 +199,22 @@ export class DiscoveryModule {
   }
 
   public getSync(): SelectionDiscoverySyncJob {
+    if (this.cloudSync && (this.cloudSync.status === "running" || !this.viewSettings().collectorEnabled)) {
+      return this.cloudSync;
+    }
     const row = this.database.prepare(
       "SELECT * FROM selection_discovery_jobs ORDER BY created_at_ms DESC LIMIT 1",
     ).get() as DiscoveryJobRow | undefined;
     if (!row) {
       return {
-        id: null, status: "idle", stage: null, totalSteps: 0, completedSteps: 0, currentItem: null,
+        id: null, source: null, status: "idle", stage: null, totalSteps: 0, completedSteps: 0, currentItem: null,
         stageProgress: { categories: { completed: 0, total: 0 }, products: { completed: 0, total: 0 }, queries: { completed: 0, total: 0 } },
         error: null, cloudPublished: false, resumable: false, startedAt: null, finishedAt: null,
       };
     }
     return {
       id: row.id,
+      source: "collector",
       status: row.status,
       stage: row.stage,
       totalSteps: row.total_steps,
@@ -221,9 +230,10 @@ export class DiscoveryModule {
   }
 
   public startSync(): SelectionDiscoverySyncJob {
-    if (this.activeTask) throw new Error("Ozon 市场数据同步正在进行中");
+    if (this.activeTask || this.activeCloudTask) throw new Error("Ozon 市场数据同步正在进行中");
     const settings = this.viewSettings();
     if (!settings.collectorEnabled) throw new Error("当前设备是只读客户端，请在主采集机发起同步");
+    this.cloudSync = null;
     const previous = this.latestResumableJob();
     const jobId = randomUUID();
     this.database.prepare(
@@ -244,11 +254,59 @@ export class DiscoveryModule {
   }
 
   public async refreshCloud(): Promise<SelectionDiscoverySyncJob> {
+    if (this.activeTask) throw new Error("主采集机同步正在进行中");
+    if (this.activeCloudTask) {
+      await this.activeCloudTask;
+      return this.getSync();
+    }
     const settings = this.viewSettings();
     if (!settings.cloudBaseUrl) throw new Error("请先配置市场数据云端服务地址");
-    const snapshot = await this.cloud(settings.cloudBaseUrl).downloadLatest();
-    this.persistSnapshot(snapshot, "cloud");
-    return this.getSync();
+    const startedAt = Date.now();
+    this.cloudSync = {
+      id: `cloud-refresh:${startedAt}`,
+      source: "cloud",
+      status: "running",
+      stage: "publishing",
+      totalSteps: 1,
+      completedSteps: 0,
+      currentItem: "正在下载云端市场快照…",
+      stageProgress: {
+        categories: { completed: 0, total: 0 },
+        products: { completed: 0, total: 0 },
+        queries: { completed: 0, total: 0 },
+      },
+      error: null,
+      cloudPublished: false,
+      resumable: false,
+      startedAt: iso(startedAt),
+      finishedAt: null,
+    };
+    this.activeCloudTask = (async () => {
+      const snapshot = await this.cloud(settings.cloudBaseUrl!).downloadLatest();
+      this.persistSnapshot(snapshot, "cloud");
+    })();
+    try {
+      await this.activeCloudTask;
+      this.cloudSync = {
+        ...this.cloudSync,
+        status: "completed",
+        completedSteps: 1,
+        currentItem: null,
+        finishedAt: iso(Date.now()),
+      };
+      return this.getSync();
+    } catch (error) {
+      this.cloudSync = {
+        ...this.cloudSync,
+        status: "failed",
+        currentItem: null,
+        error: error instanceof Error ? error.message : "云端市场数据同步失败",
+        finishedAt: iso(Date.now()),
+      };
+      throw error;
+    } finally {
+      this.activeCloudTask = null;
+    }
   }
 
   public listProducts(query: ProductRankingQuery): SelectionMarketProductRankingPage {

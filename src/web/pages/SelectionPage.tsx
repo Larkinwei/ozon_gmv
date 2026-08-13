@@ -4,9 +4,11 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  CircleAlert,
   CircleDollarSign,
   ChartScatter,
   Clock3,
+  CloudDownload,
   Database,
   FileSpreadsheet,
   Filter,
@@ -14,6 +16,7 @@ import {
   ListChecks,
   PackageSearch,
   Plus,
+  RefreshCw,
   Search,
   Sparkles,
   Trash2,
@@ -29,6 +32,7 @@ import type {
   SelectionCandidateStatus,
   SelectionCandidateUpdateInput,
   SelectionImportResult,
+  SelectionDiscoverySyncJob,
   SelectionKeywordSort,
   SelectionMarketProductDetail,
   SelectionMarketProductListItem,
@@ -46,8 +50,10 @@ import {
   fetchSelectionMarketProducts,
   fetchSelectionOverview,
   fetchSelectionDiscoverySettings,
+  fetchSelectionDiscoverySync,
   fetchWordstatJobs,
   fetchWordstatSettings,
+  refreshSelectionDiscoveryFromCloud,
   testWordstatSettings,
   updateSelectionCandidate,
   updateWordstatSettings,
@@ -144,6 +150,7 @@ export default function SelectionPage(): React.JSX.Element {
   const [candidateStatus, setCandidateStatus] = useState<SelectionCandidateStatus | "all">("all");
   const [candidateSearch, setCandidateSearch] = useState("");
   const finishedJobsSignature = useRef("");
+  const finishedDiscoverySyncSignature = useRef("");
 
   const overviewQuery = useQuery({ queryKey: ["selection-overview"], queryFn: fetchSelectionOverview });
   const keywordsQuery = useQuery({
@@ -199,6 +206,23 @@ export default function SelectionPage(): React.JSX.Element {
     enabled: tab === "sources" || selectedKeywordIds.size > 0 || Boolean(selectedKeywordId),
     refetchInterval: (query) => query.state.data?.some((job) => job.status === "queued" || job.status === "running") ? 1_000 : false,
   });
+  const discoverySyncQuery = useQuery({
+    queryKey: ["selection-discovery-sync"],
+    queryFn: fetchSelectionDiscoverySync,
+    refetchInterval: (query) => query.state.data?.status === "running" ? 1_000 : false,
+  });
+
+  /** Refreshes every view backed by the shared market snapshot. */
+  async function invalidateDiscoveryData(): Promise<void> {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["selection-discovery-sync"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-categories"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-category-overview"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-product-rankings"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-market-queries"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-overview"] }),
+    ]);
+  }
 
   useEffect(() => {
     const signature = (jobsQuery.data ?? []).filter((job) => job.finishedAt).map((job) => `${job.id}:${job.finishedAt}`).join("|");
@@ -209,6 +233,30 @@ export default function SelectionPage(): React.JSX.Element {
       void queryClient.invalidateQueries({ queryKey: ["selection-overview"] });
     }
   }, [jobsQuery.data, queryClient]);
+
+  useEffect(() => {
+    const sync = discoverySyncQuery.data;
+    if (sync?.status !== "completed" || !sync.finishedAt) return;
+    const signature = `${sync.id}:${sync.finishedAt}`;
+    if (signature === finishedDiscoverySyncSignature.current) return;
+    finishedDiscoverySyncSignature.current = signature;
+    void invalidateDiscoveryData();
+  }, [discoverySyncQuery.data]);
+
+  const cloudRefreshMutation = useMutation({
+    mutationFn: refreshSelectionDiscoveryFromCloud,
+    onMutate: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["selection-discovery-sync"] });
+    },
+    onSuccess: async () => {
+      setNotice({ tone: "success", text: "云端市场数据同步完成。" });
+      await invalidateDiscoveryData();
+    },
+    onError: (error) => setNotice({ tone: "error", text: error.message }),
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["selection-discovery-sync"] });
+    },
+  });
 
   const wordstatMutation = useMutation({
     mutationFn: ({ ids, force }: { ids: string[]; force: boolean }) => createWordstatJob(ids, force),
@@ -346,6 +394,12 @@ export default function SelectionPage(): React.JSX.Element {
           <button className="primary-button" type="button" onClick={() => setShowImport(true)}><FileSpreadsheet size={18} />导入 Ozon 报表</button>
         </div>
         {notice && <div className={`notice notice--${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.tone === "success" && <Check size={17} />}{notice.text}</div>}
+        <DiscoverySyncBanner
+          sync={discoverySyncQuery.data}
+          retrying={cloudRefreshMutation.isPending}
+          onRetry={() => cloudRefreshMutation.mutate()}
+          onOpenSources={() => selectTab("sources")}
+        />
         <OverviewCards overview={overviewQuery.data} loading={overviewQuery.isLoading} />
         <div className="selection-workspace">
           <div className="selection-tabs" role="tablist" aria-label="选品分析模块">
@@ -466,6 +520,24 @@ export default function SelectionPage(): React.JSX.Element {
       )}
     </div>
   );
+}
+
+interface DiscoverySyncBannerProps {
+  sync: SelectionDiscoverySyncJob | undefined;
+  retrying: boolean;
+  onRetry: () => void;
+  onOpenSources: () => void;
+}
+
+/** Makes background market synchronization visible from every selection tab. */
+export function DiscoverySyncBanner(props: DiscoverySyncBannerProps): React.JSX.Element | null {
+  const { sync } = props;
+  if (!sync || sync.status === "idle" || sync.status === "completed") return null;
+  const isCloud = sync.source === "cloud";
+  if (sync.status === "running") {
+    return <div className="discovery-sync-banner" role="status" aria-live="polite"><RefreshCw className="is-spinning" size={19} /><div><strong>{isCloud ? "正在同步云端市场数据" : "正在采集 Ozon 市场数据"}</strong><span>{sync.currentItem ?? "数据准备中，请稍候…"}</span></div><small>{isCloud ? "完成后页面会自动刷新" : `${sync.completedSteps} / ${sync.totalSteps || "—"}`}</small></div>;
+  }
+  return <div className="discovery-sync-banner discovery-sync-banner--error" role="alert"><CircleAlert size={19} /><div><strong>{isCloud ? "云端市场数据同步失败" : "Ozon 市场数据同步未完成"}</strong><span>{sync.error ?? "请检查网络和数据源设置后重试。"}</span></div><button className="secondary-button compact-button" type="button" disabled={props.retrying} onClick={isCloud ? props.onRetry : props.onOpenSources}>{isCloud ? <CloudDownload size={16} /> : <Database size={16} />}{props.retrying ? "正在重试…" : isCloud ? "重新同步" : "查看数据源"}</button></div>;
 }
 
 function OverviewCards(props: { overview: Awaited<ReturnType<typeof fetchSelectionOverview>> | undefined; loading: boolean }): React.JSX.Element {
