@@ -24,6 +24,31 @@ const metricSchema = z.object({
   rating: z.number().nullable(),
   maximumRating: z.number().nullable(),
 });
+const productRankingSchema = z.object({
+  ozonProductId: z.string().min(1),
+  name: z.string().min(1),
+  scope: z.enum(["global", "category"]),
+  scopeCategoryId: z.string().nullable(),
+  periodDays: z.union([z.literal(7), z.literal(28)]),
+  rank: z.number().int().positive(),
+  orderedAmountMinor: z.string().regex(/^\d+$/),
+}).passthrough();
+const queryRankingSchema = z.object({
+  phrase: z.string().min(1),
+  normalizedPhrase: z.string().min(1),
+  scope: z.enum(["global", "group"]),
+  groupName: z.string().nullable(),
+  periodDays: z.literal(7),
+  rank: z.number().int().positive(),
+  searchCount: z.number().int().nonnegative(),
+}).passthrough();
+const categoryLinkSchema = z.object({
+  categoryId: z.string().min(1),
+  categoryLevel1Id: z.string().min(1),
+  productTypeIds: z.array(z.string()),
+  queryGroups: z.array(z.string()),
+  queryScope: z.enum(["category_level_1", "unavailable"]),
+}).passthrough();
 export const snapshotSchema = z.object({
   schemaVersion: z.literal(1),
   snapshotId: z.string().regex(/^[a-f0-9]{64}$/),
@@ -31,6 +56,15 @@ export const snapshotSchema = z.object({
   periods: z.tuple([z.literal(7), z.literal(28)]),
   rowCount: z.number().int().positive(),
   metrics: z.array(metricSchema).min(1),
+  products: z.array(productRankingSchema).optional(),
+  queries: z.array(queryRankingSchema).optional(),
+  categoryLinks: z.array(categoryLinkSchema).optional(),
+  discoveryCounts: z.object({
+    categoryMetrics: z.number().int().nonnegative(),
+    productRankings: z.number().int().nonnegative(),
+    queryRankings: z.number().int().nonnegative(),
+    categoryLinks: z.number().int().nonnegative(),
+  }).optional(),
 }).superRefine((snapshot, context) => {
   if (snapshot.rowCount !== snapshot.metrics.length) {
     context.addIssue({ code: "custom", message: "rowCount 与 metrics 数量不一致" });
@@ -38,6 +72,14 @@ export const snapshotSchema = z.object({
   const periods = new Set(snapshot.metrics.map((metric) => metric.periodDays));
   if (!periods.has(7) || !periods.has(28)) {
     context.addIssue({ code: "custom", message: "快照必须同时包含 7 天和 28 天数据" });
+  }
+  if (snapshot.discoveryCounts) {
+    if (snapshot.discoveryCounts.categoryMetrics !== snapshot.metrics.length
+      || snapshot.discoveryCounts.productRankings !== (snapshot.products?.length ?? 0)
+      || snapshot.discoveryCounts.queryRankings !== (snapshot.queries?.length ?? 0)
+      || snapshot.discoveryCounts.categoryLinks !== (snapshot.categoryLinks?.length ?? 0)) {
+      context.addIssue({ code: "custom", message: "discoveryCounts 与快照数据数量不一致" });
+    }
   }
   const expectedId = snapshotIdentity(snapshot);
   if (snapshot.snapshotId !== expectedId) {
@@ -59,11 +101,14 @@ function canonicalJson(value: unknown): string {
 }
 
 /** Produces the immutable identifier used by collectors and the cloud validator. */
-export function snapshotIdentity(snapshot: Pick<CategorySnapshot, "collectedAt" | "periods" | "metrics">): string {
+export function snapshotIdentity(snapshot: Pick<CategorySnapshot, "collectedAt" | "periods" | "metrics" | "products" | "queries" | "categoryLinks">): string {
   return createHash("sha256").update(canonicalJson({
     collectedAt: snapshot.collectedAt,
     periods: snapshot.periods,
     metrics: snapshot.metrics,
+    ...(snapshot.products ? { products: snapshot.products } : {}),
+    ...(snapshot.queries ? { queries: snapshot.queries } : {}),
+    ...(snapshot.categoryLinks ? { categoryLinks: snapshot.categoryLinks } : {}),
   })).digest("hex");
 }
 
@@ -80,6 +125,20 @@ export interface SnapshotManifest extends Omit<StoredPointer, "objectName"> {
   downloadUrl: string;
   expiresAt: string;
 }
+
+export interface CompressedSnapshotMetadata {
+  snapshotId: string;
+  collectedAt: string;
+  rowCount: number;
+  sha256: string;
+}
+
+const compressedSnapshotMetadataSchema = z.object({
+  snapshotId: z.string().regex(/^[a-f0-9]{64}$/),
+  collectedAt: z.string().datetime(),
+  rowCount: z.number().int().positive(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
 
 export interface SnapshotStoragePort {
   exists: (objectName: string) => Promise<boolean>;
@@ -180,16 +239,41 @@ export class SnapshotService {
     const snapshot = snapshotSchema.parse(input);
     const compressed = gzipSync(Buffer.from(JSON.stringify(snapshot)), { level: 9 });
     const sha256 = createHash("sha256").update(compressed).digest("hex");
-    const objectName = `category-snapshots/v1/${snapshot.snapshotId}.json.gz`;
-    if (!await this.storage.exists(objectName)) {
-      await this.storage.putImmutable(objectName, compressed, sha256);
-    }
-    const pointer: StoredPointer = {
-      schemaVersion: 1,
+    return this.storeCompressed(compressed, {
       snapshotId: snapshot.snapshotId,
       collectedAt: snapshot.collectedAt,
       rowCount: snapshot.rowCount,
       sha256,
+    });
+  }
+
+  /** Stores a collector-validated gzip body without expanding the full snapshot in cloud memory. */
+  public async publishCompressed(
+    compressed: Buffer,
+    inputMetadata: CompressedSnapshotMetadata,
+  ): Promise<SnapshotManifest> {
+    const metadata = compressedSnapshotMetadataSchema.parse(inputMetadata);
+    const actualSha256 = createHash("sha256").update(compressed).digest("hex");
+    if (actualSha256 !== metadata.sha256) {
+      throw new Error("压缩快照 SHA-256 校验失败");
+    }
+    return this.storeCompressed(compressed, metadata);
+  }
+
+  private async storeCompressed(
+    compressed: Buffer,
+    metadata: CompressedSnapshotMetadata,
+  ): Promise<SnapshotManifest> {
+    const objectName = `category-snapshots/v1/${metadata.snapshotId}.json.gz`;
+    if (!await this.storage.exists(objectName)) {
+      await this.storage.putImmutable(objectName, compressed, metadata.sha256);
+    }
+    const pointer: StoredPointer = {
+      schemaVersion: 1,
+      snapshotId: metadata.snapshotId,
+      collectedAt: metadata.collectedAt,
+      rowCount: metadata.rowCount,
+      sha256: metadata.sha256,
       objectName,
     };
     const current = await this.storage.readPointer();

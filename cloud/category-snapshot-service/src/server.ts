@@ -1,10 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-
 import { ZodError } from "zod";
 
 import { OssSnapshotStorage, SnapshotService } from "./snapshot-service.js";
 
-const MAX_BODY_BYTES = 15 * 1024 * 1024;
+const MAX_COMPRESSED_BODY_BYTES = 20 * 1024 * 1024;
 const environment = process.env;
 for (const key of ["OSS_REGION", "OSS_BUCKET", "CATEGORY_UPLOAD_TOKEN"]) {
   if (!environment[key]) {
@@ -40,18 +39,26 @@ function isRateLimited(request: IncomingMessage): boolean {
   return current.count > 120;
 }
 
-async function readBody(request: IncomingMessage): Promise<unknown> {
+async function readCompressedBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) {
-      throw new Error("请求体超过 15 MB");
+    if (size > MAX_COMPRESSED_BODY_BYTES) {
+      throw new Error("压缩请求体超过 20 MB");
     }
     chunks.push(buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return Buffer.concat(chunks);
+}
+
+function requiredHeader(request: IncomingMessage, name: string): string {
+  const value = request.headers[name];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`缺少请求头 ${name}`);
+  }
+  return value;
 }
 
 const server = createServer(async (request, response) => {
@@ -66,7 +73,17 @@ const server = createServer(async (request, response) => {
         json(response, 401, { error: "UNAUTHORIZED", message: "上传密钥不正确" });
         return;
       }
-      json(response, 201, await service.publish(await readBody(request)), { "Cache-Control": "no-store" });
+      if (request.headers["content-encoding"] !== "gzip") {
+        json(response, 415, { error: "GZIP_REQUIRED", message: "快照必须使用 gzip 上传" });
+        return;
+      }
+      const compressed = await readCompressedBody(request);
+      json(response, 201, await service.publishCompressed(compressed, {
+        snapshotId: requiredHeader(request, "x-ozon-snapshot-id"),
+        collectedAt: requiredHeader(request, "x-ozon-collected-at"),
+        rowCount: Number(requiredHeader(request, "x-ozon-row-count")),
+        sha256: requiredHeader(request, "x-ozon-snapshot-sha256"),
+      }), { "Cache-Control": "no-store" });
       return;
     }
     if (request.method === "GET" && url.pathname === "/v1/category-snapshots/latest") {

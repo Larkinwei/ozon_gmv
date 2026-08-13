@@ -14,6 +14,7 @@ import { SyncCheckpointsRepository } from "./db/sync-checkpoints-repository";
 import { DashboardEventBus } from "./realtime/event-bus";
 import { SelectionModule } from "./selection/selection-module";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
+import { DiscoveryModule } from "./selection/discovery-module";
 import { WordstatClient } from "./selection/wordstat-client";
 import { BackupService } from "./services/backup-service";
 import { ProxySettingsService } from "./services/proxy-settings-service";
@@ -52,7 +53,11 @@ const categories = new CategoryAnalysisModule(config, database, {
   fetchImplementation: proxySettings.createFetch(),
 });
 categories.start();
-const dependencies = { config, database, events, syncService, proxySettings, updates, selection, categories };
+const discovery = new DiscoveryModule(config, database, {
+  fetchImplementation: proxySettings.createFetch(),
+});
+discovery.start();
+const dependencies = { config, database, events, syncService, proxySettings, updates, selection, categories, discovery };
 const adminApp = await buildAdminApp(dependencies);
 const wallboardApp = await buildWallboardApp(dependencies);
 const scheduler = startScheduler(syncService);
@@ -84,6 +89,7 @@ async function shutdown(signal: string): Promise<void> {
   updates.stop();
   await selection.stop();
   await categories.stop();
+  await discovery.stop();
   await Promise.all([adminApp.close(), wallboardApp.close()]);
   closeDatabase(database);
 }

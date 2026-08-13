@@ -18,6 +18,9 @@ import type {
   SelectionCategorySourceSettingsInput,
   SelectionCategorySourceSettingsView,
   SelectionCategorySyncView,
+  SelectionDiscoverySourceSettings,
+  SelectionDiscoverySourceSettingsInput,
+  SelectionDiscoverySyncJob,
   SelectionImportMapping,
   SelectionImportPreview,
   SelectionImportResult,
@@ -28,6 +31,12 @@ import type {
   SelectionMarketProductDetail,
   SelectionMarketProductPage,
   SelectionMarketProductSort,
+  SelectionMarketProductRankingDetail,
+  SelectionMarketProductRankingPage,
+  SelectionMarketQueryDetail,
+  SelectionMarketQueryPage,
+  SelectionMarketQuerySort,
+  SelectionMarketRankingSort,
   SelectionOverview,
   SessionView,
   StoreCreateInput,
@@ -571,6 +580,120 @@ export async function updateSelectionCategorySettings(
   return apiFetch("/api/selection/sources/categories", { method: "PUT", body: JSON.stringify(input) });
 }
 
+export interface SelectionProductRankingFilters {
+  page: number;
+  pageSize: number;
+  periodDays: SelectionCategoryPeriod;
+  sort: SelectionMarketRankingSort;
+  search?: string | undefined;
+  categoryId?: string | undefined;
+  minimumPrice?: number | undefined;
+  maximumPrice?: number | undefined;
+}
+
+export async function fetchSelectionProductRankings(
+  filters: SelectionProductRankingFilters,
+): Promise<SelectionMarketProductRankingPage> {
+  if (DEMO_MODE) {
+    const items = demoSelectionProductRankings.filter((item) => (
+      (!filters.search || `${item.name} ${item.brand} ${item.seller} ${item.categoryLevel1} ${item.categoryLevel3}`.toLocaleLowerCase("ru-RU").includes(filters.search.toLocaleLowerCase("ru-RU")))
+      && (!filters.categoryId || item.scopeCategoryId === filters.categoryId)
+    ));
+    return {
+      items, facets: demoSelectionMarketFacets, page: 1, pageSize: filters.pageSize, total: items.length,
+      periodDays: filters.periodDays, scope: filters.categoryId ? "category" : "global",
+      categoryId: filters.categoryId ?? null, snapshotId: "demo-discovery-snapshot", collectedAt: "2026-08-12T00:00:00.000Z",
+    };
+  }
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  });
+  return apiFetch(`/api/selection/rankings/products?${params.toString()}`);
+}
+
+export async function fetchSelectionProductRanking(id: string): Promise<SelectionMarketProductRankingDetail> {
+  if (DEMO_MODE) {
+    const product = demoSelectionProductRankingDetails.find((item) => item.id === id);
+    if (!product) throw new Error("热销商品不存在");
+    return product;
+  }
+  return apiFetch(`/api/selection/rankings/products/${encodeURIComponent(id)}`);
+}
+
+export interface SelectionMarketQueryFilters {
+  page: number;
+  pageSize: number;
+  sort: SelectionMarketQuerySort;
+  search?: string | undefined;
+  groupName?: string | undefined;
+  categoryId?: string | undefined;
+  minimumSearchCount?: number | undefined;
+  minimumCartRate?: number | undefined;
+  minimumOrderRate?: number | undefined;
+  maximumCompetition?: number | undefined;
+}
+
+export async function fetchSelectionMarketQueries(
+  filters: SelectionMarketQueryFilters,
+): Promise<SelectionMarketQueryPage> {
+  if (DEMO_MODE) {
+    const items = demoSelectionMarketQueries.filter((item) => (
+      (!filters.search || item.phrase.toLocaleLowerCase("ru-RU").includes(filters.search.toLocaleLowerCase("ru-RU")))
+      && (!filters.groupName || item.groupName === filters.groupName)
+    ));
+    return {
+      items, groups: ["Красота и здоровье"], page: 1, pageSize: filters.pageSize, total: items.length,
+      periodDays: 7, scope: filters.categoryId || filters.groupName ? "group" : "global",
+      categoryId: filters.categoryId ?? null,
+      categoryLink: filters.categoryId ? demoSelectionCategoryLink : null,
+      snapshotId: "demo-discovery-snapshot", collectedAt: "2026-08-12T00:00:00.000Z",
+    };
+  }
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  });
+  return apiFetch(`/api/selection/rankings/queries?${params.toString()}`);
+}
+
+export async function fetchSelectionMarketQuery(id: string): Promise<SelectionMarketQueryDetail> {
+  if (DEMO_MODE) {
+    const query = demoSelectionMarketQueries.find((item) => item.id === id);
+    if (!query) throw new Error("热搜词不存在");
+    return { ...query, wordstat: null };
+  }
+  return apiFetch(`/api/selection/rankings/queries/${encodeURIComponent(id)}`);
+}
+
+export async function fetchSelectionDiscoverySync(): Promise<SelectionDiscoverySyncJob> {
+  if (DEMO_MODE) return demoSelectionDiscoverySync;
+  return apiFetch("/api/selection/discovery/sync");
+}
+
+export async function startSelectionDiscoverySync(): Promise<SelectionDiscoverySyncJob> {
+  if (DEMO_MODE) return demoSelectionDiscoverySync;
+  return apiFetch("/api/selection/discovery/sync", { method: "POST" });
+}
+
+export async function refreshSelectionDiscoveryFromCloud(): Promise<SelectionDiscoverySyncJob> {
+  if (DEMO_MODE) return demoSelectionDiscoverySync;
+  return apiFetch("/api/selection/discovery/cloud-refresh", { method: "POST" });
+}
+
+export async function fetchSelectionDiscoverySettings(): Promise<SelectionDiscoverySourceSettings> {
+  if (DEMO_MODE) {
+    return { collectorEnabled: false, opencliPath: "/usr/local/bin/opencli", cloudBaseUrl: "https://categories.example.com", hasUploadToken: false, estimatedDurationMinutes: [8, 15] };
+  }
+  return apiFetch("/api/selection/sources/discovery");
+}
+
+export async function updateSelectionDiscoverySettings(
+  input: SelectionDiscoverySourceSettingsInput,
+): Promise<SelectionDiscoverySourceSettings> {
+  return apiFetch("/api/selection/sources/discovery", { method: "PUT", body: JSON.stringify(input) });
+}
+
 function demoSelectionCategoryPage(periodDays: SelectionCategoryPeriod): SelectionCategoryPage {
   const categories = [
     ["93055", "裤子", "15621031", "服装", 5_229_481_281, 0.23, 1_776_836, 2943, 15_262, 0.807, 0.076],
@@ -632,6 +755,35 @@ const demoSelectionMarketProductDetails: SelectionMarketProductDetail[] = demoSe
   };
   return { ...snapshot, history: [snapshot] };
 });
+const demoSelectionProductRankings: SelectionMarketProductRankingPage["items"] = demoSelectionMarketProducts.map((product) => ({
+  ...product, photoUrl: null, rank: 1, scope: "global", scopeCategoryId: null, stock: 179251,
+}));
+const demoSelectionProductRankingDetails: SelectionMarketProductRankingDetail[] = demoSelectionProductRankings.map((product) => ({
+  ...product, minimumPrice: { amount: "999.00", currency: "RUB" }, purchaseRate: 0.911,
+  stock: 179251, fboStock: 170000, fbsStock: 9251, fulfillmentScheme: "FBO", volumeLiters: 6.5,
+  impressions: 4820000, searchViews: 1200000, cardViews: 840000, searchToCartRate: 0.132,
+  cardToCartRate: 0.168, promotionDiscountRate: 0.12, promotedOrderShare: 0.64,
+  promotionDays: 24, advertisedDays: 27, advertisingCostShare: 0.083, productCardCreatedDate: "2024-09-10",
+}));
+const demoSelectionMarketQueries: SelectionMarketQueryPage["items"] = [{
+  id: "demo-keyword-1", phrase: "органайзер для кухни", rank: 1, scope: "global", groupName: null,
+  searchCount: 12400, searchesWithCart: 2306, cartRate: 0.186, orderedUnits: 893, orderRate: 0.072,
+  orderedAmount: { amount: "1517187.00", currency: "RUB" }, averagePrice: { amount: "1699.00", currency: "RUB" },
+  productViews: 41600, competingSellers: 318, noInteractionCount: 2108, noInteractionRate: 0.17,
+  noResultCount: 62, noResultRate: 0.005, averageProductCount: 186, wordstatStatus: "ready",
+}];
+const demoSelectionCategoryLink = {
+  categoryId: "93950", categoryName: "洗发水", categoryLevel1Id: "17027489", categoryLevel1Name: "美容和卫生",
+  productTypeIds: ["93950"], queryGroups: ["Красота и здоровье"], queryScope: "category_level_1" as const,
+};
+const demoSelectionDiscoverySync: SelectionDiscoverySyncJob = {
+  id: "demo-discovery-job", status: "completed", stage: "publishing", totalSteps: 320, completedSteps: 320,
+  currentItem: null, stageProgress: {
+    categories: { completed: 62, total: 62 }, products: { completed: 57, total: 57 }, queries: { completed: 201, total: 201 },
+  },
+  error: null, cloudPublished: true, resumable: false,
+  startedAt: "2026-08-12T00:00:00.000Z", finishedAt: "2026-08-12T00:31:00.000Z",
+};
 const demoSelectionImports: SelectionImportView[] = [{
   id: "demo-import-1", kind: "keyword", fileName: "ozon-popular-queries.xlsx", snapshotDate: "2026-08-10",
   sheetName: "热门查询", reportPeriodDays: null, validRows: 120, skippedRows: 2, createdAt: new Date().toISOString(),

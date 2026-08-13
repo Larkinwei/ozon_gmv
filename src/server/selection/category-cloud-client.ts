@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import { z } from "zod";
 
@@ -40,7 +40,7 @@ export interface CategoryCloudPort {
   downloadLatest: () => Promise<SelectionCategoryCloudSnapshot>;
 }
 
-/** Transfers only normalized category metrics to the category snapshot service. */
+/** Transfers normalized categories, bestseller rankings and market queries as one atomic snapshot. */
 export class CategoryCloudClient implements CategoryCloudPort {
   public constructor(
     private readonly baseUrl: string,
@@ -51,14 +51,26 @@ export class CategoryCloudClient implements CategoryCloudPort {
     snapshot: SelectionCategoryCloudSnapshot,
     token: string,
   ): Promise<SelectionCategoryCloudManifest> {
+    const compressed = gzipSync(Buffer.from(JSON.stringify(snapshot)), { level: 9 });
+    const sha256 = createHash("sha256").update(compressed).digest("hex");
     const response = await this.fetchImplementation(`${this.baseUrl}/v1/category-snapshots`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(snapshot),
-      signal: AbortSignal.timeout(30_000),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/gzip",
+        "Content-Encoding": "gzip",
+        "X-Ozon-Snapshot-Id": snapshot.snapshotId,
+        "X-Ozon-Collected-At": snapshot.collectedAt,
+        "X-Ozon-Row-Count": String(snapshot.rowCount),
+        "X-Ozon-Snapshot-Sha256": sha256,
+      },
+      body: compressed,
+      signal: AbortSignal.timeout(120_000),
     });
     if (!response.ok) {
-      throw new Error(`云端快照上传失败（${response.status}）`);
+      const detail = await response.json().catch(() => null) as { message?: string } | null;
+      const message = detail?.message ? `：${detail.message}` : "";
+      throw new Error(`云端快照上传失败（${response.status}）${message}`);
     }
     return manifestSchema.parse(await response.json());
   }
@@ -84,6 +96,8 @@ export class CategoryCloudClient implements CategoryCloudPort {
     if (digest !== manifest.sha256) {
       throw new Error("云端类目快照校验失败");
     }
-    return snapshotSchema.parse(JSON.parse(gunzipSync(compressed).toString("utf8"))) as SelectionCategoryCloudSnapshot;
+    const snapshot = JSON.parse(gunzipSync(compressed).toString("utf8")) as SelectionCategoryCloudSnapshot;
+    snapshotSchema.parse(snapshot);
+    return snapshot;
   }
 }

@@ -104,12 +104,16 @@ function escape_sed_replacement() {
 
 function render_plist() {
   local node_path="$1"
+  # OpenCLI uses `#!/usr/bin/env node`, so launchd must receive Node's directory explicitly.
+  local service_path
+  service_path="$(dirname "$node_path"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   local temporary_plist="$PLIST_PATH.tmp"
   mkdir -p "$(dirname "$PLIST_PATH")" "$LOG_DIR"
   sed \
     -e "s|__NODE_BIN__|$(escape_sed_replacement "$node_path")|g" \
     -e "s|__PROJECT_DIR__|$(escape_sed_replacement "$PROJECT_DIR")|g" \
     -e "s|__DATA_DIR__|$(escape_sed_replacement "$DATA_DIR")|g" \
+    -e "s|__SERVICE_PATH__|$(escape_sed_replacement "$service_path")|g" \
     -e "s|__STDOUT_PATH__|$(escape_sed_replacement "$LOG_DIR/launchd.stdout.log")|g" \
     -e "s|__STDERR_PATH__|$(escape_sed_replacement "$LOG_DIR/launchd.stderr.log")|g" \
     "$PLIST_TEMPLATE" > "$temporary_plist"
@@ -173,7 +177,7 @@ function wait_until_ready() {
   local attempt
   # launchd may throttle a recently restarted KeepAlive job for slightly over 30 seconds.
   for attempt in $(seq 1 60); do
-    if curl --silent --fail --max-time 2 "$ADMIN_READY_URL" >/dev/null; then
+    if curl --silent --fail --max-time 5 "$ADMIN_READY_URL" >/dev/null; then
       echo "Ozon GMV Dashboard is ready at http://127.0.0.1:3001"
       return 0
     fi
@@ -219,7 +223,7 @@ function print_status() {
   else
     echo "Notification agent: not loaded" >&2
   fi
-  if curl --silent --fail --max-time 2 "$ADMIN_READY_URL" >/dev/null; then
+  if curl --silent --fail --max-time 5 "$ADMIN_READY_URL" >/dev/null; then
     echo "Health: ready"
     echo "Dashboard: http://127.0.0.1:3001"
   else

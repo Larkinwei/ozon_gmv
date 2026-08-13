@@ -23,6 +23,211 @@
   color: var(--text);
 }
 
+/* Unified Ozon discovery rankings retain the command-center density and focus states. */
+.discovery-source-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 18px 0;
+  background: #0e1628;
+}
+
+.discovery-source-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #081123;
+}
+
+.discovery-source-switch button,
+.category-context-bar nav button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  color: #8fa1bd;
+  background: transparent;
+  cursor: pointer;
+}
+
+.discovery-source-switch button.is-active,
+.category-context-bar nav button.is-active {
+  color: #f8fafc;
+  background: #1d4ed8;
+}
+
+.discovery-ranking-panel {
+  padding: 16px 18px 22px;
+  background: #0e1628;
+}
+
+.category-context-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(65, 215, 231, .32);
+  border-radius: 10px;
+  background: rgba(8, 47, 73, .34);
+}
+
+.category-context-bar > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #8fa1bd;
+}
+
+.category-context-bar strong { color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.category-context-bar i { color: #475569; font-style: normal; }
+.category-context-bar nav { display: flex; gap: 4px; }
+
+.discovery-period-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  color: #8fa1bd;
+  font-size: 13px;
+}
+
+.discovery-period-row > div:not(.period-switch) { display: flex; flex-direction: column; gap: 3px; }
+.discovery-period-row strong { color: #f8fafc; font-size: 15px; }
+.discovery-period-row small { color: #8fa1bd; }
+.discovery-toolbar { margin-bottom: 14px; }
+.discovery-ranking-panel .market-product-toolbar {
+  grid-template-columns: minmax(300px, 1.15fr) minmax(360px, 1.25fr) minmax(220px, .8fr);
+}
+.discovery-ranking-panel .market-product-toolbar .selection-filter-group,
+.discovery-ranking-panel .market-product-toolbar > .selection-sort:last-child { grid-column: auto; }
+.discovery-product-table { min-width: 1380px; }
+.discovery-query-table { min-width: 1540px; }
+.discovery-product-table em,
+.discovery-query-table em { color: #41d7e7; font-style: normal; font-variant-numeric: tabular-nums; }
+
+.discovery-product-table th:first-child,
+.discovery-product-table td:first-child {
+  width: 64px;
+  min-width: 64px;
+  padding: 14px 8px 14px 18px;
+}
+
+.discovery-product-table th:nth-child(2),
+.discovery-product-table td:nth-child(2) { width: 310px; min-width: 310px; }
+.discovery-product-table th:nth-child(3),
+.discovery-product-table td:nth-child(3) { width: 180px; min-width: 180px; }
+.discovery-product-table th:nth-child(4),
+.discovery-product-table td:nth-child(4) { width: 170px; min-width: 170px; }
+
+.discovery-query-table th:nth-child(2),
+.discovery-query-table td:nth-child(2) { width: 62px; min-width: 62px; }
+.discovery-query-table th:nth-child(3),
+.discovery-query-table td:nth-child(3) { width: 250px; min-width: 250px; }
+.discovery-query-table th:nth-child(7),
+.discovery-query-table td:nth-child(7) { width: 180px; min-width: 180px; }
+.discovery-query-table th:nth-child(8),
+.discovery-query-table td:nth-child(8),
+.discovery-query-table th:nth-child(9),
+.discovery-query-table td:nth-child(9) { width: 140px; min-width: 140px; }
+
+.discovery-rank {
+  color: #41d7e7;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.discovery-query-phrase strong,
+.discovery-query-phrase small,
+.discovery-metric-pair strong,
+.discovery-metric-pair small {
+  display: block;
+}
+
+.discovery-query-phrase strong {
+  color: #f1f5f9;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.discovery-query-phrase small,
+.discovery-metric-pair small {
+  margin-top: 5px;
+  color: #71829d;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.discovery-metric-pair strong {
+  color: #e2e8f0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.category-link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  color: #f8fafc;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.category-link:hover strong { color: #41d7e7; }
+.category-link:focus-visible { outline: 2px solid #60a5fa; outline-offset: 4px; border-radius: 4px; }
+
+.discovery-detail-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(620px, 100vw);
+  height: 100vh;
+  max-height: none;
+  overflow-y: auto;
+  border-radius: 0;
+  border-left: 1px solid #334155;
+}
+
+.discovery-detail-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.discovery-detail-kpis > div,
+.discovery-detail-list > div {
+  padding: 14px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #111c30;
+}
+
+.discovery-detail-kpis span,
+.discovery-detail-list dt { color: #8fa1bd; font-size: 12px; }
+.discovery-detail-kpis strong { display: block; margin-top: 6px; color: #f8fafc; font-size: 19px; }
+.discovery-detail-list { display: grid; gap: 10px; margin: 0; }
+.discovery-detail-list dd { margin: 6px 0 0; color: #dbe7f7; line-height: 1.55; }
+
+@media (max-width: 768px) {
+  .discovery-source-row { justify-content: stretch; }
+  .discovery-source-switch { width: 100%; }
+  .discovery-source-switch button { flex: 1; }
+  .category-context-bar { grid-template-columns: 1fr auto; }
+  .category-context-bar nav { grid-column: 1 / -1; order: 3; }
+  .category-context-bar nav button { flex: 1; }
+  .discovery-period-row { align-items: flex-start; flex-direction: column; }
+  .discovery-detail-kpis { grid-template-columns: 1fr; }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -3192,6 +3397,27 @@ td {
   gap: 10px;
 }
 
+.discovery-source-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 14px;
+  background: rgb(34 211 238 / 6%);
+  border: 1px solid rgb(34 211 238 / 18%);
+  border-radius: 9px;
+}
+
+.discovery-source-control strong,
+.discovery-source-control small {
+  display: block;
+}
+
+.discovery-source-control strong { font-size: 13px; }
+.discovery-source-control small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.discovery-source-control .primary-button { min-width: 224px; flex: 0 0 auto; }
+
 .category-collector-toggle {
   min-height: 52px;
   align-items: flex-start;
@@ -4090,6 +4316,18 @@ td {
   .market-product-link { width: 100%; max-width: none; padding-right: 0; }
   .market-product-link strong,
   .market-product-link small { max-width: calc(100vw - 62px); }
+  .selection-keyword-table.discovery-product-table td:first-child {
+    position: static;
+    width: 100%;
+    min-width: 0;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .selection-keyword-table.discovery-product-table td:nth-child(2) { width: 100%; min-width: 0; padding-right: 0; }
+  .selection-keyword-table.discovery-query-table td:nth-child(2) { width: 100%; min-width: 0; padding-right: 38px; }
+  .selection-keyword-table.discovery-query-table td:nth-child(3),
+  .selection-keyword-table.discovery-product-table td:nth-child(3),
+  .selection-keyword-table.discovery-product-table td:nth-child(4) { width: 100%; min-width: 0; }
   .candidate-grid { grid-template-columns: 1fr; }
   .source-card { padding: 14px; }
   .source-card__heading { grid-template-columns: 42px minmax(0, 1fr); }
@@ -4156,6 +4394,8 @@ td {
   .selection-kpi .kpi-value { font-size: 28px; }
   .selection-score-note { align-items: flex-start; }
   .category-analysis__heading { align-items: stretch; flex-direction: column; }
+  .discovery-source-control { align-items: stretch; flex-direction: column; }
+  .discovery-source-control .primary-button { width: 100%; min-width: 0; }
   .period-switch { width: 100%; }
   .period-switch button { flex: 1; }
   .category-kpi-grid { grid-template-columns: 1fr 1fr; }

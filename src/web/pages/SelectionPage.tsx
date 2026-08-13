@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import type {
   SelectionCandidate,
@@ -31,6 +31,7 @@ import type {
   SelectionImportResult,
   SelectionKeywordSort,
   SelectionMarketProductDetail,
+  SelectionMarketProductListItem,
   SelectionMarketProductSort,
 } from "../../shared/contracts";
 import {
@@ -44,7 +45,7 @@ import {
   fetchSelectionMarketProduct,
   fetchSelectionMarketProducts,
   fetchSelectionOverview,
-  fetchSelectionCategorySettings,
+  fetchSelectionDiscoverySettings,
   fetchWordstatJobs,
   fetchWordstatSettings,
   testWordstatSettings,
@@ -54,12 +55,17 @@ import {
 import { AppNav } from "../components/AppNav";
 import { SelectionCandidateDialog } from "../components/SelectionCandidateDialog";
 import { SelectionCategoryPanel, SelectionCategorySourceCard } from "../components/SelectionCategoryPanel";
+import {
+  DiscoveryProductsPanel,
+  DiscoveryQueriesPanel,
+  DiscoverySourceSwitch,
+} from "../components/SelectionDiscoveryPanels";
 import { SelectionImportDialog } from "../components/SelectionImportDialog";
 import { SelectionKeywordDrawer } from "../components/SelectionKeywordDrawer";
 import { SelectionMarketProductDrawer } from "../components/SelectionMarketProductDrawer";
 import { formatCompactNumber, formatMoney } from "../format";
 
-type SelectionTab = "keywords" | "products" | "categories" | "candidates" | "sources";
+type SelectionTab = "queries" | "products" | "categories" | "candidates" | "sources";
 
 interface Notice {
   tone: "success" | "error";
@@ -67,7 +73,7 @@ interface Notice {
 }
 
 const tabOptions: Array<{ value: SelectionTab; label: string; icon: typeof Lightbulb }> = [
-  { value: "keywords", label: "机会词库", icon: Lightbulb },
+  { value: "queries", label: "热搜词", icon: Lightbulb },
   { value: "products", label: "热销商品", icon: PackageSearch },
   { value: "categories", label: "类目分析", icon: ChartScatter },
   { value: "candidates", label: "候选池", icon: ListChecks },
@@ -104,11 +110,22 @@ function formatPercent(value: number): string {
 /** Provides one decision workspace without exposing market data to the LAN wallboard. */
 export default function SelectionPage(): React.JSX.Element {
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<SelectionTab>("keywords");
+  const [urlParams, setUrlParams] = useSearchParams();
+  const initialTab = tabOptions.some((option) => option.value === urlParams.get("tab"))
+    ? urlParams.get("tab") as SelectionTab
+    : "queries";
+  const [tab, setTab] = useState<SelectionTab>(initialTab);
+  const [querySource, setQuerySource] = useState<"cloud" | "import">(urlParams.get("source") === "import" ? "import" : "cloud");
+  const [productSource, setProductSource] = useState<"cloud" | "import">(urlParams.get("source") === "import" ? "import" : "cloud");
+  const [discoveryPeriod, setDiscoveryPeriod] = useState<7 | 28>(urlParams.get("period") === "7" ? 7 : 28);
+  const [categoryContext, setCategoryContext] = useState<{ id: string; name: string; level1Name: string } | null>(() => {
+    const id = urlParams.get("categoryId");
+    return id ? { id, name: urlParams.get("categoryName") ?? id, level1Name: urlParams.get("categoryLevel1") ?? "所属一级类目" } : null;
+  });
   const [showImport, setShowImport] = useState(false);
   const [selectedKeywordId, setSelectedKeywordId] = useState<string | null>(null);
   const [selectedMarketProductId, setSelectedMarketProductId] = useState<string | null>(null);
-  const [candidateDialog, setCandidateDialog] = useState<{ candidate?: SelectionCandidate; keywordId?: string; marketProductId?: string } | null>(null);
+  const [candidateDialog, setCandidateDialog] = useState<{ candidate?: SelectionCandidate; keywordId?: string; marketProductId?: string; marketProduct?: SelectionMarketProductListItem } | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [search, setSearch] = useState("");
   const [minimumPrice, setMinimumPrice] = useState("");
@@ -158,7 +175,7 @@ export default function SelectionPage(): React.JSX.Element {
       ...(marketMinimumPrice ? { minimumPrice: Number(marketMinimumPrice) } : {}),
       ...(marketMaximumPrice ? { maximumPrice: Number(marketMaximumPrice) } : {}),
     }),
-    enabled: tab === "products",
+    enabled: tab === "products" && productSource === "import",
   });
   const marketProductDetailQuery = useQuery({
     queryKey: ["selection-market-product", selectedMarketProductId],
@@ -175,7 +192,7 @@ export default function SelectionPage(): React.JSX.Element {
   });
   const importsQuery = useQuery({ queryKey: ["selection-imports"], queryFn: fetchSelectionImports, enabled: tab === "sources" });
   const settingsQuery = useQuery({ queryKey: ["wordstat-settings"], queryFn: fetchWordstatSettings, enabled: tab === "sources" });
-  const categorySettingsQuery = useQuery({ queryKey: ["selection-category-settings"], queryFn: fetchSelectionCategorySettings, enabled: tab === "sources" });
+  const categorySettingsQuery = useQuery({ queryKey: ["selection-discovery-settings"], queryFn: fetchSelectionDiscoverySettings, enabled: tab === "sources" });
   const jobsQuery = useQuery({
     queryKey: ["wordstat-jobs"],
     queryFn: fetchWordstatJobs,
@@ -234,6 +251,46 @@ export default function SelectionPage(): React.JSX.Element {
     });
   }
 
+  /** Keeps the active analysis route copyable without storing transient filters. */
+  function selectTab(nextTab: SelectionTab): void {
+    setTab(nextTab);
+    const next = new URLSearchParams(urlParams);
+    next.set("tab", nextTab);
+    next.set("source", nextTab === "products" ? productSource : nextTab === "queries" ? querySource : "cloud");
+    setUrlParams(next, { replace: true });
+  }
+
+  function openCategory(
+    category: { id: string; name: string; level1Name: string },
+    period: 7 | 28,
+  ): void {
+    setCategoryContext(category);
+    setDiscoveryPeriod(period);
+    setProductSource("cloud");
+    setTab("products");
+    setUrlParams({
+      tab: "products", source: "cloud", categoryId: category.id,
+      categoryName: category.name, categoryLevel1: category.level1Name, period: String(period), detail: "products",
+    });
+  }
+
+  function setCategoryMode(mode: "products" | "queries"): void {
+    const nextTab = mode === "products" ? "products" : "queries";
+    setTab(nextTab);
+    if (mode === "products") setProductSource("cloud");
+    else setQuerySource("cloud");
+    const next = new URLSearchParams(urlParams);
+    next.set("tab", nextTab); next.set("source", "cloud"); next.set("detail", mode);
+    setUrlParams(next, { replace: true });
+  }
+
+  function clearCategoryContext(): void {
+    setCategoryContext(null);
+    const next = new URLSearchParams(urlParams);
+    ["categoryId", "categoryName", "categoryLevel1", "detail"].forEach((key) => next.delete(key));
+    setUrlParams(next, { replace: true });
+  }
+
   /** Clears product filters without changing the user's selected sort order. */
   function clearMarketProductFilters(): void {
     setMarketProductSearch("");
@@ -246,7 +303,13 @@ export default function SelectionPage(): React.JSX.Element {
   }
 
   async function importCompleted(result: SelectionImportResult): Promise<void> {
-    setTab(result.kind === "market_product" ? "products" : "keywords");
+    if (result.kind === "market_product") {
+      setProductSource("import");
+      setTab("products");
+    } else {
+      setQuerySource("import");
+      setTab("queries");
+    }
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["selection-overview"] }),
       queryClient.invalidateQueries({ queryKey: ["selection-keywords"] }),
@@ -265,7 +328,7 @@ export default function SelectionPage(): React.JSX.Element {
   const dialogMarketProductQuery = useQuery({
     queryKey: ["selection-market-product", candidateDialog?.marketProductId],
     queryFn: () => fetchSelectionMarketProduct(candidateDialog!.marketProductId!),
-    enabled: Boolean(candidateDialog?.marketProductId),
+    enabled: Boolean(candidateDialog?.marketProductId) && !candidateDialog?.marketProduct,
   });
   const activeCandidate = candidateDialog?.candidate ?? null;
   const dialogError = createCandidateMutation.error?.message ?? updateCandidateMutation.error?.message ?? null;
@@ -286,10 +349,11 @@ export default function SelectionPage(): React.JSX.Element {
         <OverviewCards overview={overviewQuery.data} loading={overviewQuery.isLoading} />
         <div className="selection-workspace">
           <div className="selection-tabs" role="tablist" aria-label="选品分析模块">
-            {tabOptions.map((option) => <button className={tab === option.value ? "is-active" : ""} type="button" role="tab" aria-selected={tab === option.value} onClick={() => setTab(option.value)} key={option.value}><option.icon size={17} />{option.label}</button>)}
+            {tabOptions.map((option) => <button className={tab === option.value ? "is-active" : ""} type="button" role="tab" aria-selected={tab === option.value} onClick={() => selectTab(option.value)} key={option.value}><option.icon size={17} />{option.label}</button>)}
           </div>
-          {tab === "keywords" && (
-            <section className="selection-tab-panel" role="tabpanel" aria-label="机会词库">
+          {tab === "queries" && (<>
+            <div className="discovery-source-row"><DiscoverySourceSwitch value={querySource} cloudLabel="云端热词" importLabel="导入机会词" onChange={(value) => { setQuerySource(value); const next = new URLSearchParams(urlParams); next.set("source", value); setUrlParams(next, { replace: true }); }} /></div>
+            {querySource === "cloud" ? <DiscoveryQueriesPanel category={categoryContext} selectedIds={selectedKeywordIds} onToggle={toggleKeyword} onWordstat={() => wordstatMutation.mutate({ ids: [...selectedKeywordIds], force: false })} wordstatPending={wordstatMutation.isPending} onCategoryMode={setCategoryMode} onClearCategory={clearCategoryContext} /> : <section className="selection-tab-panel" role="tabpanel" aria-label="导入机会词">
               <div className="selection-toolbar">
                 <label className="selection-search"><Search size={17} /><span className="sr-only">搜索关键词</span><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="搜索俄文关键词" /></label>
                 <div className="selection-filter-group"><Filter size={16} aria-hidden="true" /><label><span>价格从</span><input inputMode="decimal" value={minimumPrice} onChange={(event) => { setMinimumPrice(event.target.value); setPage(1); }} placeholder="₽ 0" /></label><label><span>到</span><input inputMode="decimal" value={maximumPrice} onChange={(event) => { setMaximumPrice(event.target.value); setPage(1); }} placeholder="₽ 5000" /></label></div>
@@ -307,10 +371,11 @@ export default function SelectionPage(): React.JSX.Element {
                 onImport={() => setShowImport(true)}
               />
               {(keywordsQuery.data?.total ?? 0) > 0 && <div className="selection-pagination"><span>共 {(keywordsQuery.data?.total ?? 0).toLocaleString("zh-CN")} 个关键词</span><div><button className="icon-button" type="button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)} aria-label="上一页"><ChevronLeft size={18} /></button><strong>{page} / {totalPages}</strong><button className="icon-button" type="button" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)} aria-label="下一页"><ChevronRight size={18} /></button></div></div>}
-            </section>
-          )}
-          {tab === "products" && (
-            <MarketProductsPanel
+            </section>}
+          </>)}
+          {tab === "products" && (<>
+            <div className="discovery-source-row"><DiscoverySourceSwitch value={productSource} cloudLabel="云端榜单" importLabel="导入报表" onChange={(value) => { setProductSource(value); const next = new URLSearchParams(urlParams); next.set("source", value); setUrlParams(next, { replace: true }); }} /></div>
+            {productSource === "cloud" ? <DiscoveryProductsPanel category={categoryContext} periodDays={discoveryPeriod} onPeriod={(period) => { setDiscoveryPeriod(period); const next = new URLSearchParams(urlParams); next.set("period", String(period)); setUrlParams(next, { replace: true }); }} onCategoryMode={setCategoryMode} onClearCategory={clearCategoryContext} onCandidate={(item) => setCandidateDialog({ marketProductId: item.id, marketProduct: item })} /> : <MarketProductsPanel
               page={marketProductPage}
               totalPages={marketProductTotalPages}
               marketProductCount={overviewQuery.data?.marketProductCount ?? 0}
@@ -335,8 +400,8 @@ export default function SelectionPage(): React.JSX.Element {
               onOpen={setSelectedMarketProductId}
               onImport={() => setShowImport(true)}
               onClearFilters={clearMarketProductFilters}
-            />
-          )}
+            />}
+          </>)}
           {tab === "candidates" && (
             <CandidatesPanel
               candidates={candidatesQuery.data ?? []}
@@ -352,7 +417,7 @@ export default function SelectionPage(): React.JSX.Element {
               onOpenMarketProduct={setSelectedMarketProductId}
             />
           )}
-          {tab === "categories" && <SelectionCategoryPanel onNotice={setNotice} />}
+          {tab === "categories" && <SelectionCategoryPanel onNotice={setNotice} onOpenCategory={openCategory} />}
           {tab === "sources" && (
             <SourcesPanel
               imports={importsQuery.data ?? []}
@@ -376,7 +441,7 @@ export default function SelectionPage(): React.JSX.Element {
                 await queryClient.invalidateQueries({ queryKey: ["wordstat-settings"] });
               }}
               onCategorySettingsSaved={async () => {
-                await queryClient.invalidateQueries({ queryKey: ["selection-category-settings"] });
+                await queryClient.invalidateQueries({ queryKey: ["selection-discovery-settings"] });
               }}
               onNotice={setNotice}
             />
@@ -391,7 +456,7 @@ export default function SelectionPage(): React.JSX.Element {
           key={activeCandidate?.id ?? candidateDialog.keywordId ?? candidateDialog.marketProductId ?? "new"}
           candidate={activeCandidate}
           keyword={dialogKeywordQuery.data ?? null}
-          marketProduct={dialogMarketProductQuery.data ?? null}
+          marketProduct={candidateDialog.marketProduct ?? dialogMarketProductQuery.data ?? null}
           pending={createCandidateMutation.isPending || updateCandidateMutation.isPending}
           error={dialogError}
           onClose={() => setCandidateDialog(null)}
@@ -521,7 +586,7 @@ interface SourcesPanelProps {
   imports: Awaited<ReturnType<typeof fetchSelectionImports>>;
   importsLoading: boolean;
   settings: Awaited<ReturnType<typeof fetchWordstatSettings>> | undefined;
-  categorySettings: Awaited<ReturnType<typeof fetchSelectionCategorySettings>> | undefined;
+  categorySettings: Awaited<ReturnType<typeof fetchSelectionDiscoverySettings>> | undefined;
   jobs: Awaited<ReturnType<typeof fetchWordstatJobs>>;
   onImport: () => void;
   onDeleteImport: (id: string) => Promise<void>;

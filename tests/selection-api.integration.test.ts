@@ -89,9 +89,13 @@ describe("product selection admin API", () => {
       expect((await adminApp.inject({ method: "GET", url: "/api/selection/overview" })).statusCode).toBe(401);
       expect((await adminApp.inject({ method: "GET", url: "/api/selection/products" })).statusCode).toBe(401);
       expect((await adminApp.inject({ method: "GET", url: "/api/selection/categories" })).statusCode).toBe(401);
+      expect((await adminApp.inject({ method: "GET", url: "/api/selection/rankings/products" })).statusCode).toBe(401);
+      expect((await adminApp.inject({ method: "GET", url: "/api/selection/rankings/queries" })).statusCode).toBe(401);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/selection/overview" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/selection/products" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/selection/categories" })).statusCode).toBe(404);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/selection/rankings/products" })).statusCode).toBe(404);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/selection/rankings/queries" })).statusCode).toBe(404);
       const setup = await adminApp.inject({
         method: "POST",
         url: "/api/setup/initialize",

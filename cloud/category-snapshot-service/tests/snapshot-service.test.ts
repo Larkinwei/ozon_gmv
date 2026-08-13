@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -46,5 +49,23 @@ describe("category snapshot service", () => {
     expect(second.sha256).toBe(first.sha256);
     expect(service.authorize("Bearer secret")).toBe(true);
     expect(service.authorize("Bearer wrong")).toBe(false);
+  });
+
+  it("stores an authenticated gzip snapshot without expanding it in memory", async () => {
+    const storage = new MemoryStorage();
+    const service = new SnapshotService(storage, "secret");
+    const input = snapshot();
+    const compressed = gzipSync(Buffer.from(JSON.stringify(input)));
+    const sha256 = createHash("sha256").update(compressed).digest("hex");
+
+    const manifest = await service.publishCompressed(compressed, {
+      snapshotId: input.snapshotId,
+      collectedAt: input.collectedAt,
+      rowCount: input.rowCount,
+      sha256,
+    });
+
+    expect(storage.objects.get(`category-snapshots/v1/${input.snapshotId}.json.gz`)).toEqual(compressed);
+    expect(manifest.sha256).toBe(sha256);
   });
 });

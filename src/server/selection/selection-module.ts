@@ -1366,6 +1366,13 @@ export class SelectionModule {
        FROM selection_market_product_snapshots s
        JOIN selection_imports i ON i.id = s.import_id`,
     ).get() as { total: number; latest_snapshot_date: string | null };
+    const discoveryProducts = this.database.prepare(
+      `SELECT COUNT(DISTINCT r.product_id) AS total, MAX(b.collected_at_ms) AS collected_at_ms
+       FROM selection_market_product_rankings r
+       JOIN selection_discovery_batches b ON b.id = r.batch_id
+       WHERE r.scope = 'global' AND r.period_days = 28
+         AND b.id = (SELECT id FROM selection_discovery_batches ORDER BY collected_at_ms DESC LIMIT 1)`,
+    ).get() as { total: number; collected_at_ms: number | null };
     const candidateRows = this.database.prepare(
       "SELECT status, COUNT(*) AS total FROM selection_candidates GROUP BY status",
     ).all() as Array<{ status: SelectionCandidateStatus; total: number }>;
@@ -1379,8 +1386,10 @@ export class SelectionModule {
     return {
       keywordCount: keywordCounts.total,
       scoredKeywordCount: keywordCounts.scored,
-      marketProductCount: marketProducts.total,
-      latestMarketProductSnapshotDate: marketProducts.latest_snapshot_date,
+      marketProductCount: discoveryProducts.total || marketProducts.total,
+      latestMarketProductSnapshotDate: discoveryProducts.collected_at_ms
+        ? new Date(discoveryProducts.collected_at_ms).toISOString().slice(0, 10)
+        : marketProducts.latest_snapshot_date,
       wordstatReadyCount: wordstat.total,
       candidateCounts,
       lastImportAt: latest ? new Date(latest.created_at_ms).toISOString() : null,
@@ -1482,12 +1491,15 @@ export class SelectionModule {
                    mp.ozon_url AS market_ozon_url, mp.seller AS market_seller, mp.brand AS market_brand,
                    mp.category_level_1 AS market_category_level_1, mp.category_level_3 AS market_category_level_3,
                    mp.product_flags AS market_product_flags,
-                   mi.snapshot_date AS market_snapshot_date, mi.report_period_days AS market_report_period_days,
-                   ms.ordered_amount_minor AS market_ordered_amount_minor,
-                   ms.turnover_growth AS market_turnover_growth, ms.ordered_units AS market_ordered_units,
-                   ms.average_price_minor AS market_average_price_minor,
-                   ms.impression_to_order_rate AS market_impression_to_order_rate,
-                   ms.missed_sales AS market_missed_sales, ms.out_of_stock_days AS market_out_of_stock_days
+                   COALESCE(mi.snapshot_date, date(db.collected_at_ms / 1000, 'unixepoch')) AS market_snapshot_date,
+                   COALESCE(mi.report_period_days, dr.period_days) AS market_report_period_days,
+                   COALESCE(ms.ordered_amount_minor, dr.ordered_amount_minor) AS market_ordered_amount_minor,
+                   COALESCE(ms.turnover_growth, dr.turnover_growth) AS market_turnover_growth,
+                   COALESCE(ms.ordered_units, dr.ordered_units) AS market_ordered_units,
+                   COALESCE(ms.average_price_minor, dr.average_price_minor) AS market_average_price_minor,
+                   COALESCE(ms.impression_to_order_rate, dr.impression_to_order_rate) AS market_impression_to_order_rate,
+                   COALESCE(ms.missed_sales, dr.missed_sales_minor / 100) AS market_missed_sales,
+                   COALESCE(ms.out_of_stock_days, dr.out_of_stock_days) AS market_out_of_stock_days
             FROM selection_candidates c
             LEFT JOIN selection_keywords k ON k.id = c.keyword_id
             LEFT JOIN selection_market_products mp ON mp.id = c.market_product_id
@@ -1497,7 +1509,15 @@ export class SelectionModule {
               WHERE snapshot.product_id = mp.id
               ORDER BY imported.snapshot_date DESC, imported.created_at_ms DESC LIMIT 1
             )
-            LEFT JOIN selection_imports mi ON mi.id = ms.import_id`;
+            LEFT JOIN selection_imports mi ON mi.id = ms.import_id
+            LEFT JOIN selection_market_product_rankings dr ON dr.id = (
+              SELECT ranking.id FROM selection_market_product_rankings ranking
+              JOIN selection_discovery_batches batch ON batch.id = ranking.batch_id
+              WHERE ranking.product_id = mp.id
+              ORDER BY batch.collected_at_ms DESC, ranking.period_days DESC,
+                       ranking.scope = 'global' DESC, ranking.rank ASC LIMIT 1
+            )
+            LEFT JOIN selection_discovery_batches db ON db.id = dr.batch_id`;
   }
 
   private marketProductLatestJoins(): string {

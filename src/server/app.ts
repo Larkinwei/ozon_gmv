@@ -22,6 +22,7 @@ import { registerNotificationRoutes } from "./routes/notifications";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSelectionRoutes } from "./routes/selection";
 import { registerSelectionCategoryRoutes } from "./routes/selection-categories";
+import { registerSelectionDiscoveryRoutes } from "./routes/selection-discovery";
 import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
@@ -33,6 +34,7 @@ import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { UpdateService } from "./services/update-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
+import { DiscoveryModule } from "./selection/discovery-module";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -43,6 +45,7 @@ export interface AppDependencies {
   updates: UpdateService;
   selection?: SelectionModule;
   categories?: CategoryAnalysisModule;
+  discovery?: DiscoveryModule;
 }
 
 interface SqliteError extends Error {
@@ -64,8 +67,9 @@ function registerHealthRoutes(app: FastifyInstance, database: AppDatabase): void
   app.get("/healthz", async () => ({ status: "ok", time: new Date().toISOString() }));
   app.get("/readyz", async (_request, reply) => {
     try {
-      const result = database.pragma("quick_check", { simple: true });
-      return result === "ok" ? { status: "ready" } : reply.code(503).send({ status: "not-ready" });
+      // 数据库打开时已执行完整 quick_check；运行期只确认连接仍可读，避免大库扫描阻塞请求。
+      database.prepare("SELECT 1").get();
+      return { status: "ready" };
     } catch {
       return reply.code(503).send({ status: "not-ready" });
     }
@@ -135,6 +139,9 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const categories = dependencies.categories ?? new CategoryAnalysisModule(config, database, {
     fetchImplementation: proxySettings.createFetch(),
   });
+  const discovery = dependencies.discovery ?? new DiscoveryModule(config, database, {
+    fetchImplementation: proxySettings.createFetch(),
+  });
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
@@ -142,6 +149,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerDashboardRoutes(app, new DashboardRepository(database), events);
   registerSelectionRoutes(app, selection);
   registerSelectionCategoryRoutes(app, categories);
+  registerSelectionDiscoveryRoutes(app, discovery);
   registerSettingsRoutes(app, proxySettings, updates);
   registerNotificationRoutes(app, notifications);
   registerWallboardManagementRoutes(app, config, pairings);

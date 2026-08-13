@@ -594,6 +594,10 @@ export interface SelectionCategoryCloudSnapshot {
   periods: [7, 28];
   rowCount: number;
   metrics: SelectionCategoryCloudMetric[];
+  products?: SelectionDiscoveryProductRanking[];
+  queries?: SelectionDiscoveryQueryRanking[];
+  categoryLinks?: SelectionCategoryLink[];
+  discoveryCounts?: SelectionDiscoverySnapshot["counts"];
 }
 
 export interface SelectionCategoryCloudManifest {
@@ -604,4 +608,221 @@ export interface SelectionCategoryCloudManifest {
   sha256: string;
   downloadUrl: string;
   expiresAt: string;
+}
+
+export type SelectionDiscoveryStage = "categories" | "products" | "queries" | "publishing";
+
+export interface SelectionDiscoverySyncJob {
+  id: string | null;
+  status: SelectionCategorySyncStatus;
+  stage: SelectionDiscoveryStage | null;
+  totalSteps: number;
+  completedSteps: number;
+  currentItem: string | null;
+  stageProgress: Record<"categories" | "products" | "queries", { completed: number; total: number }>;
+  error: string | null;
+  cloudPublished: boolean;
+  resumable: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface SelectionDiscoverySourceSettings extends SelectionCategorySourceSettingsView {
+  estimatedDurationMinutes: [number, number];
+}
+
+export interface SelectionDiscoverySourceSettingsInput extends SelectionCategorySourceSettingsInput {}
+
+export interface SelectionCategoryLink {
+  categoryId: string;
+  categoryName: string;
+  categoryLevel1Id: string;
+  categoryLevel1Name: string;
+  productTypeIds: string[];
+  queryGroups: string[];
+  queryScope: "category_level_1" | "unavailable";
+}
+
+/** Normalized Ozon bestseller row stored in an immutable discovery snapshot. */
+export interface SelectionDiscoveryProductRanking {
+  ozonProductId: string;
+  name: string;
+  ozonUrl: string;
+  photoUrl: string | null;
+  seller: string;
+  sellerId: string | null;
+  brand: string;
+  brandId: string | null;
+  categoryLevel1Id: string;
+  categoryLevel1: string;
+  categoryLevel3Id: string;
+  categoryLevel3: string;
+  scope: "global" | "category";
+  scopeCategoryId: string | null;
+  periodDays: SelectionCategoryPeriod;
+  rank: number;
+  orderedAmountMinor: string;
+  orderedUnits: number;
+  turnoverGrowth: number | null;
+  averagePriceMinor: string;
+  minimumPriceMinor: string;
+  purchaseRate: number | null;
+  missedSalesMinor: string;
+  outOfStockDays: number | null;
+  stock: number | null;
+  fboStock: number | null;
+  fbsStock: number | null;
+  fulfillmentScheme: string;
+  volumeLiters: number | null;
+  impressions: number;
+  searchViews: number;
+  cardViews: number;
+  impressionToOrderRate: number;
+  searchToCartRate: number;
+  cardToCartRate: number;
+  promotionDiscountRate: number;
+  promotedOrderShare: number;
+  promotionDays: number;
+  advertisedDays: number;
+  advertisingCostShare: number;
+  productCardCreatedDate: string | null;
+}
+
+/** Normalized Ozon market-query row. Query metrics are currently limited to seven days. */
+export interface SelectionDiscoveryQueryRanking {
+  phrase: string;
+  normalizedPhrase: string;
+  scope: "global" | "group";
+  groupName: string | null;
+  periodDays: 7;
+  rank: number;
+  searchCount: number;
+  searchesWithCart: number;
+  cartRate: number;
+  orderedUnits: number;
+  orderRate: number;
+  orderedAmountMinor: string;
+  averagePriceMinor: string;
+  productViews: number;
+  competingSellers: number;
+  noInteractionCount: number;
+  noInteractionRate: number;
+  noResultCount: number;
+  noResultRate: number;
+  averageProductCount: number;
+}
+
+export interface SelectionDiscoverySnapshot {
+  snapshotId: string;
+  collectedAt: string;
+  source: "collector" | "cloud";
+  counts: {
+    categoryMetrics: number;
+    productRankings: number;
+    queryRankings: number;
+    categoryLinks: number;
+  };
+}
+
+export const selectionMarketRankingSorts = [
+  "orderedAmount",
+  "orderedUnits",
+  "turnoverGrowth",
+  "missedSales",
+  "conversionRate",
+  "averagePrice",
+] as const;
+export type SelectionMarketRankingSort = (typeof selectionMarketRankingSorts)[number];
+
+export interface SelectionMarketProductRankingListItem extends SelectionMarketProductListItem {
+  photoUrl: string | null;
+  rank: number;
+  scope: "global" | "category";
+  scopeCategoryId: string | null;
+  stock: number | null;
+}
+
+export interface SelectionMarketProductRankingPage {
+  items: SelectionMarketProductRankingListItem[];
+  facets: SelectionMarketProductFacets;
+  page: number;
+  pageSize: number;
+  total: number;
+  periodDays: SelectionCategoryPeriod;
+  scope: "global" | "category";
+  categoryId: string | null;
+  snapshotId: string | null;
+  collectedAt: string | null;
+}
+
+export interface SelectionMarketProductRankingDetail extends SelectionMarketProductRankingListItem {
+  minimumPrice: Money;
+  purchaseRate: number | null;
+  stock: number | null;
+  fboStock: number | null;
+  fbsStock: number | null;
+  fulfillmentScheme: string;
+  volumeLiters: number | null;
+  impressions: number;
+  searchViews: number;
+  cardViews: number;
+  searchToCartRate: number;
+  cardToCartRate: number;
+  promotionDiscountRate: number;
+  promotedOrderShare: number;
+  promotionDays: number;
+  advertisedDays: number;
+  advertisingCostShare: number;
+  productCardCreatedDate: string | null;
+}
+
+export const selectionMarketQuerySorts = [
+  "searchCount",
+  "cartRate",
+  "orderedUnits",
+  "orderRate",
+  "orderedAmount",
+  "competition",
+] as const;
+export type SelectionMarketQuerySort = (typeof selectionMarketQuerySorts)[number];
+
+export interface SelectionMarketQueryListItem {
+  id: string;
+  phrase: string;
+  rank: number;
+  scope: "global" | "group";
+  groupName: string | null;
+  searchCount: number;
+  searchesWithCart: number;
+  cartRate: number;
+  orderedUnits: number;
+  orderRate: number;
+  orderedAmount: Money;
+  averagePrice: Money;
+  productViews: number;
+  competingSellers: number;
+  noInteractionCount: number;
+  noInteractionRate: number;
+  noResultCount: number;
+  noResultRate: number;
+  averageProductCount: number;
+  wordstatStatus: SelectionKeywordListItem["wordstatStatus"];
+}
+
+export interface SelectionMarketQueryPage {
+  items: SelectionMarketQueryListItem[];
+  groups: string[];
+  page: number;
+  pageSize: number;
+  total: number;
+  periodDays: 7;
+  scope: "global" | "group";
+  categoryId: string | null;
+  categoryLink: SelectionCategoryLink | null;
+  snapshotId: string | null;
+  collectedAt: string | null;
+}
+
+export interface SelectionMarketQueryDetail extends SelectionMarketQueryListItem {
+  wordstat: SelectionWordstatView | null;
 }

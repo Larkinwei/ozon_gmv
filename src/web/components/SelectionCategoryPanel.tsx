@@ -26,16 +26,16 @@ import {
 import type {
   SelectionCategoryPeriod,
   SelectionCategorySort,
-  SelectionCategorySourceSettingsView,
+  SelectionDiscoverySourceSettings,
 } from "../../shared/contracts";
 import {
   fetchSelectionCategories,
   fetchSelectionCategoryOverview,
-  fetchSelectionCategorySettings,
-  fetchSelectionCategorySync,
-  refreshSelectionCategoriesFromCloud,
-  startSelectionCategorySync,
-  updateSelectionCategorySettings,
+  fetchSelectionDiscoverySettings,
+  fetchSelectionDiscoverySync,
+  refreshSelectionDiscoveryFromCloud,
+  startSelectionDiscoverySync,
+  updateSelectionDiscoverySettings,
 } from "../api";
 import { formatCompactNumber, formatMoney } from "../format";
 
@@ -59,7 +59,10 @@ function percent(value: number | null): string {
 }
 
 /** Renders read-only category analytics plus the one explicit synchronization action. */
-export function SelectionCategoryPanel(props: { onNotice: (notice: CategoryNotice) => void }): React.JSX.Element {
+export function SelectionCategoryPanel(props: {
+  onNotice: (notice: CategoryNotice) => void;
+  onOpenCategory?: (category: { id: string; name: string; level1Name: string }, period: SelectionCategoryPeriod) => void;
+}): React.JSX.Element {
   const queryClient = useQueryClient();
   const checkedCloud = useRef(false);
   const [periodDays, setPeriodDays] = useState<SelectionCategoryPeriod>(28);
@@ -99,36 +102,21 @@ export function SelectionCategoryPanel(props: { onNotice: (notice: CategoryNotic
     queryKey: ["selection-category-overview", periodDays],
     queryFn: () => fetchSelectionCategoryOverview(periodDays),
   });
-  const settingsQuery = useQuery({ queryKey: ["selection-category-settings"], queryFn: fetchSelectionCategorySettings });
-  const syncQuery = useQuery({
-    queryKey: ["selection-category-sync"],
-    queryFn: fetchSelectionCategorySync,
-    refetchInterval: (query) => query.state.data?.status === "running" ? 1_000 : false,
-  });
+  const settingsQuery = useQuery({ queryKey: ["selection-discovery-settings"], queryFn: fetchSelectionDiscoverySettings });
   const invalidate = async (): Promise<void> => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["selection-categories"] }),
       queryClient.invalidateQueries({ queryKey: ["selection-category-overview"] }),
-      queryClient.invalidateQueries({ queryKey: ["selection-category-sync"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-discovery-sync"] }),
     ]);
   };
-  const syncMutation = useMutation({
-    mutationFn: startSelectionCategorySync,
-    onSuccess: async () => { props.onNotice({ tone: "success", text: "类目采集已启动，可离开页面后台继续。" }); await invalidate(); },
-    onError: (error) => props.onNotice({ tone: "error", text: error.message }),
-  });
-  const refreshMutation = useMutation({
-    mutationFn: refreshSelectionCategoriesFromCloud,
-    onSuccess: async () => { props.onNotice({ tone: "success", text: "已更新到云端最新类目快照。" }); await invalidate(); },
-    onError: (error) => props.onNotice({ tone: "error", text: error.message }),
-  });
   useEffect(() => {
     const settings = settingsQuery.data;
     if (checkedCloud.current || !settings?.cloudBaseUrl || settings.collectorEnabled) {
       return;
     }
     checkedCloud.current = true;
-    void refreshSelectionCategoriesFromCloud().then(invalidate).catch(() => {
+    void refreshSelectionDiscoveryFromCloud().then(invalidate).catch(() => {
       // Offline clients intentionally retain the last verified SQLite snapshot.
     });
   }, [settingsQuery.data]);
@@ -148,7 +136,6 @@ export function SelectionCategoryPanel(props: { onNotice: (notice: CategoryNotic
     setMaximumSellerCount(""); setMinimumBuyoutRate(""); setMaximumLeaderShare(""); setPage(1);
   }
 
-  const sync = syncQuery.data;
   const isCollector = settingsQuery.data?.collectorEnabled ?? false;
   return (
     <section className="selection-tab-panel category-analysis" role="tabpanel" aria-label="类目分析">
@@ -156,14 +143,8 @@ export function SelectionCategoryPanel(props: { onNotice: (notice: CategoryNotic
         <div className="period-switch" aria-label="统计周期">
           {([7, 28] as const).map((period) => <button type="button" className={periodDays === period ? "is-active" : ""} aria-pressed={periodDays === period} onClick={() => { setPeriodDays(period); setPage(1); }} key={period}>近 {period} 天</button>)}
         </div>
-        <button className="primary-button compact-button" type="button" disabled={sync?.status === "running" || syncMutation.isPending || refreshMutation.isPending} onClick={() => isCollector ? syncMutation.mutate() : refreshMutation.mutate()}>
-          {isCollector ? <RefreshCw size={16} className={sync?.status === "running" ? "is-spinning" : ""} /> : <CloudDownload size={16} />}
-          {sync?.status === "running" ? "正在同步" : isCollector ? "一键同步" : "刷新云端数据"}
-        </button>
       </div>
-      <div className="selection-score-note category-risk-note"><ShieldAlert size={17} /><p><strong>Seller 后台私有接口，低频手工采集</strong><span>接口可能随 Ozon 页面升级变化；云端只包含类目指标，不含 Cookie、请求头、店铺资料或身份信息。</span></p></div>
-      {sync?.status === "running" && <div className="category-sync-progress" role="status"><div><span style={{ width: `${sync.totalSteps > 0 ? (sync.completedSteps / sync.totalSteps) * 100 : 0}%` }} /></div><p>{sync.currentCategory ?? "正在读取一级类目…"}<strong>{sync.completedSteps} / {sync.totalSteps || "—"}</strong></p></div>}
-      {sync?.status === "failed" && <div className="page-error category-sync-error"><h3>上次类目同步未完成</h3><p>{sync.error}</p><small>已保留成功步骤，再次同步会尽量继续。</small></div>}
+      <div className="selection-score-note category-risk-note"><ShieldAlert size={17} /><p><strong>Seller 后台私有接口，低频手工采集</strong><span>接口可能随 Ozon 页面升级变化；云端只包含标准化类目、商品和热词指标，不含 Cookie、请求头、店铺资料或身份信息。</span></p></div>
       <div className="category-kpi-grid" aria-label="类目快照概览">
         <article><span>一级类目</span><strong>{overviewQuery.data?.summaries.length ?? 0}</strong><small>不累加卖家与品牌数</small></article>
         <article><span>三级类目</span><strong>{overviewQuery.data?.categoryCount.toLocaleString("zh-CN") ?? "—"}</strong><small>{overviewQuery.data?.collectedAt ? new Date(overviewQuery.data.collectedAt).toLocaleString("zh-CN") : "等待首份快照"}</small></article>
@@ -184,9 +165,9 @@ export function SelectionCategoryPanel(props: { onNotice: (notice: CategoryNotic
           <button className="secondary-button compact-button" type="button" onClick={resetFilters}>清除筛选</button>
         </div></details>
       </div>
-      {pageQuery.isLoading ? <div className="selection-table-loading" aria-busy="true">正在读取类目快照…</div> : pageQuery.error ? <div className="page-error"><h3>类目数据加载失败</h3><p>{pageQuery.error.message}</p></div> : !pageQuery.data?.snapshotId ? <div className="selection-empty"><ChartScatter size={31} /><h3>还没有类目快照</h3><p>{isCollector ? "点击“一键同步”，从当前 Chrome 登录的 Ozon Seller 采集。" : "请配置云端服务地址，再从主采集机发布首份快照。"}</p></div> : pageQuery.data.items.length === 0 ? <div className="selection-empty"><Search size={31} /><h3>没有匹配的类目</h3><p>当前搜索或筛选条件没有结果。</p><button className="secondary-button compact-button" type="button" onClick={resetFilters}>清除筛选</button></div> : <>
+      {pageQuery.isLoading ? <div className="selection-table-loading" aria-busy="true">正在读取类目快照…</div> : pageQuery.error ? <div className="page-error"><h3>类目数据加载失败</h3><p>{pageQuery.error.message}</p></div> : !pageQuery.data?.snapshotId ? <div className="selection-empty"><ChartScatter size={31} /><h3>还没有类目快照</h3><p>{isCollector ? "请前往“数据源”发起统一市场同步。" : "请前往“数据源”刷新主采集机发布的云端快照。"}</p></div> : pageQuery.data.items.length === 0 ? <div className="selection-empty"><Search size={31} /><h3>没有匹配的类目</h3><p>当前搜索或筛选条件没有结果。</p><button className="secondary-button compact-button" type="button" onClick={resetFilters}>清除筛选</button></div> : <>
         <article className="category-quadrant-card"><div className="selection-section-heading"><div><p className="eyebrow">OPPORTUNITY QUADRANT</p><h3>GMV 增幅 × 前五卖家份额</h3><span>左上区域代表增幅较高、头部集中度较低；气泡大小仅表示 GMV，不是综合机会分。</span></div></div><div className="category-quadrant" role="img" aria-label="当前筛选前一百个三级类目的 GMV 增幅和前五卖家份额象限图"><ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 20, right: 28, bottom: 20, left: 8 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,.16)" /><XAxis type="number" dataKey="concentration" name="前五卖家份额" unit="%" tick={{ fill: "#8fa1bd", fontSize: 11 }} /><YAxis type="number" dataKey="growth" name="GMV 增幅" unit="%" tick={{ fill: "#8fa1bd", fontSize: 11 }} /><ZAxis type="number" dataKey="gmv" range={[45, 900]} /><ReferenceLine x={50} stroke="#64748b" strokeDasharray="4 4" /><ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" /><Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(value, name) => name === "gmv" ? formatCompactNumber(Number(value)) : `${Number(value).toFixed(1)}%`} /><Scatter data={chartData} fill="#41d7e7" fillOpacity={0.7} /></ScatterChart></ResponsiveContainer></div></article>
-        <CategoryTable items={pageQuery.data.items} />
+        <CategoryTable items={pageQuery.data.items} periodDays={periodDays} onOpen={props.onOpenCategory} />
         <div className="selection-pagination"><span>共 {pageQuery.data.total.toLocaleString("zh-CN")} 个三级类目</span><div><button className="icon-button" type="button" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="上一页"><ChevronLeft size={18} /></button><strong>{page} / {totalPages}</strong><button className="icon-button" type="button" disabled={page >= totalPages} onClick={() => setPage(page + 1)} aria-label="下一页"><ChevronRight size={18} /></button></div></div>
       </>}
     </section>
@@ -197,16 +178,22 @@ function RangeFields(props: { label: string; minimum: string; maximum: string; o
   return <div className="category-range"><span>{props.label}</span><input inputMode="decimal" value={props.minimum} onChange={(event) => props.onMinimum(event.target.value)} placeholder="最低" /><i>—</i><input inputMode="decimal" value={props.maximum} onChange={(event) => props.onMaximum(event.target.value)} placeholder="最高" /></div>;
 }
 
-function CategoryTable(props: { items: Awaited<ReturnType<typeof fetchSelectionCategories>>["items"] }): React.JSX.Element {
-  return <div className="selection-table-card"><div className="table-scroll"><table className="selection-keyword-table category-table"><thead><tr><th scope="col">三级类目</th><th scope="col">一级类目</th><th scope="col">订购金额</th><th scope="col">增幅</th><th scope="col">件数</th><th scope="col">平均价格</th><th scope="col">卖家 / 品牌</th><th scope="col">买断率</th><th scope="col">前五卖家</th></tr></thead><tbody>{props.items.map((item) => <tr key={item.id}><td data-label="三级类目"><strong>{item.name}</strong><small>ID {item.id}</small></td><td data-label="一级类目">{item.categoryLevel1Name}</td><td data-label="订购金额">{formatMoney(item.gmv)}</td><td data-label="增幅"><span className={`market-growth ${item.gmvGrowth !== null && item.gmvGrowth < 0 ? "is-negative" : ""}`}>{percent(item.gmvGrowth)}</span></td><td data-label="件数">{item.orderedUnits.toLocaleString("zh-CN")}</td><td data-label="平均价格">{formatMoney(item.averagePrice)}</td><td data-label="卖家 / 品牌"><strong>{item.sellerCount?.toLocaleString("zh-CN") ?? "—"}</strong><small>{item.brandCount?.toLocaleString("zh-CN") ?? "—"} 品牌</small></td><td data-label="买断率">{percent(item.buyoutRate)}</td><td data-label="前五卖家">{percent(item.topFiveSellerShare)}</td></tr>)}</tbody></table></div></div>;
+function CategoryTable(props: { items: Awaited<ReturnType<typeof fetchSelectionCategories>>["items"]; periodDays: SelectionCategoryPeriod; onOpen?: ((category: { id: string; name: string; level1Name: string }, period: SelectionCategoryPeriod) => void) | undefined }): React.JSX.Element {
+  return <div className="selection-table-card"><div className="table-scroll"><table className="selection-keyword-table category-table"><thead><tr><th scope="col">三级类目</th><th scope="col">一级类目</th><th scope="col">订购金额</th><th scope="col">增幅</th><th scope="col">件数</th><th scope="col">平均价格</th><th scope="col">卖家 / 品牌</th><th scope="col">买断率</th><th scope="col">前五卖家</th></tr></thead><tbody>{props.items.map((item) => <tr key={item.id}><td data-label="三级类目"><button className="category-link" type="button" onClick={() => props.onOpen?.({ id: item.id, name: item.name, level1Name: item.categoryLevel1Name }, props.periodDays)}><strong>{item.name}</strong><small>ID {item.id} · 查看商品与热词</small></button></td><td data-label="一级类目">{item.categoryLevel1Name}</td><td data-label="订购金额">{formatMoney(item.gmv)}</td><td data-label="增幅"><span className={`market-growth ${item.gmvGrowth !== null && item.gmvGrowth < 0 ? "is-negative" : ""}`}>{percent(item.gmvGrowth)}</span></td><td data-label="件数">{item.orderedUnits.toLocaleString("zh-CN")}</td><td data-label="平均价格">{formatMoney(item.averagePrice)}</td><td data-label="卖家 / 品牌"><strong>{item.sellerCount?.toLocaleString("zh-CN") ?? "—"}</strong><small>{item.brandCount?.toLocaleString("zh-CN") ?? "—"} 品牌</small></td><td data-label="买断率">{percent(item.buyoutRate)}</td><td data-label="前五卖家">{percent(item.topFiveSellerShare)}</td></tr>)}</tbody></table></div></div>;
 }
 
 /** Settings card shared by the data-source tab. */
-export function SelectionCategorySourceCard(props: { settings: SelectionCategorySourceSettingsView | undefined; onSaved: () => Promise<void>; onNotice: (notice: CategoryNotice) => void }): React.JSX.Element {
+export function SelectionCategorySourceCard(props: { settings: SelectionDiscoverySourceSettings | undefined; onSaved: () => Promise<void>; onNotice: (notice: CategoryNotice) => void }): React.JSX.Element {
+  const queryClient = useQueryClient();
   const [collectorEnabled, setCollectorEnabled] = useState(false);
   const [opencliPath, setOpencliPath] = useState("");
   const [cloudBaseUrl, setCloudBaseUrl] = useState("");
   const [uploadToken, setUploadToken] = useState("");
+  const syncQuery = useQuery({
+    queryKey: ["selection-discovery-sync"],
+    queryFn: fetchSelectionDiscoverySync,
+    refetchInterval: (query) => query.state.data?.status === "running" ? 1_000 : false,
+  });
   useEffect(() => {
     if (props.settings) {
       setCollectorEnabled(props.settings.collectorEnabled);
@@ -215,14 +202,37 @@ export function SelectionCategorySourceCard(props: { settings: SelectionCategory
     }
   }, [props.settings]);
   const mutation = useMutation({
-    mutationFn: () => updateSelectionCategorySettings({
+    mutationFn: () => updateSelectionDiscoverySettings({
       collectorEnabled,
       opencliPath: opencliPath.trim(),
       cloudBaseUrl: cloudBaseUrl.trim() || null,
       ...(uploadToken.trim() ? { uploadToken: uploadToken.trim() } : {}),
     }),
-    onSuccess: async () => { setUploadToken(""); props.onNotice({ tone: "success", text: "类目数据源设置已保存。" }); await props.onSaved(); },
+    onSuccess: async () => { setUploadToken(""); props.onNotice({ tone: "success", text: "市场数据源设置已保存。" }); await props.onSaved(); },
     onError: (error) => props.onNotice({ tone: "error", text: error.message }),
   });
-  return <article className="source-card source-card--categories"><div className="source-card__heading"><div className="source-icon source-icon--cyan"><ChartScatter size={20} /></div><div><p className="eyebrow">OZON CATEGORY CLOUD</p><h3>类目采集与云端快照</h3><p>只在指定主机启用采集；其他设备保持关闭并只读云端快照。</p></div><span className={`source-state ${props.settings?.cloudBaseUrl ? "is-ready" : ""}`}>{props.settings?.collectorEnabled ? "主采集机" : props.settings?.cloudBaseUrl ? "只读客户端" : "待配置"}</span></div><form className="category-source-form" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}><label className="category-collector-toggle"><input type="checkbox" checked={collectorEnabled} onChange={(event) => setCollectorEnabled(event.target.checked)} /><span><strong>将当前设备设为主采集机</strong><small>开启后才显示 OpenCLI 一键同步；不要在多台设备同时开启。</small></span></label><label className="field"><span>OpenCLI 可执行文件</span><input value={opencliPath} onChange={(event) => setOpencliPath(event.target.value)} required={collectorEnabled} disabled={!collectorEnabled} /></label><label className="field"><span>类目云端服务地址</span><input type="url" value={cloudBaseUrl} onChange={(event) => setCloudBaseUrl(event.target.value)} placeholder="https://category-data.example.com" /></label><label className="field"><span>上传 Bearer 密钥</span><input type="password" autoComplete="new-password" value={uploadToken} onChange={(event) => setUploadToken(event.target.value)} disabled={!collectorEnabled} placeholder={props.settings?.hasUploadToken ? "已加密保存；留空保持现有密钥" : "仅主采集机填写"} /><small>AES-256-GCM 加密保存，接口永不返回明文。</small></label><button className="primary-button" type="submit" disabled={mutation.isPending}>{mutation.isPending ? "正在保存…" : "保存类目数据源"}</button></form></article>;
+  const invalidateMarketData = async (): Promise<void> => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["selection-discovery-sync"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-categories"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-category-overview"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-product-rankings"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-market-queries"] }),
+      queryClient.invalidateQueries({ queryKey: ["selection-overview"] }),
+    ]);
+  };
+  const syncMutation = useMutation({
+    mutationFn: startSelectionDiscoverySync,
+    onSuccess: async () => { props.onNotice({ tone: "success", text: "统一市场同步已启动，将依次采集类目、商品和热词。" }); await invalidateMarketData(); },
+    onError: (error) => props.onNotice({ tone: "error", text: error.message }),
+  });
+  const refreshMutation = useMutation({
+    mutationFn: refreshSelectionDiscoveryFromCloud,
+    onSuccess: async () => { props.onNotice({ tone: "success", text: "已更新到云端最新市场快照。" }); await invalidateMarketData(); },
+    onError: (error) => props.onNotice({ tone: "error", text: error.message }),
+  });
+  const sync = syncQuery.data;
+  const isCollector = props.settings?.collectorEnabled ?? false;
+  const actionPending = syncMutation.isPending || refreshMutation.isPending || sync?.status === "running";
+  return <article className="source-card source-card--categories"><div className="source-card__heading"><div className="source-icon source-icon--cyan"><ChartScatter size={20} /></div><div><p className="eyebrow">OZON MARKET CLOUD</p><h3>统一市场采集与云端快照</h3><p>同步类目、热销商品和热搜词；其他设备只读同一份云端快照。</p></div><span className={`source-state ${props.settings?.cloudBaseUrl ? "is-ready" : ""}`}>{isCollector ? "主采集机" : props.settings?.cloudBaseUrl ? "只读客户端" : "待配置"}</span></div><section className="discovery-source-control" aria-label="统一市场同步"><div><strong>{isCollector ? "从 Ozon Seller 同步全部市场数据" : "读取主采集机发布的市场快照"}</strong><small>{isCollector ? `批量读取类目、热销商品和热搜词，预计 ${props.settings?.estimatedDurationMinutes.join("～") ?? "8～15"} 分钟；遇到 429 会自动降速。` : "断网时继续使用本机最后一次成功缓存。"}</small></div><button className="primary-button" type="button" disabled={!props.settings || actionPending || (!isCollector && !props.settings.cloudBaseUrl)} onClick={() => isCollector ? syncMutation.mutate() : refreshMutation.mutate()}>{isCollector ? <RefreshCw size={16} className={actionPending ? "is-spinning" : ""} /> : <CloudDownload size={16} />}{actionPending ? "正在同步…" : isCollector ? "一键同步全部市场数据" : "刷新云端数据"}</button></section>{sync?.status === "running" && <div className="category-sync-progress" role="status" aria-live="polite"><div><span style={{ width: `${sync.totalSteps > 0 ? (sync.completedSteps / sync.totalSteps) * 100 : 0}%` }} /></div><p>{sync.currentItem ?? "正在读取一级类目…"}<strong>{sync.completedSteps} / {sync.totalSteps || "—"}</strong></p></div>}{sync?.status === "failed" && <div className="page-error category-sync-error"><h3>上次市场同步未完成</h3><p>{sync.error}</p><small>成功分页已保留，点击同步会从断点继续。</small></div>}<form className="category-source-form" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}><label className="category-collector-toggle"><input type="checkbox" checked={collectorEnabled} onChange={(event) => setCollectorEnabled(event.target.checked)} /><span><strong>将当前设备设为主采集机</strong><small>不要在多台设备同时开启采集。</small></span></label><label className="field"><span>OpenCLI 可执行文件</span><input value={opencliPath} onChange={(event) => setOpencliPath(event.target.value)} required={collectorEnabled} disabled={!collectorEnabled} /></label><label className="field"><span>市场快照云端服务地址</span><input type="url" value={cloudBaseUrl} onChange={(event) => setCloudBaseUrl(event.target.value)} placeholder="https://market-data.example.com" /></label><label className="field"><span>上传 Bearer 密钥</span><input type="password" autoComplete="new-password" value={uploadToken} onChange={(event) => setUploadToken(event.target.value)} disabled={!collectorEnabled} placeholder={props.settings?.hasUploadToken ? "已加密保存；留空保持现有密钥" : "仅主采集机填写"} /><small>AES-256-GCM 加密保存，接口永不返回明文。</small></label><button className="secondary-button" type="submit" disabled={mutation.isPending}>{mutation.isPending ? "正在保存…" : "保存市场数据源设置"}</button></form></article>;
 }
