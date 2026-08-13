@@ -34,6 +34,8 @@ Source: "stage\OzonGMVService.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "OzonGMVService.xml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install-service.ps1"; Flags: dontcopy
 Source: "install-service.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "notification-agent.vbs"; DestDir: "{app}"; Flags: ignoreversion
+Source: "manage-notifier.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{commonappdata}\Ozon GMV Dashboard"
@@ -44,10 +46,11 @@ Name: "{commonappdata}\Ozon GMV Dashboard\backups"
 Name: "{commonappdata}\Ozon GMV Dashboard\updates"
 
 [Icons]
-Name: "{autoprograms}\Ozon GMV Dashboard"; Filename: "http://127.0.0.1:3001"
+Name: "{autoprograms}\Ozon GMV Dashboard"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\notification-agent.vbs"" /open"; WorkingDir: "{app}"; AppUserModelID: "com.ozon.gmv-dashboard"
 Name: "{autodesktop}\Ozon GMV Dashboard"; Filename: "http://127.0.0.1:3001"
 
 [Run]
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\manage-notifier.ps1"" -InstallDir ""{app}"""; Flags: runasoriginaluser waituntilterminated
 Filename: "http://127.0.0.1:3001/setup"; Description: "打开 Ozon GMV Dashboard"; Flags: shellexec postinstall skipifsilent nowait
 
 [Code]
@@ -71,7 +74,7 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   if not RunServiceScript('prepare', False) then
-    Result := '无法停止旧服务或创建升级备份，安装已取消。'
+    Result := '无法停止旧服务或创建升级备份，安装已取消。详情请查看 C:\ProgramData\Ozon GMV Dashboard\logs\installer.log。'
   else
     Result := '';
 end;

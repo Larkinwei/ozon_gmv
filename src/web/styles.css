@@ -3406,6 +3406,22 @@ td {
 
 .settings-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
+.notification-settings { display: grid; gap: 18px; }
+.notification-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 64px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+.notification-toggle span { display: grid; gap: 4px; }
+.notification-toggle small { color: var(--muted); }
+.notification-toggle input { width: 22px; height: 22px; accent-color: var(--primary); }
+
 .connection-result {
   align-items: center;
   margin: 14px 0 0;

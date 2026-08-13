@@ -12,11 +12,13 @@ import type { AppConfig } from "./config";
 import { AdminRepository } from "./db/admin-repository";
 import { DashboardRepository } from "./db/dashboard-repository";
 import type { AppDatabase } from "./db/database";
+import { SettingsRepository } from "./db/settings-repository";
 import { StoresRepository } from "./db/stores-repository";
 import { WallboardPairingsRepository } from "./db/wallboard-pairings-repository";
 import type { DashboardEventBus } from "./realtime/event-bus";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerDashboardRoutes } from "./routes/dashboard";
+import { registerNotificationRoutes } from "./routes/notifications";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSelectionRoutes } from "./routes/selection";
 import { registerSelectionCategoryRoutes } from "./routes/selection-categories";
@@ -24,9 +26,10 @@ import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
 import { wallboardAuthorization } from "./security/wallboard-session";
-import type { ProxySettingsService } from "./services/proxy-settings-service";
 import { SelectionModule } from "./selection/selection-module";
 import { WordstatClient } from "./selection/wordstat-client";
+import { OrderNotificationService } from "./services/order-notification-service";
+import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { UpdateService } from "./services/update-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
@@ -121,6 +124,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const administrators = new AdminRepository(database);
   const stores = new StoresRepository(database);
   const pairings = new WallboardPairingsRepository(database);
+  const notifications = new OrderNotificationService(new SettingsRepository(database), events);
   const selection = dependencies.selection ?? new SelectionModule(config, database, {
     wordstatFactory: (folderId, apiKey) => new WordstatClient({
       folderId,
@@ -139,9 +143,11 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerSelectionRoutes(app, selection);
   registerSelectionCategoryRoutes(app, categories);
   registerSettingsRoutes(app, proxySettings, updates);
+  registerNotificationRoutes(app, notifications);
   registerWallboardManagementRoutes(app, config, pairings);
   app.get("/api/runtime", async () => ({ role: "admin" as const }));
   registerHealthRoutes(app, database);
+  app.addHook("onClose", async () => notifications.close());
   await registerWebAssets(app);
   registerErrorHandler(app);
   return app;

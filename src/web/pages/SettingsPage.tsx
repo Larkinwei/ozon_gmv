@@ -1,4 +1,4 @@
-import { Check, Clipboard, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
+import { BellRing, Check, Clipboard, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -8,11 +8,14 @@ import {
   checkSoftwareUpdate,
   createWallboardPairing,
   fetchNetworkSettings,
+  fetchOrderNotificationSettings,
   fetchUpdateStatus,
   installSoftwareUpdate,
   revokeWallboardSessions,
   testNetworkSettings,
+  testOrderNotification,
   updateNetworkSettings,
+  updateOrderNotificationSettings,
 } from "../api";
 import { AppNav } from "../components/AppNav";
 
@@ -20,6 +23,11 @@ import { AppNav } from "../components/AppNav";
 export default function SettingsPage(): React.JSX.Element {
   const queryClient = useQueryClient();
   const settingsQuery = useQuery({ queryKey: ["network-settings"], queryFn: fetchNetworkSettings });
+  const notificationQuery = useQuery({
+    queryKey: ["order-notifications"],
+    queryFn: fetchOrderNotificationSettings,
+    refetchInterval: 15_000,
+  });
   const updateQuery = useQuery({
     queryKey: ["software-update"],
     queryFn: fetchUpdateStatus,
@@ -66,6 +74,17 @@ export default function SettingsPage(): React.JSX.Element {
       setInstallingVersion(data.latestVersion);
       setNotice("安装包正在下载并校验，完成后服务会短暂离线并自动恢复。");
     },
+  });
+  const notificationMutation = useMutation({
+    mutationFn: updateOrderNotificationSettings,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["order-notifications"], data);
+      setNotice(data.enabled ? "新订单系统通知已开启。" : "新订单系统通知已关闭。");
+    },
+  });
+  const notificationTestMutation = useMutation({
+    mutationFn: testOrderNotification,
+    onSuccess: () => setNotice("测试通知已发送，请查看系统通知中心。"),
   });
 
   useEffect(() => {
@@ -114,7 +133,9 @@ export default function SettingsPage(): React.JSX.Element {
     ?? pairingMutation.error
     ?? revokeMutation.error
     ?? checkUpdateMutation.error
-    ?? installUpdateMutation.error;
+    ?? installUpdateMutation.error
+    ?? notificationMutation.error
+    ?? notificationTestMutation.error;
   const update = updateQuery.data;
   const updateBusy = update?.state === "checking" || update?.state === "downloading" || update?.state === "installing";
   const progress = update?.totalBytes ? Math.min(100, Math.round((update.downloadedBytes / update.totalBytes) * 100)) : 0;
@@ -188,6 +209,33 @@ export default function SettingsPage(): React.JSX.Element {
               </div>
               {testMutation.data && <div className="connection-result" role="status"><Check size={17} /><strong>{testMutation.data.message}</strong><span>{testMutation.data.latencyMs} ms · {testMutation.data.proxy ?? "直连"}</span></div>}
             </form>
+          )}
+        </section>
+
+        <section className="settings-card" aria-labelledby="notifications-heading">
+          <div className="settings-card__heading"><div className="settings-icon"><BellRing size={21} /></div><div><p className="eyebrow">ORDER ALERTS</p><h3 id="notifications-heading">新订单系统通知</h3><p>关闭网页后仍可通过 Windows 或 macOS 系统通知获知新订单。</p></div></div>
+          {notificationQuery.isLoading ? <div className="settings-skeleton settings-skeleton--compact" aria-busy="true" /> : (
+            <div className="notification-settings">
+              <label className="notification-toggle">
+                <span><strong>新订单弹窗</strong><small>默认开启；历史回填、订单更新和取消不会触发弹窗。</small></span>
+                <input
+                  type="checkbox"
+                  checked={notificationQuery.data?.enabled ?? true}
+                  disabled={!notificationQuery.data?.supported || notificationMutation.isPending}
+                  onChange={(event) => notificationMutation.mutate(event.target.checked)}
+                />
+              </label>
+              <dl className="update-facts">
+                <div><dt>平台支持</dt><dd>{notificationQuery.data?.supported ? "支持" : "当前系统不支持"}</dd></div>
+                <div><dt>通知助手</dt><dd>{notificationQuery.data?.agentConnected ? "已连接" : "尚未连接"}</dd></div>
+                <div><dt>最近通知</dt><dd>{notificationQuery.data?.lastDeliveredAt ? new Date(notificationQuery.data.lastDeliveredAt).toLocaleString("zh-CN") : "暂无"}</dd></div>
+              </dl>
+              {notificationQuery.data?.lastError && <div className="field-error" role="alert">{notificationQuery.data.lastError}</div>}
+              {!notificationQuery.data?.agentConnected && notificationQuery.data?.supported && <div className="update-message"><strong>通知助手尚未连接</strong><p>完成本机服务安装或更新后会随系统登录自动启动，连接建立后即可在关闭网页时收到提醒。</p></div>}
+              <div className="settings-actions">
+                <button className="secondary-button" type="button" disabled={!notificationQuery.data?.enabled || !notificationQuery.data?.agentConnected || notificationTestMutation.isPending} onClick={() => notificationTestMutation.mutate()}><BellRing size={17} />{notificationTestMutation.isPending ? "正在发送…" : "发送测试通知"}</button>
+              </div>
+            </div>
           )}
         </section>
 

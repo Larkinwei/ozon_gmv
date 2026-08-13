@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { fetchRuntime, fetchSession } from "./api";
 
@@ -31,6 +31,7 @@ function PairingRequired(): React.JSX.Element {
 }
 
 export function App(): React.JSX.Element {
+  const location = useLocation();
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: fetchRuntime, retry: false });
   const session = useQuery({
     queryKey: ["session", runtime.data?.role],
@@ -66,11 +67,15 @@ export function App(): React.JSX.Element {
     );
   }
   if (!session.data?.authenticated) {
+    const currentPath = `${location.pathname}${location.search}`;
+    const loginTarget = location.pathname === "/login"
+      ? currentPath
+      : `/login?next=${encodeURIComponent(currentPath)}`;
     return (
       <Suspense fallback={<AppLoading />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          <Route path="*" element={<Navigate to={loginTarget} replace />} />
         </Routes>
       </Suspense>
     );

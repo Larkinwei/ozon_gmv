@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
+import { useSearchParams } from "react-router-dom";
 
 import type { DashboardRange, RecentOrder } from "../../shared/contracts";
 import { fetchDashboard, fetchStores } from "../api";
@@ -37,13 +38,35 @@ function DashboardSkeleton(): React.JSX.Element {
 
 export default function DashboardPage({ wallboard = false }: DashboardPageProps): React.JSX.Element {
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const orderIdFromUrl = searchParams.get("order");
   const [storeId, setStoreId] = useState("all");
   const [range, setRange] = useState<DashboardRange>("today");
   const [customFrom, setCustomFrom] = useState(() => defaultCustomTime(-24));
   const [customTo, setCustomTo] = useState(() => defaultCustomTime(0));
   const [feedPaused, setFeedPaused] = useState(false);
   const [feedOrders, setFeedOrders] = useState<RecentOrder[]>([]);
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(() => orderIdFromUrl);
+
+  useEffect(() => {
+    setSelectedOrderId(orderIdFromUrl);
+  }, [orderIdFromUrl]);
+
+  function selectOrder(orderId: string): void {
+    setSelectedOrderId(orderId);
+    setSearchParams((current) => {
+      current.set("order", orderId);
+      return current;
+    }, { replace: true });
+  }
+
+  function closeOrder(): void {
+    setSelectedOrderId(null);
+    setSearchParams((current) => {
+      current.delete("order");
+      return current;
+    }, { replace: true });
+  }
 
   const handleStreamEvent = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -119,14 +142,14 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
               orders={feedOrders}
               paused={feedPaused}
               onPausedChange={setFeedPaused}
-              onOrderSelect={setSelectedOrderId}
+              onOrderSelect={selectOrder}
             />
           </div>
           <SyncStrip stores={dashboardQuery.data.sync} />
         </main>
       ) : null}
       {selectedOrderId && (
-        <OrderDetailDrawer orderId={selectedOrderId} onClose={() => setSelectedOrderId(null)} />
+        <OrderDetailDrawer orderId={selectedOrderId} onClose={closeOrder} />
       )}
     </div>
   );

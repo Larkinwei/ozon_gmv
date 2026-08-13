@@ -3,13 +3,20 @@
 set -euo pipefail
 
 SERVICE_LABEL="com.ozon.gmv-dashboard"
+NOTIFIER_LABEL="com.ozon.gmv-notifier"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$PROJECT_DIR/.data"
 LOG_DIR="$DATA_DIR/logs"
 PLIST_TEMPLATE="$SCRIPT_DIR/com.ozon.gmv-dashboard.plist.template"
 PLIST_PATH="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
+NOTIFIER_PLIST_TEMPLATE="$SCRIPT_DIR/com.ozon.gmv-notifier.plist.template"
+NOTIFIER_PLIST_PATH="$HOME/Library/LaunchAgents/$NOTIFIER_LABEL.plist"
 SERVICE_TARGET="gui/$(id -u)/$SERVICE_LABEL"
+NOTIFIER_TARGET="gui/$(id -u)/$NOTIFIER_LABEL"
+NOTIFIER_APP="$DATA_DIR/bin/OzonGMVNotifier.app"
+NOTIFIER_BIN="$NOTIFIER_APP/Contents/MacOS/OzonGMVNotifier"
+NOTIFIER_INFO_PLIST="$SCRIPT_DIR/OzonGMVNotifier.Info.plist"
 DOMAIN_TARGET="gui/$(id -u)"
 ADMIN_READY_URL="http://127.0.0.1:3001/readyz"
 ACTION="${1:-}"
@@ -43,6 +50,22 @@ function resolve_node() {
 
 function service_is_loaded() {
   launchctl print "$SERVICE_TARGET" >/dev/null 2>&1
+}
+
+function notifier_is_loaded() {
+  launchctl print "$NOTIFIER_TARGET" >/dev/null 2>&1
+}
+
+function wait_until_notifier_unloaded() {
+  local attempt
+  for attempt in $(seq 1 25); do
+    if ! notifier_is_loaded; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "The previous notification LaunchAgent did not stop within 25 seconds." >&2
+  return 1
 }
 
 function wait_until_unloaded() {
@@ -95,6 +118,57 @@ function render_plist() {
   mv "$temporary_plist" "$PLIST_PATH"
 }
 
+function render_notifier_plist() {
+  local node_path="$1"
+  local temporary_plist="$NOTIFIER_PLIST_PATH.tmp"
+  mkdir -p "$(dirname "$NOTIFIER_PLIST_PATH")" "$LOG_DIR" "$DATA_DIR/notifier"
+  sed \
+    -e "s|__NODE_BIN__|$(escape_sed_replacement "$node_path")|g" \
+    -e "s|__PROJECT_DIR__|$(escape_sed_replacement "$PROJECT_DIR")|g" \
+    -e "s|__NOTIFIER_DATA_DIR__|$(escape_sed_replacement "$DATA_DIR/notifier")|g" \
+    -e "s|__MAC_NOTIFIER_BIN__|$(escape_sed_replacement "$NOTIFIER_BIN")|g" \
+    -e "s|__STDOUT_PATH__|$(escape_sed_replacement "$LOG_DIR/notifier.stdout.log")|g" \
+    -e "s|__STDERR_PATH__|$(escape_sed_replacement "$LOG_DIR/notifier.stderr.log")|g" \
+    "$NOTIFIER_PLIST_TEMPLATE" > "$temporary_plist"
+  plutil -lint "$temporary_plist" >/dev/null
+  chmod 600 "$temporary_plist"
+  mv "$temporary_plist" "$NOTIFIER_PLIST_PATH"
+}
+
+function build_macos_notifier() {
+  local swift_source="$SCRIPT_DIR/OzonGMVNotifier.swift"
+  if ! xcrun --find swiftc >/dev/null 2>&1; then
+    echo "Apple Command Line Tools are required to build the macOS notification helper." >&2
+    exit 1
+  fi
+  mkdir -p "$NOTIFIER_APP/Contents/MacOS"
+  cp "$NOTIFIER_INFO_PLIST" "$NOTIFIER_APP/Contents/Info.plist"
+  xcrun --sdk macosx swiftc -suppress-warnings \
+    -framework AppKit \
+    -framework UserNotifications \
+    "$swift_source" \
+    -o "$NOTIFIER_BIN"
+  chmod 755 "$NOTIFIER_BIN"
+  plutil -lint "$NOTIFIER_APP/Contents/Info.plist" >/dev/null
+  codesign --force --deep --sign - "$NOTIFIER_APP" >/dev/null
+  # Register the hidden app so Notification Center can resolve its stable bundle identity.
+  local launch_services_register="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  "$launch_services_register" -f "$NOTIFIER_APP"
+}
+
+function register_notifier() {
+  local node_path="$1"
+  build_macos_notifier
+  render_notifier_plist "$node_path"
+  if notifier_is_loaded; then
+    launchctl bootout "$NOTIFIER_TARGET"
+    wait_until_notifier_unloaded
+  fi
+  launchctl bootstrap "$DOMAIN_TARGET" "$NOTIFIER_PLIST_PATH"
+  launchctl enable "$NOTIFIER_TARGET"
+  launchctl kickstart -k "$NOTIFIER_TARGET"
+}
+
 function wait_until_ready() {
   local attempt
   # launchd may throttle a recently restarted KeepAlive job for slightly over 30 seconds.
@@ -124,6 +198,7 @@ function register_service() {
   launchctl enable "$SERVICE_TARGET"
   launchctl kickstart -k "$SERVICE_TARGET"
   wait_until_ready
+  register_notifier "$node_path"
 }
 
 function install_service() {
@@ -139,6 +214,11 @@ function print_status() {
     return 1
   fi
   launchctl print "$SERVICE_TARGET" | awk '/state =|pid =|last exit code =/ { print }'
+  if notifier_is_loaded; then
+    echo "Notification agent: loaded"
+  else
+    echo "Notification agent: not loaded" >&2
+  fi
   if curl --silent --fail --max-time 2 "$ADMIN_READY_URL" >/dev/null; then
     echo "Health: ready"
     echo "Dashboard: http://127.0.0.1:3001"
@@ -155,6 +235,11 @@ function restart_service() {
   fi
   launchctl kickstart -k "$SERVICE_TARGET"
   wait_until_ready
+  if notifier_is_loaded; then
+    launchctl kickstart -k "$NOTIFIER_TARGET"
+  else
+    register_notifier "$(resolve_node)"
+  fi
 }
 
 function update_service() {
@@ -169,6 +254,12 @@ function update_service() {
 }
 
 function uninstall_service() {
+  if notifier_is_loaded; then
+    launchctl bootout "$NOTIFIER_TARGET"
+  fi
+  if [[ -f "$NOTIFIER_PLIST_PATH" ]]; then
+    rm "$NOTIFIER_PLIST_PATH"
+  fi
   if service_is_loaded; then
     launchctl bootout "$SERVICE_TARGET"
   fi

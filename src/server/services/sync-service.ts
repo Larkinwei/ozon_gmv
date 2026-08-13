@@ -145,6 +145,9 @@ export class SyncService {
         orderAt: posting.orderAt.toISOString(),
         fulfillment: posting.fulfillmentMode,
         status: posting.status,
+        storeColor: store.color,
+        productNames: posting.items.map((item) => item.name),
+        itemCount: posting.items.reduce((total, item) => total + item.quantity, 0),
       });
     }
     return mutation.kind;

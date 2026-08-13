@@ -26,6 +26,7 @@
 - 程序安装到 `%ProgramFiles%\Ozon GMV Dashboard`。
 - SQLite、配置、日志和备份保存在 `%ProgramData%\Ozon GMV Dashboard`。
 - `OzonGMVService` 以延迟自动启动方式常驻，失败时由 Windows 服务管理器自动重启。
+- 当前用户登录后会自动启动独立通知助手；无需打开网页也能在右下角收到新订单系统通知。
 - `127.0.0.1:3001` 只提供本机完整管理后台。
 - `0.0.0.0:3002` 只提供经过一次性配对的局域网只读大屏。
 - 普通覆盖升级保留全部数据；卸载默认也保留数据。
@@ -46,7 +47,7 @@ npm run service:mac:install
 npm run service:mac:status
 ```
 
-更新代码后运行 `npm run service:mac:update` 完成构建和重启。`restart` 只重启服务，`uninstall` 只移除 LaunchAgent，均不会删除 `.data` 中的 SQLite、配置、日志或备份。
+更新代码后运行 `npm run service:mac:update` 完成构建和重启。命令会同时维护 Dashboard 与通知助手两个 LaunchAgent；关闭网页后，新订单仍会出现在 macOS 通知中心。`restart` 只重启服务，`uninstall` 只移除 LaunchAgent，均不会删除 `.data` 中的 SQLite、配置、日志或备份。
 
 ## 本地开发
 

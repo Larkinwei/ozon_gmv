@@ -1,12 +1,13 @@
 import { Activity, Eye, EyeOff, LockKeyhole, ShieldCheck, Store } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { login } from "../api";
 
 export default function LoginPage(): React.JSX.Element {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
@@ -15,7 +16,7 @@ export default function LoginPage(): React.JSX.Element {
     mutationFn: () => login(username, password),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["session"] });
-      navigate("/dashboard");
+      navigate(safeNextPath(searchParams.get("next")));
     },
   });
 
@@ -81,4 +82,18 @@ export default function LoginPage(): React.JSX.Element {
       </section>
     </main>
   );
+}
+
+function safeNextPath(value: string | null): string {
+  if (!value) {
+    return "/dashboard";
+  }
+  try {
+    const target = new URL(value, window.location.origin);
+    return target.origin === window.location.origin && target.pathname === "/dashboard"
+      ? `${target.pathname}${target.search}`
+      : "/dashboard";
+  } catch {
+    return "/dashboard";
+  }
 }

@@ -189,6 +189,28 @@ export interface UpdateView {
   error: string | null;
 }
 
+export interface OrderNotificationSettings {
+  supported: boolean;
+  enabled: boolean;
+  agentConnected: boolean;
+  lastDeliveredAt: string | null;
+  lastError: string | null;
+}
+
+export interface OrderNotificationEvent {
+  id: string;
+  kind: "order" | "test";
+  occurredAt: string;
+  orderId: string | null;
+  storeName: string;
+  storeColor: string;
+  amount: Money;
+  orderAt: string;
+  fulfillment: FulfillmentMode;
+  productName: string;
+  itemCount: number;
+}
+
 export interface StoreCreateInput {
   name: string;
   clientId: string;

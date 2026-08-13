@@ -62,6 +62,7 @@ describe("administrator setup and session API", () => {
       const unauthorized = await app.inject({ method: "GET", url: "/api/dashboard/overview" });
       expect(unauthorized.statusCode).toBe(401);
       expect((await app.inject({ method: "GET", url: "/api/settings/update" })).statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: "/api/settings/notifications" })).statusCode).toBe(401);
 
       const setupResponse = await app.inject({
         method: "POST",
@@ -92,6 +93,26 @@ describe("administrator setup and session API", () => {
         cookies: { ozon_session: cookie?.value ?? "" },
       });
       expect(updateResponse.json()).toMatchObject({ supported: false, state: "unsupported", currentVersion: "1.4.0" });
+      const notificationResponse = await app.inject({
+        method: "GET",
+        url: "/api/settings/notifications",
+        cookies: { ozon_session: cookie?.value ?? "" },
+      });
+      expect(notificationResponse.json()).toMatchObject({ enabled: true, agentConnected: false });
+      const localStatus = await app.inject({
+        method: "POST",
+        url: "/api/internal/notifications/status",
+        payload: {},
+      });
+      expect(localStatus.statusCode).toBe(200);
+      expect(localStatus.json()).toMatchObject({ agentConnected: true });
+      const browserStatus = await app.inject({
+        method: "POST",
+        url: "/api/internal/notifications/status",
+        headers: { origin: "http://127.0.0.1:3001" },
+        payload: {},
+      });
+      expect(browserStatus.statusCode).toBe(403);
     } finally {
       await app.close();
       context.cleanup();

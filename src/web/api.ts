@@ -2,6 +2,7 @@ import type {
   DashboardRange,
   DashboardSnapshot,
   NetworkSettingsView,
+  OrderNotificationSettings,
   OrderDetail,
   ProxyMode,
   ProxyTestResult,
@@ -213,6 +214,21 @@ export async function updateNetworkSettings(mode: ProxyMode, manualProxy?: strin
 
 export async function testNetworkSettings(): Promise<ProxyTestResult> {
   return apiFetch("/api/settings/network/test", { method: "POST" });
+}
+
+export async function fetchOrderNotificationSettings(): Promise<OrderNotificationSettings> {
+  if (DEMO_MODE) {
+    return { supported: true, enabled: true, agentConnected: true, lastDeliveredAt: null, lastError: null };
+  }
+  return apiFetch("/api/settings/notifications");
+}
+
+export async function updateOrderNotificationSettings(enabled: boolean): Promise<OrderNotificationSettings> {
+  return apiFetch("/api/settings/notifications", { method: "PUT", body: JSON.stringify({ enabled }) });
+}
+
+export async function testOrderNotification(): Promise<void> {
+  await apiFetch("/api/settings/notifications/test", { method: "POST" });
 }
 
 export async function fetchUpdateStatus(): Promise<UpdateView> {

@@ -15,12 +15,74 @@ $ServiceExe = Join-Path $InstallDir "OzonGMVService.exe"
 $RollbackRoot = Join-Path $DataDir "backups\upgrade-rollback"
 $RollbackProgram = Join-Path $RollbackRoot "program"
 $RollbackState = Join-Path $RollbackRoot "state.json"
+$InstallLog = Join-Path $DataDir "logs\installer.log"
+$NotificationAgentScript = Join-Path $InstallDir "app\dist\server\notification-agent.js"
+$NotificationTaskName = "OzonGMVNotifications"
+
+function Write-InstallLog([string]$Message) {
+  try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $InstallLog) | Out-Null
+    Add-Content -Path $InstallLog -Encoding UTF8 -Value "$([DateTimeOffset]::Now.ToString('o')) [$Phase] $Message"
+  } catch {
+    # Installation must not fail only because diagnostic logging is unavailable.
+  }
+}
 
 function Stop-OzonService {
   $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-  if ($service -and $service.Status -ne "Stopped") {
-    Stop-Service -Name $ServiceName -Force
+  if (-not $service -or $service.Status -eq "Stopped") {
+    return
+  }
+
+  Write-InstallLog "Stopping service from state $($service.Status)."
+  try {
+    Stop-Service -Name $ServiceName -Force -ErrorAction Stop
     $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
+    return
+  } catch {
+    Write-InstallLog "Graceful stop failed: $($_.Exception.Message)"
+  }
+
+  $serviceProcess = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+  if (-not $serviceProcess -or $serviceProcess.State -eq "Stopped") {
+    return
+  }
+  if ($serviceProcess.ProcessId -eq 0) {
+    throw "Service is still $($serviceProcess.State) but has no process ID."
+  }
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($serviceProcess.ProcessId)" -ErrorAction SilentlyContinue
+  if (-not $process -or $process.Name -ne "OzonGMVService.exe") {
+    throw "Refusing to terminate an unverified service process with PID $($serviceProcess.ProcessId)."
+  }
+
+  Write-InstallLog "Force-stopping verified service process tree PID $($serviceProcess.ProcessId)."
+  & taskkill.exe /PID $serviceProcess.ProcessId /T /F | Out-Null
+  Start-Sleep -Seconds 2
+  $serviceProcess = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+  if ($serviceProcess -and $serviceProcess.State -ne "Stopped") {
+    throw "Service remained in state $($serviceProcess.State) after its process tree was terminated."
+  }
+}
+
+function Stop-NotificationAgent {
+  $nodeProcesses = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue
+  foreach ($process in $nodeProcesses) {
+    if ($process.CommandLine -and $process.CommandLine.Contains($NotificationAgentScript)) {
+      Write-InstallLog "Stopping verified notification agent PID $($process.ProcessId)."
+      Invoke-CimMethod -InputObject $process -MethodName Terminate | Out-Null
+    }
+  }
+}
+
+function Remove-NotificationTask {
+  if (Get-ScheduledTask -TaskName $NotificationTaskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $NotificationTaskName -Confirm:$false
+  }
+}
+
+function Start-NotificationTask {
+  if (Get-ScheduledTask -TaskName $NotificationTaskName -ErrorAction SilentlyContinue) {
+    Start-ScheduledTask -TaskName $NotificationTaskName
   }
 }
 
@@ -76,16 +138,19 @@ function Restore-PreviousVersion {
   if (Test-Path $ServiceExe) {
     & $ServiceExe install | Out-Null
     & $ServiceExe start | Out-Null
+    Start-NotificationTask
   }
 }
 
 if ($Phase -eq "prepare") {
+  Write-InstallLog "Preparing an in-place upgrade."
   Protect-DataDirectory
   Save-DetectedProxy
   $databaseBackup = $null
   $serviceWasInstalled = [bool](Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)
   if (Test-Path (Join-Path $InstallDir "runtime\node.exe")) {
     try {
+      Stop-NotificationAgent
       Stop-OzonService
       $maintenance = Join-Path $InstallDir "app\dist\server\maintenance.js"
       if (Test-Path $maintenance) {
@@ -103,6 +168,7 @@ if ($Phase -eq "prepare") {
         ConvertTo-Json | Set-Content -Encoding UTF8 $RollbackState
       Unregister-OzonService
     } catch {
+      Write-InstallLog "Upgrade preparation failed: $($_.Exception.Message)"
       if ($serviceWasInstalled) {
         Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
       }
@@ -113,6 +179,8 @@ if ($Phase -eq "prepare") {
 }
 
 if ($Phase -eq "uninstall") {
+  Stop-NotificationAgent
+  Remove-NotificationTask
   Stop-OzonService
   Unregister-OzonService
   & netsh.exe advfirewall firewall delete rule name="Ozon GMV Wallboard (Private LAN)" | Out-Null
@@ -124,6 +192,7 @@ if ($Phase -eq "uninstall") {
 
 Protect-DataDirectory
 try {
+  Write-InstallLog "Installing and starting the new service version."
   & $ServiceExe install | Out-Null
   & sc.exe config $ServiceName start= delayed-auto | Out-Null
   & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
@@ -147,6 +216,7 @@ try {
     throw "Ozon GMV service did not become ready within 60 seconds."
   }
 } catch {
+  Write-InstallLog "Installation or readiness check failed: $($_.Exception.Message)"
   Restore-PreviousVersion
   throw
 }
