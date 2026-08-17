@@ -1,4 +1,5 @@
 import BetterSqlite3 from "better-sqlite3";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { runMigrations } from "../src/server/db/migrate";
@@ -13,7 +14,7 @@ function csv(rows: string[]): Buffer {
 describe("MyDataModule", () => {
   it("imports a folder, calculates snapshot metrics and skips the same file on repeat", () => {
     const database = new BetterSqlite3(":memory:");
-    runMigrations(database, new URL("../migrations", import.meta.url).pathname);
+    runMigrations(database, fileURLToPath(new URL("../migrations", import.meta.url)));
     const module = new MyDataModule(database);
     const file = { fileName: "MY采集_2026-08-17.csv", content: csv([
       "1001,商品 A,0,10,1234.500,1000,2.5,10,,https://ozon.ru/p/1001,https://cdn.test/a.jpg,local,2026-08-17T03:20:24Z",
@@ -33,7 +34,7 @@ describe("MyDataModule", () => {
 
   it("keeps different days and keywords as separate snapshots, and rejects malformed rows without losing valid rows", () => {
     const database = new BetterSqlite3(":memory:");
-    runMigrations(database, new URL("../migrations", import.meta.url).pathname);
+    runMigrations(database, fileURLToPath(new URL("../migrations", import.meta.url)));
     const module = new MyDataModule(database);
     const files = [
       { fileName: "day-1.csv", content: csv(["1001,商品 A,0,10,100,1000,1,0,рюкзак,https://ozon.ru/p/1001,,local,2026-08-17T03:20:24Z", "bad,broken"]) },
