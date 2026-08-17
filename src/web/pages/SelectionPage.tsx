@@ -69,9 +69,10 @@ import {
 import { SelectionImportDialog } from "../components/SelectionImportDialog";
 import { SelectionKeywordDrawer } from "../components/SelectionKeywordDrawer";
 import { SelectionMarketProductDrawer } from "../components/SelectionMarketProductDrawer";
+import { MyDataPanel } from "../components/MyDataPanel";
 import { formatCompactNumber, formatMoney } from "../format";
 
-type SelectionTab = "queries" | "products" | "categories" | "candidates" | "sources";
+type SelectionTab = "queries" | "products" | "categories" | "candidates" | "sources" | "my-data";
 
 interface Notice {
   tone: "success" | "error";
@@ -84,6 +85,7 @@ const tabOptions: Array<{ value: SelectionTab; label: string; icon: typeof Light
   { value: "categories", label: "类目分析", icon: ChartScatter },
   { value: "candidates", label: "候选池", icon: ListChecks },
   { value: "sources", label: "数据源", icon: Database },
+  { value: "my-data", label: "MY 数据", icon: FileSpreadsheet },
 ];
 
 const sortOptions: Array<{ value: SelectionKeywordSort; label: string }> = [
@@ -500,6 +502,7 @@ export default function SelectionPage(): React.JSX.Element {
               onNotice={setNotice}
             />
           )}
+          {tab === "my-data" && <MyDataPanel onNotice={setNotice} />}
         </div>
       </main>
       {showImport && <SelectionImportDialog onClose={() => setShowImport(false)} onImported={(result) => void importCompleted(result)} />}

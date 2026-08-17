@@ -36,6 +36,7 @@ import type { SyncService } from "./services/sync-service";
 import type { UpdateService } from "./services/update-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
 import { DiscoveryModule } from "./selection/discovery-module";
+import { MyDataModule } from "./selection/my-data-module";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -47,6 +48,7 @@ export interface AppDependencies {
   selection?: SelectionModule;
   categories?: CategoryAnalysisModule;
   discovery?: DiscoveryModule;
+  myData?: MyDataModule;
 }
 
 interface SqliteError extends Error {
@@ -56,7 +58,7 @@ interface SqliteError extends Error {
 async function createBaseApp(config: AppConfig): Promise<FastifyInstance> {
   const app = Fastify({
     logger: config.LOG_LEVEL === "silent" ? false : { level: config.LOG_LEVEL },
-    bodyLimit: 1024 * 1024,
+    bodyLimit: 120 * 1024 * 1024,
     trustProxy: false,
   });
   await app.register(cookie, { secret: config.COOKIE_SECRET, hook: "onRequest" });
@@ -125,7 +127,7 @@ function registerErrorHandler(app: FastifyInstance): void {
 export async function buildAdminApp(dependencies: AppDependencies): Promise<FastifyInstance> {
   const { config, database, events, syncService, proxySettings, updates } = dependencies;
   const app = await createBaseApp(config);
-  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 10 } });
+  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024, files: 200, parts: 220, fields: 10 } });
   const administrators = new AdminRepository(database);
   const stores = new StoresRepository(database);
   const pairings = new WallboardPairingsRepository(database);
@@ -148,12 +150,13 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const discovery = dependencies.discovery ?? new DiscoveryModule(config, database, {
     fetchImplementation: proxySettings.createFetch(),
   });
+  const myData = dependencies.myData ?? new MyDataModule(database);
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
   registerStoreRoutes(app, config, stores, syncService);
   registerDashboardRoutes(app, new DashboardRepository(database), events);
-  registerSelectionRoutes(app, selection);
+  registerSelectionRoutes(app, selection, myData);
   registerSelectionCategoryRoutes(app, categories);
   registerSelectionDiscoveryRoutes(app, discovery);
   registerSettingsRoutes(app, proxySettings, updates);

@@ -473,6 +473,97 @@ export interface SelectionOverview {
   lastImportAt: string | null;
 }
 
+export interface MyDataImportFilePreview {
+  fileName: string;
+  fileSize: number;
+  fileHash: string;
+  isDuplicateFile: boolean;
+  validRows: number;
+  invalidRows: number;
+  duplicateRows: number;
+  captureDays: string[];
+  errors: SelectionImportError[];
+}
+
+export interface MyDataImportPreview {
+  folderName: string;
+  totalFiles: number;
+  newFiles: number;
+  duplicateFiles: number;
+  validRows: number;
+  invalidRows: number;
+  duplicateRows: number;
+  captureDays: string[];
+  files: MyDataImportFilePreview[];
+  canCommit: boolean;
+}
+
+export interface MyDataImportResult {
+  batchId: string;
+  totalFiles: number;
+  importedFiles: number;
+  duplicateFiles: number;
+  validRows: number;
+  invalidRows: number;
+  duplicateRows: number;
+  captureDays: string[];
+  errors: SelectionImportError[];
+}
+
+export interface MyDataImportView {
+  id: string;
+  folderName: string;
+  fileCount: number;
+  validRows: number;
+  invalidRows: number;
+  duplicateRows: number;
+  createdAt: string;
+  status: "completed" | "partial" | "failed";
+}
+
+export interface MyDataProductView {
+  id: string;
+  sku: string;
+  productName: string;
+  currentPrice: Money;
+  monthlyUnits: number;
+  monthlySales: Money;
+  averageOrderValue: Money | null;
+  impressions: number;
+  conversionRate: number;
+  discountRate: number;
+  keyword: string;
+  productUrl: string;
+  imageUrl: string | null;
+  status: string;
+  capturedAt: string;
+  captureDay: string;
+}
+
+export const myDataSorts = ["monthlyUnits", "monthlySales", "averageOrderValue", "conversionRate", "impressions"] as const;
+export type MyDataSort = (typeof myDataSorts)[number];
+
+export interface MyDataProductPage {
+  items: MyDataProductView[];
+  page: number;
+  pageSize: number;
+  total: number;
+  latestCaptureDay: string | null;
+  captureDays: string[];
+  keywords: string[];
+}
+
+export interface MyDataOverview {
+  productCount: number;
+  monthlyUnits: number;
+  monthlySales: Money;
+  averageOrderValue: Money | null;
+  latestCaptureDay: string | null;
+  captureDays: string[];
+  keywordCount: number;
+  importCount: number;
+}
+
 export const selectionCategoryPeriods = [7, 28] as const;
 export type SelectionCategoryPeriod = (typeof selectionCategoryPeriods)[number];
 

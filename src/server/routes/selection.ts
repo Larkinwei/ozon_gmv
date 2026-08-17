@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
+import { myDataSorts, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
 import { requireSession } from "../security/session";
+import type { MyDataImportFile, MyDataModule } from "../selection/my-data-module";
 import type { SelectionImportFile, SelectionModule } from "../selection/selection-module";
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
@@ -29,6 +30,20 @@ const candidateQuerySchema = z.object({
   status: z.enum(selectionCandidateStatuses).optional(),
   search: z.string().trim().max(200).optional(),
 });
+const myDataQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  captureDay: z.string().date().optional(),
+  from: z.string().date().optional(),
+  to: z.string().date().optional(),
+  search: z.string().trim().max(300).optional(),
+  keyword: z.string().trim().max(300).optional(),
+  minMonthlyUnits: z.coerce.number().int().nonnegative().optional(),
+  maxMonthlyUnits: z.coerce.number().int().nonnegative().optional(),
+  minAov: z.coerce.number().nonnegative().optional(),
+  maxAov: z.coerce.number().nonnegative().optional(),
+  sort: z.enum(myDataSorts).default("monthlyUnits"),
+}).refine((query) => !query.from || !query.to || query.from <= query.to, { message: "日期范围不正确", path: ["to"] });
 const candidateCreateSchema = z.object({
   keywordId: z.string().uuid().optional(),
   marketProductId: z.string().uuid().optional(),
@@ -71,6 +86,11 @@ interface MultipartImport extends SelectionImportFile {
   fields: Record<string, string>;
 }
 
+interface MultipartMyImport {
+  files: MyDataImportFile[];
+  fields: Record<string, string>;
+}
+
 function isSqliteConstraint(error: unknown): boolean {
   return typeof error === "object"
     && error !== null
@@ -105,8 +125,21 @@ async function readMultipartImport(request: FastifyRequest): Promise<MultipartIm
   return { ...file, fields };
 }
 
+async function readMultipartMyImport(request: FastifyRequest): Promise<MultipartMyImport> {
+  const files: MyDataImportFile[] = [];
+  const fields: Record<string, string> = {};
+  for await (const part of request.parts()) {
+    if (part.type === "file") {
+      files.push({ fileName: part.filename, content: await part.toBuffer() });
+    } else {
+      fields[part.fieldname] = String(part.value);
+    }
+  }
+  return { files, fields };
+}
+
 /** Registers loopback-admin interfaces for product selection analysis. */
-export function registerSelectionRoutes(app: FastifyInstance, selection: SelectionModule): void {
+export function registerSelectionRoutes(app: FastifyInstance, selection: SelectionModule, myData: MyDataModule): void {
   app.get("/api/selection/overview", { preHandler: requireSession }, async () => selection.getOverview());
 
   app.get("/api/selection/imports", { preHandler: requireSession }, async () => selection.listImports());
@@ -115,6 +148,39 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
     if (!selection.deleteImport(id)) {
       return reply.code(404).send({ error: "IMPORT_NOT_FOUND", message: "导入记录不存在" });
     }
+    return reply.code(204).send();
+  });
+
+  app.post("/api/selection/my/imports/preview", { preHandler: requireSession }, async (request, reply) => {
+    try {
+      const upload = await readMultipartMyImport(request);
+      return myData.previewImport(upload.files, upload.fields.folderName ?? "MY 数据文件夹");
+    } catch (error) {
+      return reply.code(isFileTooLarge(error) ? 413 : 400).send({
+        error: "MY_IMPORT_PREVIEW_FAILED",
+        message: error instanceof Error ? error.message : "无法预览 MY 数据",
+      });
+    }
+  });
+  app.post("/api/selection/my/imports", { preHandler: requireSession }, async (request, reply) => {
+    try {
+      const upload = await readMultipartMyImport(request);
+      return reply.code(201).send(myData.commitImport(upload.files, upload.fields.folderName ?? "MY 数据文件夹"));
+    } catch (error) {
+      return reply.code(isFileTooLarge(error) ? 413 : 400).send({
+        error: "MY_IMPORT_FAILED",
+        message: error instanceof Error ? error.message : "MY 数据导入失败",
+      });
+    }
+  });
+  app.get("/api/selection/my/imports", { preHandler: requireSession }, async () => myData.listImports());
+  app.get("/api/selection/my/overview", { preHandler: requireSession }, async (request) => {
+    const query = z.object({ captureDay: z.string().date().optional() }).parse(request.query);
+    return myData.getOverview(query.captureDay);
+  });
+  app.get("/api/selection/my/products", { preHandler: requireSession }, async (request) => myData.listProducts(myDataQuerySchema.parse(request.query)));
+  app.delete("/api/selection/my/data", { preHandler: requireSession }, async (_request, reply) => {
+    myData.clearData();
     return reply.code(204).send();
   });
   app.post("/api/selection/imports/preview", { preHandler: requireSession }, async (request, reply) => {

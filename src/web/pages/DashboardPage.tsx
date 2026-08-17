@@ -13,6 +13,7 @@ import { StoreRanking } from "../components/StoreRanking";
 import { SyncStrip } from "../components/SyncStrip";
 import { TrendPanel } from "../components/TrendPanel";
 import { useDashboardStream } from "../hooks/use-dashboard-stream";
+import { soundPlayer } from "../sound-player";
 
 interface DashboardPageProps {
   wallboard?: boolean;
@@ -71,7 +72,21 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   const handleStreamEvent = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
   }, [queryClient]);
-  const streamStatus = useDashboardStream(false, handleStreamEvent);
+  // Autoplay policies block audio until the user interacts with the page once;
+  // `unlock` is idempotent, so keeping the listeners for the page lifetime is safe.
+  useEffect(() => {
+    const unlockAudio = (): void => soundPlayer.unlock();
+    window.addEventListener("pointerdown", unlockAudio, { capture: true });
+    window.addEventListener("keydown", unlockAudio, { capture: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlockAudio, { capture: true });
+      window.removeEventListener("keydown", unlockAudio, { capture: true });
+    };
+  }, []);
+  const handleOrderCreated = useCallback(() => {
+    soundPlayer.play();
+  }, []);
+  const streamStatus = useDashboardStream(false, handleStreamEvent, handleOrderCreated);
   const filters = useMemo(() => {
     const from = range === "custom" ? toUtc(customFrom) : undefined;
     const to = range === "custom" ? toUtc(customTo) : undefined;

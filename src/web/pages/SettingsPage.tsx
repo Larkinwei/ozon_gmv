@@ -1,4 +1,4 @@
-import { BellRing, Check, Clipboard, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
+import { BellRing, Check, Clipboard, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug, Volume2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -18,6 +18,7 @@ import {
   updateOrderNotificationSettings,
 } from "../api";
 import { AppNav } from "../components/AppNav";
+import { soundPlayer, useSoundEnabled } from "../sound-player";
 
 /** Manages Ozon network routing and LAN read-only wallboard access. */
 export default function SettingsPage(): React.JSX.Element {
@@ -37,6 +38,7 @@ export default function SettingsPage(): React.JSX.Element {
   const [manualProxy, setManualProxy] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [installingVersion, setInstallingVersion] = useState<string | null>(null);
+  const soundEnabled = useSoundEnabled();
   useEffect(() => {
     if (settingsQuery.data) {
       setMode(settingsQuery.data.mode);
@@ -237,6 +239,21 @@ export default function SettingsPage(): React.JSX.Element {
               </div>
             </div>
           )}
+        </section>
+
+        <section className="settings-card" aria-labelledby="web-sound-heading">
+          <div className="settings-card__heading"><div className="settings-icon"><Volume2 size={21} /></div><div><p className="eyebrow">WEB SOUND</p><h3 id="web-sound-heading">大屏提示音</h3><p>大屏页面打开时，新订单到达会在浏览器内播放提示音；关闭网页后的系统通知不受影响。</p></div></div>
+          <div className="notification-settings">
+            <label className="notification-toggle">
+              <span><strong>新订单提示音</strong><small>仅新订单触发；订单更新、历史回填不会播放。</small></span>
+              <input
+                type="checkbox"
+                checked={soundEnabled}
+                onChange={(event) => soundPlayer.setEnabled(event.target.checked)}
+              />
+            </label>
+            <div className="sound-note"><strong>固定提示音：金币到账</strong><span>使用已配置的 MP3 音效；浏览器可能要求先与页面交互一次才能发声。</span></div>
+          </div>
         </section>
 
         <section className="settings-card" aria-labelledby="wallboard-heading">

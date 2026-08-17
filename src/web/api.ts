@@ -2,6 +2,12 @@ import type {
   DashboardRange,
   DashboardSnapshot,
   NetworkSettingsView,
+  MyDataImportPreview,
+  MyDataImportResult,
+  MyDataImportView,
+  MyDataOverview,
+  MyDataProductPage,
+  MyDataSort,
   OrderNotificationSettings,
   OrderDetail,
   ProxyMode,
@@ -382,6 +388,74 @@ export async function deleteSelectionImport(id: string): Promise<void> {
   if (!DEMO_MODE) {
     await apiFetch(`/api/selection/imports/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
+}
+
+export async function previewMyDataImport(files: File[], folderName: string): Promise<MyDataImportPreview> {
+  if (DEMO_MODE) {
+    return { folderName, totalFiles: files.length, newFiles: files.length, duplicateFiles: 0, validRows: 0, invalidRows: 0, duplicateRows: 0, captureDays: [], files: [], canCommit: false };
+  }
+  const body = new FormData();
+  body.append("folderName", folderName);
+  files.forEach((file) => body.append("files", file, file.name));
+  return apiFetch("/api/selection/my/imports/preview", { method: "POST", body });
+}
+
+export async function commitMyDataImport(files: File[], folderName: string): Promise<MyDataImportResult> {
+  if (DEMO_MODE) {
+    return { batchId: crypto.randomUUID(), totalFiles: files.length, importedFiles: files.length, duplicateFiles: 0, validRows: 0, invalidRows: 0, duplicateRows: 0, captureDays: [], errors: [] };
+  }
+  const body = new FormData();
+  body.append("folderName", folderName);
+  files.forEach((file) => body.append("files", file, file.name));
+  return apiFetch("/api/selection/my/imports", { method: "POST", body });
+}
+
+export async function fetchMyDataOverview(captureDay?: string): Promise<MyDataOverview> {
+  if (DEMO_MODE) {
+    return { productCount: 0, monthlyUnits: 0, monthlySales: { amount: "0", currency: "RUB" }, averageOrderValue: null, latestCaptureDay: null, captureDays: [], keywordCount: 0, importCount: 0 };
+  }
+  const params = captureDay ? `?captureDay=${encodeURIComponent(captureDay)}` : "";
+  return apiFetch(`/api/selection/my/overview${params}`);
+}
+
+export async function fetchMyDataProducts(filters: {
+  page: number;
+  pageSize: number;
+  sort: MyDataSort;
+  captureDay?: string | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+  search?: string | undefined;
+  keyword?: string | undefined;
+  minMonthlyUnits?: number | undefined;
+  maxMonthlyUnits?: number | undefined;
+  minAov?: number | undefined;
+  maxAov?: number | undefined;
+}): Promise<MyDataProductPage> {
+  if (DEMO_MODE) {
+    return { items: [], page: filters.page, pageSize: filters.pageSize, total: 0, latestCaptureDay: null, captureDays: [], keywords: [] };
+  }
+  const params = new URLSearchParams({ page: String(filters.page), pageSize: String(filters.pageSize), sort: filters.sort });
+  Object.entries(filters).forEach(([key, value]) => {
+    if (!["page", "pageSize", "sort"].includes(key) && value !== undefined && value !== "") {
+      params.set(key, String(value));
+    }
+  });
+  return apiFetch(`/api/selection/my/products?${params.toString()}`);
+}
+
+export async function fetchMyDataImports(): Promise<MyDataImportView[]> {
+  if (DEMO_MODE) {
+    return [];
+  }
+  return apiFetch("/api/selection/my/imports");
+}
+
+export async function clearMyData(): Promise<void> {
+  if (DEMO_MODE) {
+    return;
+  }
+  await apiFetch("/api/selection/my/data", { method: "DELETE" });
 }
 
 export async function fetchSelectionMarketProducts(filters: {

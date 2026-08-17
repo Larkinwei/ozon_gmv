@@ -5,6 +5,7 @@ import type { DashboardRange, StoreView } from "../../shared/contracts";
 import { formatBeijingTime } from "../format";
 import type { StreamStatus } from "../hooks/use-dashboard-stream";
 import { AppNav } from "./AppNav";
+import { SoundToggle } from "./SoundToggle";
 import { StatusPill } from "./StatusPill";
 
 const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
@@ -94,6 +95,7 @@ export function DashboardHeader(props: DashboardHeaderProps): React.JSX.Element 
 
       <div className="header-status">
         <StatusPill status={props.streamStatus} />
+        <SoundToggle />
         <div className="beijing-clock" aria-label={`北京时间 ${formatBeijingTime(now)}`}>
           <strong>{formatBeijingTime(now)}</strong>
           <span>北京时间 · {formatBeijingTime(now, "MM月dd日")}</span>
