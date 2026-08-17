@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import type { ProxySettingsService } from "../services/proxy-settings-service";
 import type { UpdateService } from "../services/update-service";
+import type { OssImageStorageService } from "../services/oss-image-storage-service";
 import { requireSession } from "../security/session";
 
 const proxySettingsSchema = z.object({
@@ -15,6 +16,7 @@ export function registerSettingsRoutes(
   app: FastifyInstance,
   proxySettings: ProxySettingsService,
   updates: UpdateService,
+  imageStorage: OssImageStorageService,
 ): void {
   app.get("/api/settings/network", { preHandler: requireSession }, async () => proxySettings.view());
 
@@ -54,5 +56,25 @@ export function registerSettingsRoutes(
       return reply.code(409).send({ error: "UPDATE_NOT_AVAILABLE", message: "当前没有可安装的新版本" });
     }
     return reply.code(202).send(updates.beginInstall());
+  });
+
+  app.get("/api/settings/image-storage", { preHandler: requireSession }, async () => imageStorage.view());
+
+  app.put("/api/settings/image-storage", { preHandler: requireSession }, async (request, reply) => {
+    const input = z.object({ accessKeyId: z.string().trim().min(1).max(200), accessKeySecret: z.string().trim().min(1).max(300) }).parse(request.body);
+    try {
+      return imageStorage.update(input);
+    } catch (error) {
+      return reply.code(400).send({ error: "INVALID_IMAGE_STORAGE", message: error instanceof Error ? error.message : "图片存储配置不正确" });
+    }
+  });
+
+  app.post("/api/settings/image-storage/test", { preHandler: requireSession }, async (_request, reply) => {
+    try {
+      await imageStorage.test();
+      return { ok: true, message: "OSS 连接正常" };
+    } catch (error) {
+      return reply.code(502).send({ error: "IMAGE_STORAGE_CONNECTION_FAILED", message: error instanceof Error ? error.message : "OSS 连接失败" });
+    }
   });
 }

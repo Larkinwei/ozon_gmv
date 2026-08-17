@@ -147,4 +147,62 @@ describe("Ozon Seller API client", () => {
     await expect(client.getRoles()).resolves.toEqual({ expires_at: null, roles: [] });
     expect(attempts).toBe(2);
   });
+
+  it("creates a target offer and configures its price and stock", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      let payload: Record<string, unknown> = {};
+      if (url.endsWith("/v1/product/import-by-sku")) {
+        payload = { result: { task_id: 123, unmatched_sku_list: [] } };
+      } else if (url.endsWith("/v1/product/import/info")) {
+        payload = { result: { items: [{ offer_id: "MY-1001", product_id: 456, status: "imported", errors: [] }] } };
+      } else if (url.endsWith("/v2/warehouse/list")) {
+        payload = { warehouses: [{ warehouse_id: 7, name: "Москва", status: "active" }] };
+      } else if (url.endsWith("/v4/product/info/limit")) {
+        payload = { daily_create_remaining: 20, total_product_limit: 1000 };
+      }
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    await expect(client.importProductBySku({ sku: "1001", name: "商品", offerId: "MY-1001", price: "1299", currency: "RUB", vat: "0.2" })).resolves.toEqual({ taskId: "123", unmatchedSkuList: [] });
+    await expect(client.getProductImportInfo("123")).resolves.toEqual([{ offerId: "MY-1001", productId: "456", status: "imported", errors: [], warnings: [] }]);
+    await expect(client.getWarehouses()).resolves.toEqual([{ id: "7", name: "Москва", status: "active" }]);
+    await expect(client.getProductInfoLimit()).resolves.toEqual({ dailyCreateRemaining: 20, totalProductLimit: 1000 });
+    await expect(client.updateProductPrice({ offerId: "MY-1001", price: "1299", currency: "RUB", vat: "0.2" })).resolves.toBeUndefined();
+    await expect(client.updateProductStock({ offerId: "MY-1001", productId: "456", warehouseId: "7", stock: 2 })).resolves.toBeUndefined();
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api-seller.ozon.ru/v1/product/import-by-sku",
+      "https://api-seller.ozon.ru/v1/product/import/info",
+      "https://api-seller.ozon.ru/v2/warehouse/list",
+      "https://api-seller.ozon.ru/v4/product/info/limit",
+      "https://api-seller.ozon.ru/v1/product/import/prices",
+      "https://api-seller.ozon.ru/v2/products/stocks",
+    ]);
+    expect(requests.at(-1)?.body).toMatchObject({ stocks: [{ offer_id: "MY-1001", product_id: "456", warehouse_id: "7", stock: 2 }] });
+  });
+
+  it("replaces and verifies the complete ordered product image list", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      const payload = String(input).endsWith("/v2/product/pictures/info")
+        ? { items: [{ product_id: 456, primary_photo: ["https://cdn.example.com/main.jpg"], photo: ["https://cdn.example.com/sub.jpg"], errors: [] }] }
+        : { result: {} };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    await client.importProductPictures({ productId: "456", images: ["https://cdn.example.com/main.jpg", "https://cdn.example.com/sub.jpg"] });
+    await client.verifyProductPictures("456");
+
+    expect(requests[0]).toMatchObject({
+      url: "https://api-seller.ozon.ru/v1/product/pictures/import",
+      body: { product_id: 456, images: ["https://cdn.example.com/main.jpg", "https://cdn.example.com/sub.jpg"] },
+    });
+    expect(requests[1]).toMatchObject({ url: "https://api-seller.ozon.ru/v2/product/pictures/info", body: { product_id: [456] } });
+  });
 });

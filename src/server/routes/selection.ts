@@ -1,10 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { myDataSorts, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
+import { myDataSorts, resellModes, resellStatuses, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
 import { requireSession } from "../security/session";
 import type { MyDataImportFile, MyDataModule } from "../selection/my-data-module";
 import type { SelectionImportFile, SelectionModule } from "../selection/selection-module";
+import { ResellModule, ResellValidationError } from "../selection/resell-module";
+import { ResellImageService } from "../selection/resell-image-service";
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
 const keywordQuerySchema = z.object({
@@ -53,6 +55,32 @@ const candidateCreateSchema = z.object({
   targetPrice: z.string().trim().max(50).optional(),
   note: z.string().trim().max(5000).optional(),
 });
+const resellInputSchema = z.object({
+  sourceSku: z.string().trim().min(1).max(100),
+  storeId: z.string().uuid(),
+  mode: z.enum(resellModes).default("quick"),
+  offerId: z.string().trim().min(1).max(80),
+  price: z.string().trim().min(1).max(50),
+  oldPrice: z.string().trim().max(50).optional(),
+  currency: z.string().trim().length(3).transform((value) => value.toUpperCase()),
+  vat: z.string().trim().min(1).max(30),
+  stock: z.coerce.number().int().min(0).max(1_000_000).default(2),
+  fulfillmentMode: z.enum(["FBO", "FBS", "RFBS"]),
+  warehouseId: z.string().trim().max(100).default(""),
+  title: z.string().trim().max(500).optional(),
+  description: z.string().trim().max(20_000).optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  images: z.array(z.object({ assetId: z.string().uuid().optional(), sourceUrl: z.string().url().optional(), position: z.number().int().min(0) })).max(15).default([]),
+});
+const resellTaskListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  storeId: z.string().uuid().optional(),
+  status: z.enum(resellStatuses).optional(),
+  from: z.string().date().optional(),
+  to: z.string().date().optional(),
+  sourceSku: z.string().trim().max(100).optional(),
+}).refine((query) => !query.from || !query.to || query.from <= query.to, { message: "日期范围不正确", path: ["to"] });
 const candidateUpdateSchema = z.object({
   keywordId: z.string().uuid().nullable().optional(),
   marketProductId: z.string().uuid().nullable().optional(),
@@ -139,7 +167,7 @@ async function readMultipartMyImport(request: FastifyRequest): Promise<Multipart
 }
 
 /** Registers loopback-admin interfaces for product selection analysis. */
-export function registerSelectionRoutes(app: FastifyInstance, selection: SelectionModule, myData: MyDataModule): void {
+export function registerSelectionRoutes(app: FastifyInstance, selection: SelectionModule, myData: MyDataModule, resell: ResellModule, resellImages: ResellImageService): void {
   app.get("/api/selection/overview", { preHandler: requireSession }, async () => selection.getOverview());
 
   app.get("/api/selection/imports", { preHandler: requireSession }, async () => selection.listImports());
@@ -182,6 +210,64 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
   app.delete("/api/selection/my/data", { preHandler: requireSession }, async (_request, reply) => {
     myData.clearData();
     return reply.code(204).send();
+  });
+  app.get("/api/selection/resell/source/:sku", { preHandler: requireSession }, async (request, reply) => {
+    const sku = z.string().trim().min(1).max(100).parse((request.params as { sku: string }).sku);
+    const source = resell.getSource(sku);
+    return source ?? reply.code(404).send({ error: "RESELL_SOURCE_NOT_FOUND", message: "MY 数据中不存在该 SKU" });
+  });
+  app.post("/api/selection/resell/images/upload", { preHandler: requireSession }, async (request, reply) => {
+    try {
+      let uploaded: { fileName: string; content: Buffer } | null = null;
+      for await (const part of request.parts()) {
+        if (part.type === "file") {
+          if (uploaded) throw new Error("每次只能上传一张图片");
+          uploaded = { fileName: part.filename, content: await part.toBuffer() };
+        }
+      }
+      if (!uploaded) throw new Error("请选择图片文件");
+      return reply.code(201).send(await resellImages.upload(uploaded.fileName, uploaded.content));
+    } catch (error) {
+      return reply.code(isFileTooLarge(error) ? 413 : 400).send({ error: "RESELL_IMAGE_UPLOAD_FAILED", message: error instanceof Error ? error.message : "图片上传失败" });
+    }
+  });
+  app.delete("/api/selection/resell/images/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    if (!resellImages.deleteAsset(id)) return reply.code(404).send({ error: "RESELL_IMAGE_NOT_FOUND", message: "图片资产不存在或已被任务使用" });
+    return reply.code(204).send();
+  });
+  app.post("/api/selection/resell/preflight", { preHandler: requireSession }, async (request) => {
+    return resell.preflight(resellInputSchema.parse(request.body));
+  });
+  app.post("/api/selection/resell/tasks", { preHandler: requireSession }, async (request, reply) => {
+    try {
+      const task = await resell.createTask(resellInputSchema.parse(request.body));
+      return reply.code(202).send(task);
+    } catch (error) {
+      if (error instanceof ResellValidationError) {
+        return reply.code(409).send({ error: "RESELL_VALIDATION_FAILED", message: error.message, issues: error.errors });
+      }
+      throw error;
+    }
+  });
+  app.get("/api/selection/resell/tasks", { preHandler: requireSession }, async (request) => {
+    return resell.listTasks(resellTaskListQuerySchema.parse(request.query));
+  });
+  app.get("/api/selection/resell/tasks/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const task = await resell.getTaskDetail(id);
+    return task ?? reply.code(404).send({ error: "RESELL_TASK_NOT_FOUND", message: "跟卖任务不存在" });
+  });
+  app.post("/api/selection/resell/tasks/:id/retry", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    try {
+      return reply.code(202).send(await resell.retryTask(id));
+    } catch (error) {
+      if (error instanceof ResellValidationError) {
+        return reply.code(409).send({ error: "RESELL_RETRY_FAILED", message: error.message, issues: error.errors });
+      }
+      throw error;
+    }
   });
   app.post("/api/selection/imports/preview", { preHandler: requireSession }, async (request, reply) => {
     try {

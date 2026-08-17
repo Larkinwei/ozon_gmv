@@ -1,4 +1,4 @@
-import { BellRing, Check, Clipboard, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug, Volume2 } from "lucide-react";
+import { BellRing, Check, Clipboard, CloudUpload, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug, Volume2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -8,13 +8,16 @@ import {
   checkSoftwareUpdate,
   createWallboardPairing,
   fetchNetworkSettings,
+  fetchImageStorageSettings,
   fetchOrderNotificationSettings,
   fetchUpdateStatus,
   installSoftwareUpdate,
   revokeWallboardSessions,
   testNetworkSettings,
+  testImageStorageSettings,
   testOrderNotification,
   updateNetworkSettings,
+  updateImageStorageSettings,
   updateOrderNotificationSettings,
 } from "../api";
 import { AppNav } from "../components/AppNav";
@@ -24,6 +27,7 @@ import { soundPlayer, useSoundEnabled } from "../sound-player";
 export default function SettingsPage(): React.JSX.Element {
   const queryClient = useQueryClient();
   const settingsQuery = useQuery({ queryKey: ["network-settings"], queryFn: fetchNetworkSettings });
+  const imageStorageQuery = useQuery({ queryKey: ["image-storage-settings"], queryFn: fetchImageStorageSettings });
   const notificationQuery = useQuery({
     queryKey: ["order-notifications"],
     queryFn: fetchOrderNotificationSettings,
@@ -36,6 +40,9 @@ export default function SettingsPage(): React.JSX.Element {
   });
   const [mode, setMode] = useState<ProxyMode>("auto");
   const [manualProxy, setManualProxy] = useState("");
+  const [accessKeyId, setAccessKeyId] = useState("");
+  const [accessKeySecret, setAccessKeySecret] = useState("");
+  const [imageStorageTestResult, setImageStorageTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [installingVersion, setInstallingVersion] = useState<string | null>(null);
   const soundEnabled = useSoundEnabled();
@@ -54,6 +61,24 @@ export default function SettingsPage(): React.JSX.Element {
     },
   });
   const testMutation = useMutation({ mutationFn: testNetworkSettings });
+  const imageStorageMutation = useMutation({
+    mutationFn: () => updateImageStorageSettings(accessKeyId, accessKeySecret),
+    onSuccess: async () => {
+      setAccessKeySecret("");
+      setImageStorageTestResult(null);
+      setNotice("跟卖图片 OSS 配置已保存。");
+      await queryClient.invalidateQueries({ queryKey: ["image-storage-settings"] });
+    },
+  });
+  const imageStorageTestMutation = useMutation({
+    mutationFn: testImageStorageSettings,
+    onSuccess: (result) => {
+      setImageStorageTestResult({ ok: true, message: `OSS 连接测试成功：${result.message}` });
+    },
+    onError: (error) => {
+      setImageStorageTestResult({ ok: false, message: `OSS 连接测试失败：${error instanceof Error ? error.message : "无法连接 OSS"}` });
+    },
+  });
   const pairingMutation = useMutation({ mutationFn: createWallboardPairing });
   const revokeMutation = useMutation({
     mutationFn: revokeWallboardSessions,
@@ -137,7 +162,8 @@ export default function SettingsPage(): React.JSX.Element {
     ?? checkUpdateMutation.error
     ?? installUpdateMutation.error
     ?? notificationMutation.error
-    ?? notificationTestMutation.error;
+    ?? notificationTestMutation.error
+    ?? imageStorageMutation.error;
   const update = updateQuery.data;
   const updateBusy = update?.state === "checking" || update?.state === "downloading" || update?.state === "installing";
   const progress = update?.totalBytes ? Math.min(100, Math.round((update.downloadedBytes / update.totalBytes) * 100)) : 0;
@@ -185,6 +211,29 @@ export default function SettingsPage(): React.JSX.Element {
               </div>
             </div>
           )}
+        </section>
+
+        <section className="settings-card" aria-labelledby="image-storage-heading">
+          <div className="settings-card__heading"><div className="settings-icon"><CloudUpload size={21} /></div><div><p className="eyebrow">RESELL IMAGE STORAGE</p><h3 id="image-storage-heading">跟卖图片存储</h3><p>本地图片会压缩后上传到 OSS，生成 Ozon 可访问的 HTTPS 地址。密钥只加密保存在本机。</p></div></div>
+          <div className="update-message">
+            <strong>{imageStorageQuery.data?.configured ? "OSS 已配置" : "尚未配置 OSS"}</strong>
+            <p>{imageStorageQuery.data?.bucket ?? "haodian-ozon-images"} / {imageStorageQuery.data?.prefix ?? "ozon/resell-images"}</p>
+            {imageStorageQuery.data?.configured && (
+              <div className="credential-summary" aria-label="已保存的 OSS 凭据">
+                <span>AccessKey ID <code>{imageStorageQuery.data.accessKeyIdMasked ?? "已配置"}</code></span>
+                <span>AccessKey Secret <code>{imageStorageQuery.data.accessKeySecretMasked ?? "••••••••••••"}</code></span>
+              </div>
+            )}
+            <p>{imageStorageQuery.data?.configured ? "密钥已加密保存。需要更换时，请同时输入新的 ID 和 Secret；留空不会回显原始密钥。" : "请仅将该前缀设为公共读、禁止公共写，否则 Ozon 无法抓取图片或会扩大存储桶暴露范围。"}</p>
+          </div>
+          <form onSubmit={(event) => { event.preventDefault(); imageStorageMutation.mutate(); }}>
+            <div className="resell-form-grid">
+              <label className="field"><span>{imageStorageQuery.data?.configured ? "更换 AccessKey ID" : "AccessKey ID"}</span><input value={accessKeyId} onChange={(event) => setAccessKeyId(event.target.value)} placeholder={imageStorageQuery.data?.configured ? "已配置，输入新 ID 可替换" : undefined} autoComplete="off" required /></label>
+              <label className="field"><span>{imageStorageQuery.data?.configured ? "更换 AccessKey Secret" : "AccessKey Secret"}</span><input type="password" value={accessKeySecret} onChange={(event) => setAccessKeySecret(event.target.value)} placeholder={imageStorageQuery.data?.configured ? "已配置，输入新 Secret 可替换" : undefined} autoComplete="new-password" required /></label>
+            </div>
+            <div className="settings-actions"><button className="primary-button" type="submit" disabled={imageStorageMutation.isPending}>{imageStorageMutation.isPending ? "正在保存…" : "保存 OSS 配置"}</button><button className="secondary-button" type="button" onClick={() => imageStorageTestMutation.mutate()} disabled={!imageStorageQuery.data?.configured || imageStorageTestMutation.isPending}><RefreshCw className={imageStorageTestMutation.isPending ? "sync-spinner" : undefined} size={17} />{imageStorageTestMutation.isPending ? "正在测试…" : "测试 OSS 连接"}</button></div>
+            {imageStorageTestResult && <div className={`connection-result${imageStorageTestResult.ok ? "" : " connection-result--error"}`} role={imageStorageTestResult.ok ? "status" : "alert"}>{imageStorageTestResult.ok ? <Check size={17} /> : <ShieldAlert size={17} />}<strong>{imageStorageTestResult.message}</strong></div>}
+          </form>
         </section>
 
         <section className="settings-card" aria-labelledby="proxy-heading">

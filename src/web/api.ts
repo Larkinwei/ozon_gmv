@@ -8,6 +8,14 @@ import type {
   MyDataOverview,
   MyDataProductPage,
   MyDataSort,
+  ImageStorageView,
+  ResellPreflightInput,
+  ResellPreflightView,
+  ResellSourceView,
+  ResellImageUploadView,
+  ResellTaskView,
+  ResellTaskDetailView,
+  ResellTaskListPage,
   OrderNotificationSettings,
   OrderDetail,
   ProxyMode,
@@ -456,6 +464,73 @@ export async function clearMyData(): Promise<void> {
     return;
   }
   await apiFetch("/api/selection/my/data", { method: "DELETE" });
+}
+
+export async function fetchResellSource(sku: string): Promise<ResellSourceView> {
+  return apiFetch(`/api/selection/resell/source/${encodeURIComponent(sku)}`);
+}
+
+export async function preflightResell(input: ResellPreflightInput): Promise<ResellPreflightView> {
+  return apiFetch("/api/selection/resell/preflight", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function createResellTask(input: ResellPreflightInput): Promise<ResellTaskView> {
+  return apiFetch("/api/selection/resell/tasks", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function fetchResellTask(id: string): Promise<ResellTaskDetailView> {
+  return apiFetch(`/api/selection/resell/tasks/${encodeURIComponent(id)}`);
+}
+
+export async function fetchResellTasks(filters: {
+  page: number;
+  pageSize: number;
+  storeId?: string;
+  status?: string;
+  from?: string;
+  to?: string;
+  sourceSku?: string;
+}): Promise<ResellTaskListPage> {
+  if (DEMO_MODE) {
+    return { items: [], page: filters.page, pageSize: filters.pageSize, total: 0 };
+  }
+  const params = new URLSearchParams({ page: String(filters.page), pageSize: String(filters.pageSize) });
+  if (filters.storeId) params.set("storeId", filters.storeId);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  if (filters.sourceSku?.trim()) params.set("sourceSku", filters.sourceSku.trim());
+  return apiFetch(`/api/selection/resell/tasks?${params.toString()}`);
+}
+
+export async function fetchResellTaskDetail(id: string): Promise<ResellTaskDetailView> {
+  return fetchResellTask(id);
+}
+
+export async function retryResellTask(id: string): Promise<ResellTaskView> {
+  return apiFetch(`/api/selection/resell/tasks/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+export async function fetchImageStorageSettings(): Promise<ImageStorageView> {
+  return apiFetch("/api/settings/image-storage");
+}
+
+export async function updateImageStorageSettings(accessKeyId: string, accessKeySecret: string): Promise<ImageStorageView> {
+  return apiFetch("/api/settings/image-storage", { method: "PUT", body: JSON.stringify({ accessKeyId, accessKeySecret }) });
+}
+
+export async function testImageStorageSettings(): Promise<{ ok: boolean; message: string }> {
+  return apiFetch("/api/settings/image-storage/test", { method: "POST" });
+}
+
+export async function uploadResellImage(file: File): Promise<ResellImageUploadView> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return apiFetch("/api/selection/resell/images/upload", { method: "POST", body: form });
+}
+
+export async function deleteResellImage(id: string): Promise<void> {
+  await apiFetch(`/api/selection/resell/images/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function fetchSelectionMarketProducts(filters: {

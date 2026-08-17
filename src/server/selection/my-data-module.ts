@@ -301,6 +301,20 @@ function effectiveCaptureDay(database: AppDatabase, query: MyDataQuery): string 
 export class MyDataModule {
   public constructor(private readonly database: AppDatabase) {}
 
+  /** Returns the newest imported snapshot for an Ozon SKU. */
+  public getProductBySku(sku: string): MyDataProductView | null {
+    const row = this.database.prepare(
+      `SELECT id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli,
+        impressions, conversion_rate, discount_rate, keyword, product_url, image_url, status,
+        captured_at_ms, capture_day
+       FROM my_product_snapshots
+       WHERE sku = ?
+       ORDER BY capture_day DESC, captured_at_ms DESC
+       LIMIT 1`,
+    ).get(sku) as ProductRow | undefined;
+    return row ? this.toProductView(row) : null;
+  }
+
   public previewImport(files: MyDataImportFile[], folderName: string): MyDataImportPreview {
     this.validateImportSize(files);
     const knownHashes = new Set((this.database.prepare<[], ImportFileRow>("SELECT id, file_hash FROM my_import_files").all() as ImportFileRow[]).map((row) => row.file_hash));

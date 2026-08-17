@@ -7,6 +7,7 @@ import {
   CircleAlert,
   CircleDollarSign,
   ChartScatter,
+  ClipboardList,
   Clock3,
   CloudDownload,
   Database,
@@ -70,9 +71,10 @@ import { SelectionImportDialog } from "../components/SelectionImportDialog";
 import { SelectionKeywordDrawer } from "../components/SelectionKeywordDrawer";
 import { SelectionMarketProductDrawer } from "../components/SelectionMarketProductDrawer";
 import { MyDataPanel } from "../components/MyDataPanel";
+import { ResellTasksPanel } from "../components/ResellTasksPanel";
 import { formatCompactNumber, formatMoney } from "../format";
 
-type SelectionTab = "queries" | "products" | "categories" | "candidates" | "sources" | "my-data";
+type SelectionTab = "queries" | "products" | "categories" | "candidates" | "sources" | "my-data" | "resell-tasks";
 
 interface Notice {
   tone: "success" | "error";
@@ -86,6 +88,7 @@ const tabOptions: Array<{ value: SelectionTab; label: string; icon: typeof Light
   { value: "candidates", label: "候选池", icon: ListChecks },
   { value: "sources", label: "数据源", icon: Database },
   { value: "my-data", label: "MY 数据", icon: FileSpreadsheet },
+  { value: "resell-tasks", label: "跟卖任务", icon: ClipboardList },
 ];
 
 const sortOptions: Array<{ value: SelectionKeywordSort; label: string }> = [
@@ -503,6 +506,7 @@ export default function SelectionPage(): React.JSX.Element {
             />
           )}
           {tab === "my-data" && <MyDataPanel onNotice={setNotice} />}
+          {tab === "resell-tasks" && <ResellTasksPanel />}
         </div>
       </main>
       {showImport && <SelectionImportDialog onClose={() => setShowImport(false)} onImported={(result) => void importCompleted(result)} />}

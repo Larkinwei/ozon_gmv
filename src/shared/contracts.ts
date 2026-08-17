@@ -189,6 +189,26 @@ export interface UpdateView {
   error: string | null;
 }
 
+export interface ImageStorageView {
+  configured: boolean;
+  bucket: string;
+  region: string;
+  prefix: string;
+  publicBaseUrl: string;
+  accessKeyIdMasked: string | null;
+  accessKeySecretMasked: string | null;
+}
+
+export interface ResellImageUploadView {
+  id: string;
+  url: string;
+  fileName: string;
+  mimeType: string;
+  byteSize: number;
+  width: number;
+  height: number;
+}
+
 export interface OrderNotificationSettings {
   supported: boolean;
   enabled: boolean;
@@ -562,6 +582,148 @@ export interface MyDataOverview {
   captureDays: string[];
   keywordCount: number;
   importCount: number;
+}
+
+export const resellModes = ["quick", "edit"] as const;
+export type ResellMode = (typeof resellModes)[number];
+
+export const resellStatuses = [
+  "draft",
+  "preflight_failed",
+  "creating",
+  "pending",
+  "created",
+  "setting_images",
+  "setting_price",
+  "setting_stock",
+  "moderating",
+  "sellable",
+  "needs_input",
+  "failed",
+] as const;
+export type ResellStatus = (typeof resellStatuses)[number];
+
+export interface ResellImageView {
+  id: string;
+  url: string;
+  fileName: string;
+  mimeType: string;
+  byteSize: number;
+  width: number;
+  height: number;
+  source: "source" | "uploaded";
+}
+
+export interface ResellImageInput {
+  assetId?: string | undefined;
+  sourceUrl?: string | undefined;
+  position: number;
+}
+
+export interface ResellSourceView {
+  sku: string;
+  productName: string;
+  currentPrice: Money;
+  productUrl: string;
+  imageUrl: string | null;
+  images: ResellImageView[];
+  monthlyUnits: number;
+  monthlySales: Money;
+  captureDay: string;
+}
+
+export interface ResellWarehouseView {
+  id: string;
+  name: string;
+  status: string;
+}
+
+export interface ResellExistingOfferView {
+  offerId: string;
+  productId: string | null;
+  stock: number | null;
+}
+
+export interface ResellPreflightInput {
+  sourceSku: string;
+  storeId: string;
+  mode: ResellMode;
+  offerId: string;
+  price: string;
+  oldPrice?: string | undefined;
+  currency: string;
+  vat: string;
+  stock: number;
+  fulfillmentMode: FulfillmentMode;
+  warehouseId: string;
+  title?: string | undefined;
+  description?: string | undefined;
+  attributes?: Record<string, unknown> | undefined;
+  images: ResellImageInput[];
+}
+
+export interface ResellStoreOption {
+  id: string;
+  name: string;
+  color: string;
+  fulfillmentModes: FulfillmentMode[];
+}
+
+export interface ResellPreflightView {
+  valid: boolean;
+  source: ResellSourceView;
+  store: ResellStoreOption;
+  warehouses: ResellWarehouseView[];
+  existingOffer: ResellExistingOfferView | null;
+  limits: { dailyCreateRemaining: number | null; totalProductLimit: number | null };
+  warnings: string[];
+  errors: string[];
+}
+
+export interface ResellTaskView {
+  id: string;
+  sourceSku: string;
+  storeId: string;
+  storeName: string;
+  targetOfferId: string;
+  mode: ResellMode;
+  price: Money;
+  oldPrice: Money | null;
+  vat: string;
+  stock: number;
+  imageCount: number;
+  fulfillmentMode: FulfillmentMode;
+  warehouseId: string;
+  status: ResellStatus;
+  ozonTaskId: string | null;
+  productId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface ResellTaskListItem extends ResellTaskView {
+  productTitle: string | null;
+}
+
+export interface ResellTaskEventView {
+  status: ResellStatus;
+  message: string | null;
+  createdAt: string;
+}
+
+export interface ResellTaskDetailView extends ResellTaskView {
+  productTitle: string | null;
+  sourceUrl: string | null;
+  events: ResellTaskEventView[];
+}
+
+export interface ResellTaskListPage {
+  items: ResellTaskListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
 }
 
 export const selectionCategoryPeriods = [7, 28] as const;

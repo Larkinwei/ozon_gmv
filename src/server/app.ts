@@ -37,6 +37,9 @@ import type { UpdateService } from "./services/update-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
 import { DiscoveryModule } from "./selection/discovery-module";
 import { MyDataModule } from "./selection/my-data-module";
+import { ResellModule } from "./selection/resell-module";
+import { ResellImageService } from "./selection/resell-image-service";
+import { OssImageStorageService } from "./services/oss-image-storage-service";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -49,6 +52,9 @@ export interface AppDependencies {
   categories?: CategoryAnalysisModule;
   discovery?: DiscoveryModule;
   myData?: MyDataModule;
+  resell?: ResellModule;
+  imageStorage?: OssImageStorageService;
+  resellImages?: ResellImageService;
 }
 
 interface SqliteError extends Error {
@@ -130,9 +136,12 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024, files: 200, parts: 220, fields: 10 } });
   const administrators = new AdminRepository(database);
   const stores = new StoresRepository(database);
+  const settings = new SettingsRepository(database);
+  const imageStorage = dependencies.imageStorage ?? new OssImageStorageService(config, database, proxySettings.createFetch());
+  const resellImages = dependencies.resellImages ?? new ResellImageService(database, imageStorage);
   const pairings = new WallboardPairingsRepository(database);
   const notifications = new OrderNotificationService(
-    new SettingsRepository(database),
+    settings,
     events,
     process.platform,
     new ProductImagesRepository(database),
@@ -151,15 +160,18 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
     fetchImplementation: proxySettings.createFetch(),
   });
   const myData = dependencies.myData ?? new MyDataModule(database);
+  const resell = dependencies.resell ?? new ResellModule(config, database, stores, myData, resellImages, {
+    fetchImplementation: proxySettings.createFetch(),
+  });
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
   registerStoreRoutes(app, config, stores, syncService);
   registerDashboardRoutes(app, new DashboardRepository(database), events);
-  registerSelectionRoutes(app, selection, myData);
+  registerSelectionRoutes(app, selection, myData, resell, resellImages);
   registerSelectionCategoryRoutes(app, categories);
   registerSelectionDiscoveryRoutes(app, discovery);
-  registerSettingsRoutes(app, proxySettings, updates);
+  registerSettingsRoutes(app, proxySettings, updates, imageStorage);
   registerNotificationRoutes(app, notifications);
   registerWallboardManagementRoutes(app, config, pairings);
   app.get("/api/runtime", async () => ({ role: "admin" as const }));

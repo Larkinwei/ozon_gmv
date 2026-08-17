@@ -2,6 +2,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Rocket,
   FileSpreadsheet,
   RefreshCw,
   Search,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 
 import type { MyDataImportPreview, MyDataImportResult, MyDataProductPage, MyDataSort } from "../../shared/contracts";
 import {
@@ -56,6 +58,7 @@ function safeProductUrl(value: string): string | null {
 /** Imports and filters daily MY snapshots while keeping the existing selection workspace visual language. */
 export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [captureDay, setCaptureDay] = useState("");
   const [search, setSearch] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -135,7 +138,7 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
     if (!productsQuery.data || productsQuery.data.items.length === 0) {
       return <div className="my-data-empty-filter">没有匹配商品。<button className="secondary-button compact-button" type="button" onClick={clearFilters}>清除筛选</button></div>;
     }
-    return <MyDataTable items={productsQuery.data.items} />;
+    return <MyDataTable items={productsQuery.data.items} onResell={(sku) => navigate(`/selection/resell/${encodeURIComponent(sku)}`)} />;
   }
 
   const totalPages = Math.max(1, Math.ceil((productsQuery.data?.total ?? 0) / 20));
@@ -187,12 +190,12 @@ function EmptyMyData(props: { onImport: () => void }): React.JSX.Element {
   return <div className="my-data-empty"><Database size={30} /><h4>还没有 MY 数据</h4><p>选择 MY 插件导出的文件夹，系统会读取其中全部 CSV 并自动去重。</p><button className="primary-button" type="button" onClick={props.onImport}><Upload size={17} />选择文件夹导入</button></div>;
 }
 
-function MyDataTable(props: { items: MyDataProductPage["items"] }): React.JSX.Element {
-  return <div className="my-data-table-wrap"><table className="my-data-table"><thead><tr><th scope="col">商品</th><th scope="col">SKU</th><th scope="col">月销量</th><th scope="col">月销售额</th><th scope="col">客单价</th><th scope="col">展示量</th><th scope="col">转化率</th><th scope="col">折扣</th><th scope="col">关键词</th><th scope="col">采集日</th></tr></thead><tbody>{props.items.map((item) => {
+function MyDataTable(props: { items: MyDataProductPage["items"]; onResell: (sku: string) => void }): React.JSX.Element {
+  return <div className="my-data-table-wrap"><table className="my-data-table"><thead><tr><th scope="col">商品</th><th scope="col">SKU</th><th scope="col">月销量</th><th scope="col">月销售额</th><th scope="col">客单价</th><th scope="col">展示量</th><th scope="col">转化率</th><th scope="col">折扣</th><th scope="col">关键词</th><th scope="col">采集日</th><th scope="col">操作</th></tr></thead><tbody>{props.items.map((item) => {
     const productUrl = safeProductUrl(item.productUrl);
     const productTitle = productUrl ? <a className="my-data-product-link my-data-product-title" href={productUrl} target="_blank" rel="noopener noreferrer" title={item.productName}>{item.productName}</a> : <span className="my-data-product-title" title={item.productName}>{item.productName}</span>;
     const sku = productUrl ? <a className="my-data-sku-link" href={productUrl} target="_blank" rel="noopener noreferrer" aria-label={`打开 ${item.sku} 商品详情`}>{item.sku}</a> : item.sku;
-    return <tr key={item.id}><td><div className="my-data-product"><span className="my-data-thumb">{item.imageUrl ? <img src={item.imageUrl} alt={`${item.productName} 主图`} loading="lazy" /> : <FileSpreadsheet size={18} aria-label="无商品主图" />}</span>{productTitle}</div></td><td className="tabular-nums">{sku}</td><td className="tabular-nums">{item.monthlyUnits.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatMoney(item.monthlySales)}</td><td className="tabular-nums">{item.averageOrderValue ? formatMoney(item.averageOrderValue) : "—"}</td><td className="tabular-nums">{item.impressions.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatPercent(item.conversionRate)}</td><td className="tabular-nums">{formatPercent(item.discountRate)}</td><td>{item.keyword || "—"}</td><td className="tabular-nums">{item.captureDay}</td></tr>;
+    return <tr key={item.id}><td><div className="my-data-product"><span className="my-data-thumb">{item.imageUrl ? <img src={item.imageUrl} alt={`${item.productName} 主图`} loading="lazy" /> : <FileSpreadsheet size={18} aria-label="无商品主图" />}</span>{productTitle}</div></td><td className="tabular-nums">{sku}</td><td className="tabular-nums">{item.monthlyUnits.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatMoney(item.monthlySales)}</td><td className="tabular-nums">{item.averageOrderValue ? formatMoney(item.averageOrderValue) : "—"}</td><td className="tabular-nums">{item.impressions.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatPercent(item.conversionRate)}</td><td className="tabular-nums">{formatPercent(item.discountRate)}</td><td>{item.keyword || "—"}</td><td className="tabular-nums">{item.captureDay}</td><td><button className="secondary-button compact-button my-data-resell-button" type="button" onClick={() => props.onResell(item.sku)}><Rocket size={15} />一键跟卖</button></td></tr>;
   })}</tbody></table></div>;
 }
 
