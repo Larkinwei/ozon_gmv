@@ -2077,6 +2077,7 @@ td {
   gap: 9px;
   margin-bottom: 16px;
 }
+.my-data-filter-note { margin: -6px 0 12px; padding: 9px 12px; border: 1px solid rgb(59 130 246 / 28%); border-radius: 8px; color: #bfdbfe; background: rgb(30 64 175 / 12%); font-size: 12px; }
 
 .my-data-field,
 .my-data-range {
@@ -2107,6 +2108,12 @@ td {
   outline: 0;
 }
 
+.my-data-category-filter select {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .my-data-range input { width: 62px; }
 .my-data-range b { color: #64748b; font-weight: 400; }
 .my-data-toolbar .selection-search { min-width: 250px; }
@@ -2119,7 +2126,7 @@ td {
 
 .my-data-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 1220px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -2145,8 +2152,13 @@ td {
 .my-data-table tbody tr:hover { background: rgb(30 64 175 / 12%); }
 .my-data-product { display: flex; min-width: 260px; align-items: center; gap: 10px; }
 .my-data-product-title { display: -webkit-box; max-width: 430px; overflow: hidden; color: #dbeafe; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.my-data-category { display: -webkit-box; max-width: 180px; overflow: hidden; color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .my-data-product-link { text-decoration: none; }
 .my-data-product-link:hover { color: #93c5fd; text-decoration: underline; text-underline-offset: 2px; }
+.my-data-fulfillment { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border: 1px solid var(--border-soft); border-radius: 999px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.my-data-fulfillment--fbo { border-color: rgb(34 197 94 / 45%); color: #86efac; }
+.my-data-fulfillment--fbs { border-color: rgb(59 130 246 / 45%); color: #93c5fd; }
+.my-data-fulfillment--rfbs { border-color: rgb(168 85 247 / 45%); color: #d8b4fe; }
 .my-data-product-link:focus-visible,
 .my-data-sku-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
 .my-data-sku-link { color: #93c5fd; text-decoration: none; }
@@ -2199,16 +2211,18 @@ td {
   .my-data-table tr { margin-bottom: 10px; padding: 10px; background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 10px; }
   .my-data-table td { display: flex; justify-content: space-between; gap: 12px; padding: 7px 2px; border-top: 0; }
   .my-data-table td::before { color: var(--muted); content: attr(data-label); }
-  .my-data-table td:nth-child(2)::before { content: "SKU"; }
-  .my-data-table td:nth-child(3)::before { content: "月销量"; }
-  .my-data-table td:nth-child(4)::before { content: "月销售额"; }
-  .my-data-table td:nth-child(5)::before { content: "客单价"; }
-  .my-data-table td:nth-child(6)::before { content: "展示量"; }
-  .my-data-table td:nth-child(7)::before { content: "转化率"; }
-  .my-data-table td:nth-child(8)::before { content: "折扣"; }
-  .my-data-table td:nth-child(9)::before { content: "关键词"; }
-  .my-data-table td:nth-child(10)::before { content: "采集日"; }
-  .my-data-table td:nth-child(11)::before { content: "操作"; }
+  .my-data-table td:nth-child(2)::before { content: "类目"; }
+  .my-data-table td:nth-child(3)::before { content: "SKU"; }
+  .my-data-table td:nth-child(4)::before { content: "月销量"; }
+  .my-data-table td:nth-child(5)::before { content: "月销售额"; }
+  .my-data-table td:nth-child(6)::before { content: "客单价"; }
+  .my-data-table td:nth-child(7)::before { content: "展示量"; }
+  .my-data-table td:nth-child(8)::before { content: "转化率"; }
+  .my-data-table td:nth-child(9)::before { content: "折扣"; }
+  .my-data-table td:nth-child(10)::before { content: "关键词"; }
+  .my-data-table td:nth-child(11)::before { content: "采集日"; }
+  .my-data-table td:nth-child(12)::before { content: "发货模式"; }
+  .my-data-table td:nth-child(13)::before { content: "操作"; }
   .my-data-table td:first-child { display: block; padding-bottom: 10px; }
   .my-data-table td:first-child::before { display: none; }
   .my-data-product-title { max-width: calc(100vw - 116px); }

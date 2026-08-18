@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { myDataSorts, resellModes, resellStatuses, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
+import { myDataFulfillmentModes, myDataSorts, resellModes, resellStatuses, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
 import { requireSession } from "../security/session";
 import type { MyDataImportFile, MyDataModule } from "../selection/my-data-module";
 import type { SelectionImportFile, SelectionModule } from "../selection/selection-module";
@@ -38,8 +38,11 @@ const myDataQuerySchema = z.object({
   captureDay: z.string().date().optional(),
   from: z.string().date().optional(),
   to: z.string().date().optional(),
+  allDates: z.string().optional().transform((value) => value === "true"),
   search: z.string().trim().max(300).optional(),
   keyword: z.string().trim().max(300).optional(),
+  category: z.string().trim().max(300).optional(),
+  fulfillmentMode: z.enum(myDataFulfillmentModes).optional(),
   minMonthlyUnits: z.coerce.number().int().nonnegative().optional(),
   maxMonthlyUnits: z.coerce.number().int().nonnegative().optional(),
   minAov: z.coerce.number().nonnegative().optional(),
@@ -182,7 +185,7 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
   app.post("/api/selection/my/imports/preview", { preHandler: requireSession }, async (request, reply) => {
     try {
       const upload = await readMultipartMyImport(request);
-      return myData.previewImport(upload.files, upload.fields.folderName ?? "MY 数据文件夹");
+      return await myData.previewImport(upload.files, upload.fields.folderName ?? "MY 数据文件夹");
     } catch (error) {
       return reply.code(isFileTooLarge(error) ? 413 : 400).send({
         error: "MY_IMPORT_PREVIEW_FAILED",
@@ -193,7 +196,7 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
   app.post("/api/selection/my/imports", { preHandler: requireSession }, async (request, reply) => {
     try {
       const upload = await readMultipartMyImport(request);
-      return reply.code(201).send(myData.commitImport(upload.files, upload.fields.folderName ?? "MY 数据文件夹"));
+      return reply.code(201).send(await myData.commitImport(upload.files, upload.fields.folderName ?? "MY 数据文件夹"));
     } catch (error) {
       return reply.code(isFileTooLarge(error) ? 413 : 400).send({
         error: "MY_IMPORT_FAILED",

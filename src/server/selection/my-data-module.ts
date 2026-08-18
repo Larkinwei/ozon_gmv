@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { parse } from "csv-parse/sync";
 import Decimal from "decimal.js";
+import ExcelJS from "exceljs";
 
+import { myDataFulfillmentModes } from "../../shared/contracts";
 import type {
   Money,
   MyDataImportFilePreview,
@@ -10,6 +12,7 @@ import type {
   MyDataImportResult,
   MyDataImportView,
   MyDataOverview,
+  MyDataFulfillmentMode,
   MyDataProductPage,
   MyDataProductView,
   MyDataSort,
@@ -50,8 +53,11 @@ export interface MyDataQuery {
   captureDay?: string | undefined;
   from?: string | undefined;
   to?: string | undefined;
+  allDates?: boolean | undefined;
   search?: string | undefined;
   keyword?: string | undefined;
+  category?: string | undefined;
+  fulfillmentMode?: MyDataFulfillmentMode | undefined;
   minMonthlyUnits?: number | undefined;
   maxMonthlyUnits?: number | undefined;
   minAov?: number | undefined;
@@ -68,10 +74,12 @@ interface ParsedMyRow {
   impressions: number;
   conversionRate: number;
   discountRate: number;
+  category: string;
   keyword: string;
   productUrl: string;
   imageUrl: string | null;
   status: string;
+  fulfillmentMode: MyDataProductView["fulfillmentMode"];
   capturedAtMs: number;
   captureDay: string;
 }
@@ -99,10 +107,12 @@ interface ProductRow {
   impressions: number;
   conversion_rate: number;
   discount_rate: number;
+  category: string;
   keyword: string;
   product_url: string;
   image_url: string | null;
   status: string;
+  fulfillment_mode: MyDataProductView["fulfillmentMode"];
   captured_at_ms: number;
   capture_day: string;
 }
@@ -188,7 +198,45 @@ function parseCsvRows(content: Buffer): string[][] {
   return rows.map((row) => row.map((value) => String(value ?? "")));
 }
 
-function headerIndexes(headers: string[]): Record<(typeof requiredHeaders)[number], number> {
+function cellValueToString(value: ExcelJS.CellValue): string {
+  if (value === null || value === undefined) return "";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object") {
+    if ("result" in value) return cellValueToString(value.result as ExcelJS.CellValue);
+    if ("text" in value) return String(value.text ?? "");
+    if ("hyperlink" in value) return String(value.hyperlink ?? "");
+  }
+  return String(value);
+}
+
+async function parseExcelRows(content: Buffer): Promise<string[][]> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(content as unknown as ExcelJS.Buffer);
+  const worksheet = workbook.worksheets.find((sheet) => sheet.rowCount > 0);
+  if (!worksheet) throw new Error("XLSX 文件没有可读取的工作表");
+  const rows: string[][] = [];
+  worksheet.eachRow({ includeEmpty: false }, (row) => {
+    if (rows.length <= MAX_FILE_ROWS) {
+      const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+      rows.push(values.map((value) => cellValueToString(value as ExcelJS.CellValue).trim()));
+    }
+  });
+  if (rows.length > MAX_FILE_ROWS) throw new Error(`单个 XLSX 不能超过 ${MAX_FILE_ROWS.toLocaleString("zh-CN")} 行`);
+  return rows;
+}
+
+const fulfillmentHeaders = ["发货模式", "发货类型", "履约模式", "配送模式", "物流模式", "物流方式", "Fulfillment", "Fulfillment mode", "Shipping mode"];
+const categoryHeaders = ["类目", "Category", "category"];
+
+function parseFulfillmentMode(value: string): MyDataProductView["fulfillmentMode"] {
+  const normalized = value.normalize("NFKC").toUpperCase().replace(/[\s_-]/g, "");
+  if (normalized.includes("RFBS")) return "RFBS";
+  if (normalized.includes("FBS") || normalized.includes("跨境") || normalized.includes("CROSSBORDER") || normalized.includes("INTERNATIONAL")) return "FBS";
+  if (normalized.includes("FBO") || normalized.includes("本土") || normalized.includes("本地") || normalized.includes("LOCAL")) return "FBO";
+  return "unknown";
+}
+
+function headerIndexes(headers: string[]): { required: Record<(typeof requiredHeaders)[number], number>; fulfillment: number; category: number } {
   const normalizedHeaders = headers.map(normalizeHeader);
   const indexes = {} as Record<(typeof requiredHeaders)[number], number>;
   for (const required of requiredHeaders) {
@@ -198,19 +246,27 @@ function headerIndexes(headers: string[]): Record<(typeof requiredHeaders)[numbe
     }
     indexes[required] = index;
   }
-  return indexes;
+  const fulfillment = fulfillmentHeaders
+    .map((header) => normalizedHeaders.indexOf(normalizeHeader(header)))
+    .find((index) => index >= 0) ?? -1;
+  const category = categoryHeaders
+    .map((header) => normalizedHeaders.indexOf(normalizeHeader(header)))
+    .find((index) => index >= 0) ?? -1;
+  return { required: indexes, fulfillment, category };
 }
 
-function parseMyFile(file: MyDataImportFile): ParsedFile {
+async function parseMyFile(file: MyDataImportFile): Promise<ParsedFile> {
   if (file.content.byteLength > MAX_FILE_BYTES) {
     throw new Error(`${file.fileName} 超过 10 MB 限制`);
   }
-  if (!file.fileName.toLowerCase().endsWith(".csv")) {
-    throw new Error(`${file.fileName} 不是 CSV 文件`);
+  const extension = file.fileName.toLowerCase();
+  if (!extension.endsWith(".csv") && !extension.endsWith(".xlsx")) {
+    throw new Error(`${file.fileName} 不是 CSV 或 XLSX 文件`);
   }
-  const rows = parseCsvRows(file.content);
+  const rows = extension.endsWith(".xlsx") ? await parseExcelRows(file.content) : parseCsvRows(file.content);
   const headers = rows.shift() ?? [];
-  const indexes = headerIndexes(headers);
+  const headerMapping = headerIndexes(headers);
+  const indexes = headerMapping.required;
   const parsedRows: ParsedMyRow[] = [];
   const errors: SelectionImportError[] = [];
   const rowKeys = new Set<string>();
@@ -234,10 +290,12 @@ function parseMyFile(file: MyDataImportFile): ParsedFile {
         impressions: integerValue(row[indexes["展示量"]] ?? "", "展示量"),
         conversionRate: percentageValue(row[indexes["转化率(%)"]] ?? "", "转化率"),
         discountRate: percentageValue(row[indexes["折扣(%)"]] ?? "", "折扣"),
+        category: headerMapping.category >= 0 ? row[headerMapping.category]?.trim() ?? "" : "",
         keyword: row[indexes["关键词"]]?.trim() ?? "",
         productUrl: row[indexes.URL]?.trim() ?? "",
         imageUrl: row[indexes["主图"]]?.trim() || null,
         status: row[indexes["状态"]]?.trim() || "unknown",
+        fulfillmentMode: parseFulfillmentMode(headerMapping.fulfillment >= 0 ? row[headerMapping.fulfillment]?.trim() ?? "" : ""),
         capturedAtMs: capturedAt,
         captureDay: captureDayFromTimestamp(capturedAt),
       };
@@ -286,12 +344,69 @@ function listDateConditions(query: MyDataQuery, values: unknown[]): string[] {
   return [];
 }
 
+interface ProductConditionOptions {
+  includeCategory?: boolean;
+  includeFulfillmentMode?: boolean;
+}
+
+interface ProductConditions {
+  clauses: string[];
+  values: unknown[];
+}
+
+function buildProductConditions(
+  database: AppDatabase,
+  query: MyDataQuery,
+  options: ProductConditionOptions = {},
+): ProductConditions {
+  const values: unknown[] = [];
+  const clauses = listDateConditions(query, values);
+  const defaultDay = effectiveCaptureDay(database, query);
+  if (defaultDay) {
+    values.push(defaultDay);
+    clauses.push("capture_day = ?");
+  }
+  if (query.search) {
+    values.push(`%${query.search}%`, `%${query.search}%`);
+    clauses.push("(product_name LIKE ? OR sku LIKE ?)");
+  }
+  if (query.keyword) {
+    values.push(query.keyword);
+    clauses.push("keyword = ?");
+  }
+  if (query.minMonthlyUnits !== undefined) {
+    values.push(query.minMonthlyUnits);
+    clauses.push("monthly_units >= ?");
+  }
+  if (query.maxMonthlyUnits !== undefined) {
+    values.push(query.maxMonthlyUnits);
+    clauses.push("monthly_units <= ?");
+  }
+  if (query.minAov !== undefined) {
+    values.push(query.minAov * RUB_SCALE);
+    clauses.push("monthly_sales_milli * 1.0 / NULLIF(monthly_units, 0) >= ?");
+  }
+  if (query.maxAov !== undefined) {
+    values.push(query.maxAov * RUB_SCALE);
+    clauses.push("monthly_sales_milli * 1.0 / NULLIF(monthly_units, 0) <= ?");
+  }
+  if (options.includeCategory !== false && query.category) {
+    values.push(query.category);
+    clauses.push("categories.category = ?");
+  }
+  if (options.includeFulfillmentMode !== false && query.fulfillmentMode) {
+    values.push(query.fulfillmentMode);
+    clauses.push("fulfillment_mode = ?");
+  }
+  return { clauses, values };
+}
+
 function latestCaptureDay(database: AppDatabase): string | null {
   return (database.prepare<[], { value: string | null }>("SELECT MAX(capture_day) AS value FROM my_product_snapshots").get() as { value: string | null }).value;
 }
 
 function effectiveCaptureDay(database: AppDatabase, query: MyDataQuery): string | null {
-  if (query.captureDay || query.from || query.to) {
+  if (query.allDates || query.captureDay || query.from || query.to) {
     return null;
   }
   return latestCaptureDay(database);
@@ -299,15 +414,34 @@ function effectiveCaptureDay(database: AppDatabase, query: MyDataQuery): string 
 
 /** Handles isolated MY CSV snapshots without coupling them to Ozon order data. */
 export class MyDataModule {
-  public constructor(private readonly database: AppDatabase) {}
+  /**
+   * Stores optional category values separately so existing installations do not
+   * need a destructive or blocking schema migration before importing new data.
+   */
+  private ensureOptionalTables(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS my_product_snapshot_categories (
+        snapshot_id TEXT PRIMARY KEY REFERENCES my_product_snapshots(id) ON DELETE CASCADE,
+        category TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS my_product_snapshot_categories_category_idx
+        ON my_product_snapshot_categories (category);
+    `);
+  }
+
+  /** Opens the MY data projection and prepares optional fields for new imports. */
+  public constructor(private readonly database: AppDatabase) {
+    this.ensureOptionalTables();
+  }
 
   /** Returns the newest imported snapshot for an Ozon SKU. */
   public getProductBySku(sku: string): MyDataProductView | null {
     const row = this.database.prepare(
       `SELECT id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli,
-        impressions, conversion_rate, discount_rate, keyword, product_url, image_url, status,
-        captured_at_ms, capture_day
+        impressions, conversion_rate, discount_rate, COALESCE(categories.category, '') AS category,
+        keyword, product_url, image_url, status, fulfillment_mode, captured_at_ms, capture_day
        FROM my_product_snapshots
+       LEFT JOIN my_product_snapshot_categories categories ON categories.snapshot_id = my_product_snapshots.id
        WHERE sku = ?
        ORDER BY capture_day DESC, captured_at_ms DESC
        LIMIT 1`,
@@ -315,13 +449,13 @@ export class MyDataModule {
     return row ? this.toProductView(row) : null;
   }
 
-  public previewImport(files: MyDataImportFile[], folderName: string): MyDataImportPreview {
+  public async previewImport(files: MyDataImportFile[], folderName: string): Promise<MyDataImportPreview> {
     this.validateImportSize(files);
     const knownHashes = new Set((this.database.prepare<[], ImportFileRow>("SELECT id, file_hash FROM my_import_files").all() as ImportFileRow[]).map((row) => row.file_hash));
     const previews: MyDataImportFilePreview[] = [];
     for (const file of files) {
       try {
-        const parsed = parseMyFile(file);
+        const parsed = await parseMyFile(file);
         previews.push({
           fileName: file.fileName,
           fileSize: file.content.byteLength,
@@ -359,11 +493,11 @@ export class MyDataModule {
       duplicateRows: previews.reduce((total, file) => total + file.duplicateRows, 0),
       captureDays: [...new Set(previews.flatMap((file) => file.captureDays))].sort(),
       files: previews,
-      canCommit: newFiles > 0,
+      canCommit: newFiles > 0 || previews.some((file) => file.isDuplicateFile && file.validRows > 0),
     };
   }
 
-  public commitImport(files: MyDataImportFile[], folderName: string): MyDataImportResult {
+  public async commitImport(files: MyDataImportFile[], folderName: string): Promise<MyDataImportResult> {
     this.validateImportSize(files);
     const batchId = randomUUID();
     const createdAtMs = Date.now();
@@ -376,20 +510,27 @@ export class MyDataModule {
     const captureDays = new Set<string>();
     const knownHashes = new Set((this.database.prepare<[], ImportFileRow>("SELECT id, file_hash FROM my_import_files").all() as ImportFileRow[]).map((row) => row.file_hash));
 
+    const parsedFiles = await Promise.all(files.map(async (file) => {
+      try {
+        return { file, parsed: await parseMyFile(file) };
+      } catch (error) {
+        return { file, error };
+      }
+    }));
     const importTransaction = this.database.transaction(() => {
       this.database.prepare("INSERT INTO my_import_batches (id, folder_name, file_count, valid_rows, invalid_rows, duplicate_rows, created_at_ms, status) VALUES (?, ?, ?, 0, 0, 0, ?, 'completed')")
         .run(batchId, folderName || "MY 数据文件夹", files.length, createdAtMs);
-      for (const file of files) {
-        let parsed: ParsedFile;
-        try {
-          parsed = parseMyFile(file);
-        } catch (error) {
+      for (const item of parsedFiles) {
+        const { file } = item;
+        if ("error" in item) {
+          const error = item.error;
           invalidRows += 1;
           if (errors.length < 100) {
             errors.push({ row: 1, message: `${file.fileName}：${error instanceof Error ? error.message : "文件无法解析"}` });
           }
           continue;
         }
+        const { parsed } = item;
         validRows += parsed.rows.length;
         invalidRows += parsed.errors.length;
         duplicateRows += parsed.duplicateRows;
@@ -401,6 +542,7 @@ export class MyDataModule {
         parsed.captureDays.forEach((day) => captureDays.add(day));
         if (knownHashes.has(parsed.fileHash)) {
           duplicateFiles += 1;
+          this.enrichDuplicateRows(parsed.rows);
           continue;
         }
         const fileId = randomUUID();
@@ -408,8 +550,8 @@ export class MyDataModule {
           .run(fileId, batchId, file.fileName, parsed.fileHash, file.content.byteLength, parsed.rows.length, parsed.errors.length, parsed.duplicateRows, createdAtMs);
         importedFiles += 1;
         const upsert = this.database.prepare(`INSERT INTO my_product_snapshots
-          (id, import_file_id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli, impressions, conversion_rate, discount_rate, keyword, product_url, image_url, status, captured_at_ms, capture_day)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, import_file_id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli, impressions, conversion_rate, discount_rate, keyword, product_url, image_url, status, fulfillment_mode, captured_at_ms, capture_day)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (sku, capture_day, keyword) DO UPDATE SET
             import_file_id = excluded.import_file_id,
             product_name = excluded.product_name,
@@ -422,9 +564,21 @@ export class MyDataModule {
             product_url = excluded.product_url,
             image_url = excluded.image_url,
             status = excluded.status,
+            fulfillment_mode = excluded.fulfillment_mode,
             captured_at_ms = excluded.captured_at_ms`);
+        const findSnapshotId = this.database.prepare<[string, string, string], { id: string }>(
+          "SELECT id FROM my_product_snapshots WHERE sku = ? AND capture_day = ? AND keyword = ?",
+        );
+        const saveCategory = this.database.prepare(
+          `INSERT INTO my_product_snapshot_categories (snapshot_id, category) VALUES (?, ?)
+           ON CONFLICT (snapshot_id) DO UPDATE SET category = excluded.category`,
+        );
         for (const row of parsed.rows) {
-          upsert.run(randomUUID(), fileId, row.sku, row.productName, row.currentPriceMilli, row.monthlyUnits, row.monthlySalesMilli, row.impressions, row.conversionRate, row.discountRate, row.keyword, row.productUrl, row.imageUrl, row.status, row.capturedAtMs, row.captureDay);
+          upsert.run(randomUUID(), fileId, row.sku, row.productName, row.currentPriceMilli, row.monthlyUnits, row.monthlySalesMilli, row.impressions, row.conversionRate, row.discountRate, row.keyword, row.productUrl, row.imageUrl, row.status, row.fulfillmentMode, row.capturedAtMs, row.captureDay);
+          const snapshot = findSnapshotId.get(row.sku, row.captureDay, row.keyword);
+          if (snapshot) {
+            saveCategory.run(snapshot.id, row.category);
+          }
         }
         knownHashes.add(parsed.fileHash);
       }
@@ -456,38 +610,8 @@ export class MyDataModule {
   }
 
   public listProducts(query: MyDataQuery): MyDataProductPage {
-    const values: unknown[] = [];
-    const conditions = listDateConditions(query, values);
-    const defaultDay = effectiveCaptureDay(this.database, query);
-    if (defaultDay) {
-      values.push(defaultDay);
-      conditions.push("capture_day = ?");
-    }
-    if (query.search) {
-      values.push(`%${query.search}%`, `%${query.search}%`);
-      conditions.push("(product_name LIKE ? OR sku LIKE ?)");
-    }
-    if (query.keyword) {
-      values.push(query.keyword);
-      conditions.push("keyword = ?");
-    }
-    if (query.minMonthlyUnits !== undefined) {
-      values.push(query.minMonthlyUnits);
-      conditions.push("monthly_units >= ?");
-    }
-    if (query.maxMonthlyUnits !== undefined) {
-      values.push(query.maxMonthlyUnits);
-      conditions.push("monthly_units <= ?");
-    }
-    if (query.minAov !== undefined) {
-      values.push(query.minAov * RUB_SCALE);
-      conditions.push("monthly_sales_milli * 1.0 / NULLIF(monthly_units, 0) >= ?");
-    }
-    if (query.maxAov !== undefined) {
-      values.push(query.maxAov * RUB_SCALE);
-      conditions.push("monthly_sales_milli * 1.0 / NULLIF(monthly_units, 0) <= ?");
-    }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const productConditions = buildProductConditions(this.database, query);
+    const where = productConditions.clauses.length > 0 ? `WHERE ${productConditions.clauses.join(" AND ")}` : "";
     const orderBy: Record<MyDataSort, string> = {
       monthlyUnits: "monthly_units DESC",
       monthlySales: "monthly_sales_milli DESC",
@@ -495,13 +619,22 @@ export class MyDataModule {
       conversionRate: "conversion_rate DESC",
       impressions: "impressions DESC",
     };
-    const count = (this.database.prepare(`SELECT COUNT(*) AS count FROM my_product_snapshots ${where}`).get(...values) as { count: number }).count;
+    const from = "FROM my_product_snapshots snapshots LEFT JOIN my_product_snapshot_categories categories ON categories.snapshot_id = snapshots.id";
+    const count = (this.database.prepare(`SELECT COUNT(*) AS count ${from} ${where}`).get(...productConditions.values) as { count: number }).count;
     const offset = (query.page - 1) * query.pageSize;
-    const rows = this.database.prepare(`SELECT id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli, impressions, conversion_rate, discount_rate, keyword, product_url, image_url, status, captured_at_ms, capture_day FROM my_product_snapshots ${where} ORDER BY ${orderBy[query.sort]}, captured_at_ms DESC LIMIT ? OFFSET ?`).all(...values, query.pageSize, offset) as ProductRow[];
+    const rows = this.database.prepare(`SELECT snapshots.id, snapshots.sku, snapshots.product_name, snapshots.current_price_milli, snapshots.monthly_units, snapshots.monthly_sales_milli, snapshots.impressions, snapshots.conversion_rate, snapshots.discount_rate, COALESCE(categories.category, '') AS category, snapshots.keyword, snapshots.product_url, snapshots.image_url, snapshots.status, snapshots.fulfillment_mode, snapshots.captured_at_ms, snapshots.capture_day ${from} ${where} ORDER BY ${orderBy[query.sort]}, snapshots.captured_at_ms DESC LIMIT ? OFFSET ?`).all(...productConditions.values, query.pageSize, offset) as ProductRow[];
     const captureDays = (this.database.prepare<[], { capture_day: string }>("SELECT DISTINCT capture_day FROM my_product_snapshots ORDER BY capture_day DESC").all() as Array<{ capture_day: string }>).map((item) => item.capture_day);
-    const keywordWhere = conditions.length > 0 ? `${where} AND keyword <> ''` : "WHERE keyword <> ''";
-    const keywords = (this.database.prepare(`SELECT DISTINCT keyword FROM my_product_snapshots ${keywordWhere} ORDER BY keyword`).all(...values) as Array<{ keyword: string }>).map((item) => item.keyword);
-    return { items: rows.map((row) => this.toProductView(row)), page: query.page, pageSize: query.pageSize, total: count, latestCaptureDay: latestCaptureDay(this.database), captureDays, keywords };
+    const keywordWhere = productConditions.clauses.length > 0 ? `${where} AND snapshots.keyword <> ''` : "WHERE snapshots.keyword <> ''";
+    const keywords = (this.database.prepare(`SELECT DISTINCT snapshots.keyword AS keyword ${from} ${keywordWhere} ORDER BY snapshots.keyword`).all(...productConditions.values) as Array<{ keyword: string }>).map((item) => item.keyword);
+    const facetConditions = buildProductConditions(this.database, query, { includeCategory: false, includeFulfillmentMode: false });
+    const facetWhere = facetConditions.clauses.length > 0 ? `WHERE ${facetConditions.clauses.join(" AND ")}` : "";
+    const categoryWhere = facetConditions.clauses.length > 0 ? `${facetWhere} AND categories.category <> ''` : "WHERE categories.category <> ''";
+    const categories = (this.database.prepare(`SELECT DISTINCT categories.category AS category ${from} ${categoryWhere}`).all(...facetConditions.values) as Array<{ category: string }>)
+      .map((item) => item.category)
+      .sort((left, right) => left.localeCompare(right, "zh-CN"));
+    const availableFulfillmentModes = new Set((this.database.prepare(`SELECT DISTINCT snapshots.fulfillment_mode AS fulfillment_mode ${from} ${facetWhere}`).all(...facetConditions.values) as Array<{ fulfillment_mode: string }>).map((item) => item.fulfillment_mode));
+    const fulfillmentModes = myDataFulfillmentModes.filter((mode) => availableFulfillmentModes.has(mode));
+    return { items: rows.map((row) => this.toProductView(row)), page: query.page, pageSize: query.pageSize, total: count, latestCaptureDay: latestCaptureDay(this.database), captureDays, keywords, facets: { categories, fulfillmentModes } };
   }
 
   public clearData(): void {
@@ -524,6 +657,40 @@ export class MyDataModule {
     }
   }
 
+  /** Fills fields added by a newer exporter without weakening file-level deduplication. */
+  private enrichDuplicateRows(rows: ParsedMyRow[]): void {
+    const findSnapshot = this.database.prepare<Pick<ParsedMyRow, "sku" | "captureDay" | "keyword">, { category: string; fulfillment_mode: MyDataProductView["fulfillmentMode"] }>(
+      `SELECT COALESCE(categories.category, '') AS category, snapshots.fulfillment_mode
+       FROM my_product_snapshots snapshots
+       LEFT JOIN my_product_snapshot_categories categories ON categories.snapshot_id = snapshots.id
+       WHERE snapshots.sku = @sku AND snapshots.capture_day = @captureDay AND snapshots.keyword = @keyword`,
+    );
+    const updateCategory = this.database.prepare(
+      "INSERT INTO my_product_snapshot_categories (snapshot_id, category) VALUES (?, ?) ON CONFLICT (snapshot_id) DO UPDATE SET category = excluded.category",
+    );
+    const findSnapshotId = this.database.prepare<Pick<ParsedMyRow, "sku" | "captureDay" | "keyword">, { id: string }>(
+      "SELECT id FROM my_product_snapshots WHERE sku = @sku AND capture_day = @captureDay AND keyword = @keyword",
+    );
+    const updateFulfillment = this.database.prepare(
+      "UPDATE my_product_snapshots SET fulfillment_mode = ? WHERE sku = ? AND capture_day = ? AND keyword = ?",
+    );
+    for (const row of rows) {
+      const existing = findSnapshot.get({ sku: row.sku, captureDay: row.captureDay, keyword: row.keyword });
+      if (!existing) {
+        continue;
+      }
+      const category = existing.category || row.category;
+      const fulfillmentMode = existing.fulfillment_mode === "unknown" ? row.fulfillmentMode : existing.fulfillment_mode;
+      const snapshot = findSnapshotId.get({ sku: row.sku, captureDay: row.captureDay, keyword: row.keyword });
+      if (snapshot && category !== existing.category) {
+        updateCategory.run(snapshot.id, category);
+      }
+      if (fulfillmentMode !== existing.fulfillment_mode) {
+        updateFulfillment.run(fulfillmentMode, row.sku, row.captureDay, row.keyword);
+      }
+    }
+  }
+
   private toProductView(row: ProductRow): MyDataProductView {
     const aovMilli = row.monthly_units > 0 ? new Decimal(row.monthly_sales_milli).div(row.monthly_units).toDecimalPlaces(0).toNumber() : null;
     return {
@@ -537,10 +704,12 @@ export class MyDataModule {
       impressions: row.impressions,
       conversionRate: row.conversion_rate,
       discountRate: row.discount_rate,
+      category: row.category,
       keyword: row.keyword,
       productUrl: row.product_url,
       imageUrl: row.image_url,
       status: row.status,
+      fulfillmentMode: row.fulfillment_mode,
       capturedAt: new Date(row.captured_at_ms).toISOString(),
       captureDay: row.capture_day,
     };

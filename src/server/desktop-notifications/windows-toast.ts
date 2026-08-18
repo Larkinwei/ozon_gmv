@@ -21,13 +21,13 @@ function snoreToastPath(): string {
   return join(dirname(packagePath), "vendor", "snoreToast", "snoretoast-x64.exe");
 }
 
-/** Builds the SnoreToast command line with the local image and long duration. */
+/** Builds the SnoreToast command line with the local image and short duration. */
 export function buildWindowsToastArguments(pipePath: string, options: WindowsToastOptions): string[] {
   return [
     "-t", options.title,
     "-m", options.message,
     ...(options.imagePath ? ["-p", options.imagePath] : []),
-    "-d", "long",
+    "-d", "short",
     "-s", "Notification.Default",
     "-appID", APP_ID,
     "-pipeName", pipePath,

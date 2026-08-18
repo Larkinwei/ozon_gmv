@@ -47,6 +47,14 @@ describe("MY data admin API", () => {
       const products = await app.inject({ method: "GET", url: "/api/selection/my/products?captureDay=2026-08-17&minAov=30", cookies: { ozon_session: cookie } });
       expect(products.statusCode).toBe(200);
       expect(products.json()).toMatchObject({ total: 1, items: [{ sku: "1002" }] });
+      const enrichedHeader = `${header},发货模式,类目`;
+      const enrichedBody = multipart([{ name: "filtered.csv", content: `\uFEFF${enrichedHeader}\n1003,商品 C,0,30,900,1000,2,0,рюкзак,https://ozon.ru/p/1003,,local,2026-08-17T03:20:24Z,FBS,家居/收纳\n` }]);
+      const enriched = await app.inject({ method: "POST", url: "/api/selection/my/imports", headers: { "content-type": `multipart/form-data; boundary=${boundary}` }, cookies: { ozon_session: cookie }, payload: enrichedBody });
+      expect(enriched.statusCode).toBe(201);
+      const filtered = await app.inject({ method: "GET", url: "/api/selection/my/products?captureDay=2026-08-17&category=%E5%AE%B6%E5%B1%85%2F%E6%94%B6%E7%BA%B3&fulfillmentMode=FBS", cookies: { ozon_session: cookie } });
+      expect(filtered.statusCode).toBe(200);
+      expect(filtered.json()).toMatchObject({ total: 1, items: [{ sku: "1003", category: "家居/收纳", fulfillmentMode: "FBS" }] });
+      expect(filtered.json().facets).toMatchObject({ categories: ["家居/收纳"], fulfillmentModes: expect.arrayContaining(["FBS", "unknown"]) });
       const clear = await app.inject({ method: "DELETE", url: "/api/selection/my/data", cookies: { ozon_session: cookie } });
       expect(clear.statusCode).toBe(204);
     } finally {

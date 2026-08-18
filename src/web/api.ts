@@ -7,6 +7,7 @@ import type {
   MyDataImportView,
   MyDataOverview,
   MyDataProductPage,
+  MyDataFulfillmentMode,
   MyDataSort,
   ImageStorageView,
   ResellPreflightInput,
@@ -433,15 +434,18 @@ export async function fetchMyDataProducts(filters: {
   captureDay?: string | undefined;
   from?: string | undefined;
   to?: string | undefined;
+  allDates?: boolean | undefined;
   search?: string | undefined;
   keyword?: string | undefined;
+  category?: string | undefined;
+  fulfillmentMode?: MyDataFulfillmentMode | undefined;
   minMonthlyUnits?: number | undefined;
   maxMonthlyUnits?: number | undefined;
   minAov?: number | undefined;
   maxAov?: number | undefined;
 }): Promise<MyDataProductPage> {
   if (DEMO_MODE) {
-    return { items: [], page: filters.page, pageSize: filters.pageSize, total: 0, latestCaptureDay: null, captureDays: [], keywords: [] };
+    return { items: [], page: filters.page, pageSize: filters.pageSize, total: 0, latestCaptureDay: null, captureDays: [], keywords: [], facets: { categories: [], fulfillmentModes: [] } };
   }
   const params = new URLSearchParams({ page: String(filters.page), pageSize: String(filters.pageSize), sort: filters.sort });
   Object.entries(filters).forEach(([key, value]) => {

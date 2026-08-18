@@ -556,9 +556,15 @@ export interface MyDataProductView {
   productUrl: string;
   imageUrl: string | null;
   status: string;
+  category: string;
+  /** Explicit fulfillment value exported by MY, or unknown when the source has no reliable field. */
+  fulfillmentMode: MyDataFulfillmentMode;
   capturedAt: string;
   captureDay: string;
 }
+
+export const myDataFulfillmentModes = ["FBO", "FBS", "RFBS", "unknown"] as const;
+export type MyDataFulfillmentMode = (typeof myDataFulfillmentModes)[number];
 
 export const myDataSorts = ["monthlyUnits", "monthlySales", "averageOrderValue", "conversionRate", "impressions"] as const;
 export type MyDataSort = (typeof myDataSorts)[number];
@@ -571,6 +577,10 @@ export interface MyDataProductPage {
   latestCaptureDay: string | null;
   captureDays: string[];
   keywords: string[];
+  facets: {
+    categories: string[];
+    fulfillmentModes: MyDataFulfillmentMode[];
+  };
 }
 
 export interface MyDataOverview {
