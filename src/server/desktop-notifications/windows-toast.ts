@@ -9,6 +9,11 @@ const require = createRequire(import.meta.url);
 const APP_ID = "com.ozon.gmv-dashboard";
 const RESULT_TIMEOUT_MS = 35_000;
 
+/** SnoreToast returns the unsigned representation of -1 on Windows. */
+export function isWindowsToastFailure(code: number | null): boolean {
+  return code === -1 || code === 0xFFFFFFFF;
+}
+
 export interface WindowsToastOptions {
   title: string;
   message: string;
@@ -21,13 +26,12 @@ function snoreToastPath(): string {
   return join(dirname(packagePath), "vendor", "snoreToast", "snoretoast-x64.exe");
 }
 
-/** Builds the SnoreToast command line with the local image and short duration. */
+/** Builds the SnoreToast command line; SnoreToast 0.7.0 uses a short duration by default. */
 export function buildWindowsToastArguments(pipePath: string, options: WindowsToastOptions): string[] {
   return [
     "-t", options.title,
     "-m", options.message,
     ...(options.imagePath ? ["-p", options.imagePath] : []),
-    "-d", "short",
     "-s", "Notification.Default",
     "-appID", APP_ID,
     "-pipeName", pipePath,
@@ -80,22 +84,27 @@ export function showWindowsToast(options: WindowsToastOptions): Promise<void> {
       }
       cleanup();
     };
+    const succeed = (): void => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+      cleanup();
+    };
     server.once("error", fail);
     server.listen(pipePath, () => {
       const child = spawn(snoreToastPath(), buildWindowsToastArguments(pipePath, options), {
         windowsHide: true,
         stdio: "ignore",
       });
-      timeout = setTimeout(cleanup, RESULT_TIMEOUT_MS);
+      timeout = setTimeout(succeed, RESULT_TIMEOUT_MS);
       child.once("error", fail);
-      child.once("spawn", () => {
-        if (!settled) {
-          settled = true;
-          resolve();
+      child.once("close", (code) => {
+        if (isWindowsToastFailure(code)) {
+          fail(new Error(`Windows 通知发送失败（SnoreToast 退出码 ${code}）`));
+          return;
         }
-      });
-      child.once("close", () => {
-        cleanup();
+        succeed();
       });
     });
   });

@@ -59,6 +59,15 @@ npm install
 npm run dev
 ```
 
+`npm run dev` 会同时启动后端、Vite 前端和当前源码的 Windows 通知助手。Windows 本机如果已经安装过用户版，先运行 `npm run dev:workspace`；它会停止并改为手动启动已安装服务，保留原安装目录和 `%ProgramData%\Ozon GMV Dashboard` 数据，然后用当前工作区占用 3001/3002 启动。实时开发页面地址为 `http://127.0.0.1:5173`。
+
+由于正式安装版的数据目录受系统权限保护，首次切换工作区时需要在管理员 PowerShell 中给当前登录用户授予该目录的修改权限：
+
+```powershell
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+icacls "C:\ProgramData\Ozon GMV Dashboard" /grant "${identity}:(OI)(CI)M" /T
+```
+
 首次运行会在 `.data` 下创建 SQLite 和本机密钥。打开 `http://127.0.0.1:3001` 后，由初始化向导创建管理员，不存在通用默认密码。
 
 仅查看演示 UI：

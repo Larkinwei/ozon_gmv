@@ -1,12 +1,14 @@
 {
   "name": "ozon-gmv-dashboard",
-  "version": "1.5.8",
+  "version": "1.5.9",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n server,web -c blue,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev": "concurrently -k -n server,web,notifier -c blue,cyan,yellow \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:notifications\"",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite",
+    "dev:notifications": "tsx watch scripts/dev-notification-agent.ts",
+    "dev:workspace": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-workspace-dev.ps1",
     "dev:demo": "vite --mode demo",
     "build": "npm run build:web && npm run build:server",
     "build:web": "vite build",

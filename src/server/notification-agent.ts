@@ -9,6 +9,7 @@ import { NotificationImageCache } from "./desktop-notifications/notification-ima
 import { showWindowsToast } from "./desktop-notifications/windows-toast";
 
 const ADMIN_BASE_URL = process.env.OZON_GMV_ADMIN_URL ?? "http://127.0.0.1:3001";
+const UI_BASE_URL = process.env.OZON_GMV_UI_URL ?? ADMIN_BASE_URL;
 const STATE_DIR = process.env.NOTIFIER_DATA_DIR ?? join(homedir(), ".ozon-gmv-dashboard");
 const PID_PATH = join(STATE_DIR, "notifier.pid");
 
@@ -31,7 +32,7 @@ function acquireProcessLock(): void {
 }
 
 function openDashboard(path: string): void {
-  const url = new URL(path, ADMIN_BASE_URL).toString();
+  const url = new URL(path, UI_BASE_URL).toString();
   if (process.platform === "win32") {
     spawn("rundll32.exe", ["url.dll,FileProtocolHandler", url], { detached: true, stdio: "ignore" }).unref();
     return;
@@ -51,7 +52,7 @@ function showMacNotification(title: string, message: string, path: string, image
     void reportStatus({ error: "macOS 通知助手尚未安装" });
     return;
   }
-  const argumentsList = ["--title", title, "--message", message, "--open", new URL(path, ADMIN_BASE_URL).toString()];
+  const argumentsList = ["--title", title, "--message", message, "--open", new URL(path, UI_BASE_URL).toString()];
   if (imageUrl) {
     argumentsList.push("--image", imageUrl);
   }
