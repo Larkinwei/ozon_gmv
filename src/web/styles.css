@@ -2081,6 +2081,7 @@ td {
 
 .my-data-field,
 .my-data-range {
+  position: relative;
   display: flex;
   min-height: 44px;
   align-items: center;
@@ -2106,6 +2107,32 @@ td {
   background: transparent;
   border: 0;
   outline: 0;
+}
+
+.my-data-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 108px;
+  padding: 0 24px 0 2px;
+  color-scheme: dark;
+}
+
+.my-data-field select option {
+  color: #e2e8f0;
+  background: #111d32;
+}
+
+.my-data-field::after {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  width: 7px;
+  height: 7px;
+  pointer-events: none;
+  content: "";
+  border-right: 1.5px solid #94a3b8;
+  border-bottom: 1.5px solid #94a3b8;
+  transform: translateY(-65%) rotate(45deg);
 }
 
 .my-data-category-filter select {
@@ -2204,6 +2231,9 @@ td {
 @media (max-width: 768px) {
   .my-data-toolbar .selection-search { min-width: 100%; }
   .my-data-field, .my-data-range { flex: 1 1 190px; }
+  .my-data-pagination { align-items: flex-start; }
+  .my-data-pagination-summary { width: 100%; }
+  .my-data-pagination-controls { width: 100%; justify-content: flex-start; }
   .my-data-table-wrap { overflow: visible; border: 0; }
   .my-data-table { min-width: 0; }
   .my-data-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -2519,6 +2549,107 @@ td {
 .selection-pagination strong {
   min-width: 54px;
   color: #cbd5e1;
+  text-align: center;
+}
+
+.my-data-pagination {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.my-data-pagination-controls,
+.my-data-page-buttons,
+.my-data-page-jump,
+.my-data-page-size {
+  display: flex;
+  align-items: center;
+}
+
+.my-data-pagination-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.my-data-page-size,
+.my-data-page-jump {
+  min-height: 34px;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.my-data-page-size select,
+.my-data-page-jump input {
+  height: 34px;
+  color: var(--text);
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: 0;
+}
+
+.my-data-page-size select {
+  min-width: 74px;
+  padding: 0 8px;
+  color-scheme: dark;
+}
+
+.my-data-page-size select option {
+  color: #e2e8f0;
+  background: #111d32;
+}
+
+.my-data-page-jump input {
+  width: 48px;
+  padding: 0 6px;
+  text-align: center;
+}
+
+.my-data-page-size select:focus-visible,
+.my-data-page-jump input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.my-data-page-buttons {
+  gap: 4px;
+}
+
+.my-data-page-buttons .icon-button {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+}
+
+.my-data-page-button {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.my-data-page-button:hover,
+.my-data-page-button.is-active {
+  color: #dbeafe;
+  background: rgb(37 99 235 / 22%);
+  border-color: rgb(59 130 246 / 45%);
+}
+
+.my-data-page-button.is-active {
+  color: #bfdbfe;
+  font-weight: 700;
+}
+
+.my-data-page-ellipsis {
+  width: 22px;
+  color: #64748b;
   text-align: center;
 }
 

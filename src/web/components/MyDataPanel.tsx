@@ -1,4 +1,6 @@
 import {
+  ChevronsLeft,
+  ChevronsRight,
   ChevronLeft,
   ChevronRight,
   Database,
@@ -36,6 +38,23 @@ const sortOptions: Array<{ value: MyDataSort; label: string }> = [
   { value: "conversionRate", label: "转化率" },
   { value: "impressions", label: "展示量" },
 ];
+
+const pageSizeOptions = [20, 50, 100] as const;
+type PaginationItem = number | "ellipsis";
+
+function paginationItems(page: number, totalPages: number): PaginationItem[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+  const items: PaginationItem[] = [1];
+  if (page > 4) items.push("ellipsis");
+  for (let value = Math.max(2, page - 1); value <= Math.min(totalPages - 1, page + 1); value += 1) {
+    items.push(value);
+  }
+  if (page < totalPages - 3) items.push("ellipsis");
+  items.push(totalPages);
+  return items;
+}
 
 function numberValue(value: string): number | undefined {
   return value.trim() ? Number(value) : undefined;
@@ -78,6 +97,8 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
   const [maxAov, setMaxAov] = useState("");
   const [sort, setSort] = useState<MyDataSort>("monthlyUnits");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [pageInput, setPageInput] = useState("1");
   const [showImport, setShowImport] = useState(false);
 
   const overviewQuery = useQuery({
@@ -98,7 +119,7 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
   }
   const filters = {
     page,
-    pageSize: 20,
+    pageSize,
     sort,
     ...dateFilter,
     ...(search.trim() ? { search: search.trim() } : {}),
@@ -113,6 +134,7 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
   const productsQuery = useQuery({
     queryKey: ["my-data-products", filters],
     queryFn: () => fetchMyDataProducts(filters),
+    placeholderData: (previousData) => previousData,
   });
   const clearMutation = useMutation({
     mutationFn: clearMyData,
@@ -141,6 +163,12 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
     setPage(1);
   }
 
+  function goToPage(value: string | number): void {
+    const nextPage = typeof value === "number" ? value : Number.parseInt(value, 10);
+    if (!Number.isFinite(nextPage)) return;
+    setPage(Math.max(1, Math.min(totalPages, nextPage)));
+  }
+
   function confirmClear(): void {
     if (window.confirm(`确定清空全部 MY 数据吗？这将删除 ${overviewQuery.data?.importCount ?? 0} 个导入批次和历史快照，且不可恢复。`)) {
       clearMutation.mutate();
@@ -166,7 +194,14 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
     return <MyDataTable items={productsQuery.data.items} onResell={(sku) => navigate(`/selection/resell/${encodeURIComponent(sku)}`)} />;
   }
 
-  const totalPages = Math.max(1, Math.ceil((productsQuery.data?.total ?? 0) / 20));
+  const totalPages = Math.max(1, Math.ceil((productsQuery.data?.total ?? 0) / pageSize));
+  useEffect(() => {
+    if (productsQuery.isFetching || !productsQuery.data) return;
+    setPage((current) => Math.min(current, totalPages));
+  }, [productsQuery.data, productsQuery.isFetching, totalPages]);
+  useEffect(() => {
+    setPageInput(String(page));
+  }, [page]);
   const hasData = (overviewQuery.data?.productCount ?? 0) > 0 || (productsQuery.data?.total ?? 0) > 0;
   return (
     <section className="selection-tab-panel my-data-panel" role="tabpanel" aria-label="MY 数据">
@@ -202,7 +237,22 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
           </div>
           {allDates && <p className="my-data-filter-note" role="status">当前查看全部历史快照；指标卡仍显示最新采集日，月销量和月销售额不会跨日期相加。</p>}
           {renderDataState()}
-          {(productsQuery.data?.total ?? 0) > 0 && <div className="selection-pagination"><span>共 {(productsQuery.data?.total ?? 0).toLocaleString("zh-CN")} 条快照</span><div><button className="icon-button" type="button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)} aria-label="上一页"><ChevronLeft size={18} /></button><strong>{page} / {totalPages}</strong><button className="icon-button" type="button" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)} aria-label="下一页"><ChevronRight size={18} /></button></div></div>}
+          {(productsQuery.data?.total ?? 0) > 0 && <div className="selection-pagination my-data-pagination">
+            <span className="my-data-pagination-summary">共 {(productsQuery.data?.total ?? 0).toLocaleString("zh-CN")} 条快照</span>
+            <div className="my-data-pagination-controls">
+              <label className="my-data-page-size"><span>每页</span><select value={pageSize} disabled={productsQuery.isFetching} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }} aria-label="每页显示条数">{pageSizeOptions.map((size) => <option value={size} key={size}>{size} 条</option>)}</select></label>
+              <div className="my-data-page-buttons">
+                <button className="icon-button" type="button" disabled={productsQuery.isFetching || page <= 1} onClick={() => goToPage(1)} aria-label="第一页"><ChevronsLeft size={16} /></button>
+                <button className="icon-button" type="button" disabled={productsQuery.isFetching || page <= 1} onClick={() => goToPage(page - 1)} aria-label="上一页"><ChevronLeft size={17} /></button>
+                {paginationItems(page, totalPages).map((item, index) => item === "ellipsis"
+                  ? <span className="my-data-page-ellipsis" key={`ellipsis-${index}`} aria-hidden="true">…</span>
+                  : <button className={`my-data-page-button${item === page ? " is-active" : ""}`} type="button" key={item} disabled={productsQuery.isFetching} onClick={() => goToPage(item)} aria-current={item === page ? "page" : undefined}>{item}</button>)}
+                <button className="icon-button" type="button" disabled={productsQuery.isFetching || page >= totalPages} onClick={() => goToPage(page + 1)} aria-label="下一页"><ChevronRight size={17} /></button>
+                <button className="icon-button" type="button" disabled={productsQuery.isFetching || page >= totalPages} onClick={() => goToPage(totalPages)} aria-label="最后一页"><ChevronsRight size={16} /></button>
+              </div>
+              <form className="my-data-page-jump" onSubmit={(event) => { event.preventDefault(); goToPage(pageInput); }}><label htmlFor="my-data-page-input">跳至</label><input id="my-data-page-input" inputMode="numeric" min={1} max={totalPages} value={pageInput} disabled={productsQuery.isFetching} onChange={(event) => setPageInput(event.target.value.replace(/\D/g, ""))} aria-label="跳转页码" /><span>页</span><button className="secondary-button compact-button" type="submit" disabled={productsQuery.isFetching}>跳转</button></form>
+            </div>
+          </div>}
         </>
       )}
       {showImport && <MyDataImportDialog onClose={() => setShowImport(false)} onImported={async (result) => { setShowImport(false); setAllDates(true); setCaptureDay(""); setPage(1); await Promise.all([queryClient.refetchQueries({ queryKey: ["my-data-overview"] }), queryClient.refetchQueries({ queryKey: ["my-data-products"] })]); props.onNotice({ tone: "success", text: `MY 数据导入完成：新增 ${result.importedFiles} 个文件，${result.validRows.toLocaleString("zh-CN")} 条有效记录，跳过 ${result.duplicateFiles} 个重复文件。` }); }} />}
