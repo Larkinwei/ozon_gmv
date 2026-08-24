@@ -47,6 +47,10 @@ const myDataQuerySchema = z.object({
   maxMonthlyUnits: z.coerce.number().int().nonnegative().optional(),
   minAov: z.coerce.number().nonnegative().optional(),
   maxAov: z.coerce.number().nonnegative().optional(),
+  minRating: z.coerce.number().min(0).max(5).optional(),
+  maxRating: z.coerce.number().min(0).max(5).optional(),
+  minReviewCount: z.coerce.number().int().nonnegative().optional(),
+  maxReviewCount: z.coerce.number().int().nonnegative().optional(),
   sort: z.enum(myDataSorts).default("monthlyUnits"),
 }).refine((query) => !query.from || !query.to || query.from <= query.to, { message: "日期范围不正确", path: ["to"] });
 const candidateCreateSchema = z.object({

@@ -443,6 +443,10 @@ export async function fetchMyDataProducts(filters: {
   maxMonthlyUnits?: number | undefined;
   minAov?: number | undefined;
   maxAov?: number | undefined;
+  minRating?: number | undefined;
+  maxRating?: number | undefined;
+  minReviewCount?: number | undefined;
+  maxReviewCount?: number | undefined;
 }): Promise<MyDataProductPage> {
   if (DEMO_MODE) {
     return { items: [], page: filters.page, pageSize: filters.pageSize, total: 0, latestCaptureDay: null, captureDays: [], keywords: [], facets: { categories: [], fulfillmentModes: [] } };

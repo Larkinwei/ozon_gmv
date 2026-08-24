@@ -42,6 +42,8 @@ function product(sku: string): MyDataProductView {
     sku,
     productName: `商品 ${sku}`,
     currentPrice: { amount: "10", currency: "RUB" },
+    rating: 4.8,
+    reviewCount: 721,
     monthlyUnits: 1,
     monthlySales: { amount: "10", currency: "RUB" },
     averageOrderValue: { amount: "10", currency: "RUB" },
@@ -102,5 +104,29 @@ describe("MyDataPanel pagination", () => {
     resolvePageTwo(page(2, 20));
     expect(await screen.findByText("商品 21")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "2" })).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("MyDataPanel rating and review filters", () => {
+  it("renders rating and review count and sends their range filters", async () => {
+    fetchOverview.mockResolvedValue(overview);
+    fetchProducts.mockImplementation(async (filters: { page: number; pageSize: number }) => page(filters.page, filters.pageSize));
+
+    renderPanel();
+    expect(await screen.findByText("4.8")).toBeInTheDocument();
+    expect(screen.getByText("721")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("评分最小值"), { target: { value: "4.5" } });
+    fireEvent.change(screen.getByLabelText("评论数最大值"), { target: { value: "1000" } });
+    await waitFor(() => expect(fetchProducts).toHaveBeenCalledWith(expect.objectContaining({ minRating: 4.5, maxReviewCount: 1000, page: 1 })));
+  });
+
+  it("shows an em dash for missing rating and review count", async () => {
+    fetchOverview.mockResolvedValue(overview);
+    fetchProducts.mockResolvedValue({ ...page(1, 20), items: [{ ...product("1"), rating: null, reviewCount: null }] });
+
+    renderPanel();
+    expect(await screen.findByText("商品 1")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 });

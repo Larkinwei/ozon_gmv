@@ -2142,6 +2142,7 @@ td {
 }
 
 .my-data-range input { width: 62px; }
+.my-data-review-range input { width: 72px; }
 .my-data-range b { color: #64748b; font-weight: 400; }
 .my-data-toolbar .selection-search { min-width: 250px; }
 
@@ -2243,16 +2244,18 @@ td {
   .my-data-table td::before { color: var(--muted); content: attr(data-label); }
   .my-data-table td:nth-child(2)::before { content: "类目"; }
   .my-data-table td:nth-child(3)::before { content: "SKU"; }
-  .my-data-table td:nth-child(4)::before { content: "月销量"; }
-  .my-data-table td:nth-child(5)::before { content: "月销售额"; }
-  .my-data-table td:nth-child(6)::before { content: "客单价"; }
-  .my-data-table td:nth-child(7)::before { content: "展示量"; }
-  .my-data-table td:nth-child(8)::before { content: "转化率"; }
-  .my-data-table td:nth-child(9)::before { content: "折扣"; }
-  .my-data-table td:nth-child(10)::before { content: "关键词"; }
-  .my-data-table td:nth-child(11)::before { content: "采集日"; }
-  .my-data-table td:nth-child(12)::before { content: "发货模式"; }
-  .my-data-table td:nth-child(13)::before { content: "操作"; }
+  .my-data-table td:nth-child(4)::before { content: "评分"; }
+  .my-data-table td:nth-child(5)::before { content: "评论数"; }
+  .my-data-table td:nth-child(6)::before { content: "月销量"; }
+  .my-data-table td:nth-child(7)::before { content: "月销售额"; }
+  .my-data-table td:nth-child(8)::before { content: "客单价"; }
+  .my-data-table td:nth-child(9)::before { content: "展示量"; }
+  .my-data-table td:nth-child(10)::before { content: "转化率"; }
+  .my-data-table td:nth-child(11)::before { content: "折扣"; }
+  .my-data-table td:nth-child(12)::before { content: "关键词"; }
+  .my-data-table td:nth-child(13)::before { content: "采集日"; }
+  .my-data-table td:nth-child(14)::before { content: "发货模式"; }
+  .my-data-table td:nth-child(15)::before { content: "操作"; }
   .my-data-table td:first-child { display: block; padding-bottom: 10px; }
   .my-data-table td:first-child::before { display: none; }
   .my-data-product-title { max-width: calc(100vw - 116px); }

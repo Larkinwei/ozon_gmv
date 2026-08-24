@@ -62,6 +62,10 @@ export interface MyDataQuery {
   maxMonthlyUnits?: number | undefined;
   minAov?: number | undefined;
   maxAov?: number | undefined;
+  minRating?: number | undefined;
+  maxRating?: number | undefined;
+  minReviewCount?: number | undefined;
+  maxReviewCount?: number | undefined;
   sort: MyDataSort;
 }
 
@@ -74,6 +78,8 @@ interface ParsedMyRow {
   impressions: number;
   conversionRate: number;
   discountRate: number;
+  rating: number | null;
+  reviewCount: number | null;
   category: string;
   keyword: string;
   productUrl: string;
@@ -107,6 +113,8 @@ interface ProductRow {
   impressions: number;
   conversion_rate: number;
   discount_rate: number;
+  rating: number | null;
+  review_count: number | null;
   category: string;
   keyword: string;
   product_url: string;
@@ -141,6 +149,19 @@ function integerValue(value: string, label: string): number {
     throw new Error(`${label}必须是整数`);
   }
   return parsed.toNumber();
+}
+
+function nullableDecimalValue(value: string, label: string, maximum?: number): number | null {
+  if (!value.trim()) return null;
+  const parsed = decimalValue(value, label);
+  if (maximum !== undefined && parsed.greaterThan(maximum)) {
+    throw new Error(`${label}不能超过 ${maximum}`);
+  }
+  return parsed.toNumber();
+}
+
+function nullableIntegerValue(value: string, label: string): number | null {
+  return value.trim() ? integerValue(value, label) : null;
 }
 
 function scaledMoney(value: string, label: string): number {
@@ -236,7 +257,7 @@ function parseFulfillmentMode(value: string): MyDataProductView["fulfillmentMode
   return "unknown";
 }
 
-function headerIndexes(headers: string[]): { required: Record<(typeof requiredHeaders)[number], number>; fulfillment: number; category: number } {
+function headerIndexes(headers: string[]): { required: Record<(typeof requiredHeaders)[number], number>; rating: number; reviewCount: number; fulfillment: number; category: number } {
   const normalizedHeaders = headers.map(normalizeHeader);
   const indexes = {} as Record<(typeof requiredHeaders)[number], number>;
   for (const required of requiredHeaders) {
@@ -252,7 +273,13 @@ function headerIndexes(headers: string[]): { required: Record<(typeof requiredHe
   const category = categoryHeaders
     .map((header) => normalizedHeaders.indexOf(normalizeHeader(header)))
     .find((index) => index >= 0) ?? -1;
-  return { required: indexes, fulfillment, category };
+  return {
+    required: indexes,
+    rating: normalizedHeaders.indexOf(normalizeHeader("评分")),
+    reviewCount: normalizedHeaders.indexOf(normalizeHeader("评论数")),
+    fulfillment,
+    category,
+  };
 }
 
 async function parseMyFile(file: MyDataImportFile): Promise<ParsedFile> {
@@ -290,6 +317,8 @@ async function parseMyFile(file: MyDataImportFile): Promise<ParsedFile> {
         impressions: integerValue(row[indexes["展示量"]] ?? "", "展示量"),
         conversionRate: percentageValue(row[indexes["转化率(%)"]] ?? "", "转化率"),
         discountRate: percentageValue(row[indexes["折扣(%)"]] ?? "", "折扣"),
+        rating: nullableDecimalValue(headerMapping.rating >= 0 ? row[headerMapping.rating] ?? "" : "", "评分", 5),
+        reviewCount: nullableIntegerValue(headerMapping.reviewCount >= 0 ? row[headerMapping.reviewCount] ?? "" : "", "评论数"),
         category: headerMapping.category >= 0 ? row[headerMapping.category]?.trim() ?? "" : "",
         keyword: row[indexes["关键词"]]?.trim() ?? "",
         productUrl: row[indexes.URL]?.trim() ?? "",
@@ -390,6 +419,22 @@ function buildProductConditions(
     values.push(query.maxAov * RUB_SCALE);
     clauses.push("monthly_sales_milli * 1.0 / NULLIF(monthly_units, 0) <= ?");
   }
+  if (query.minRating !== undefined) {
+    values.push(query.minRating);
+    clauses.push("rating >= ?");
+  }
+  if (query.maxRating !== undefined) {
+    values.push(query.maxRating);
+    clauses.push("rating <= ?");
+  }
+  if (query.minReviewCount !== undefined) {
+    values.push(query.minReviewCount);
+    clauses.push("review_count >= ?");
+  }
+  if (query.maxReviewCount !== undefined) {
+    values.push(query.maxReviewCount);
+    clauses.push("review_count <= ?");
+  }
   if (options.includeCategory !== false && query.category) {
     values.push(query.category);
     clauses.push("categories.category = ?");
@@ -438,7 +483,7 @@ export class MyDataModule {
   public getProductBySku(sku: string): MyDataProductView | null {
     const row = this.database.prepare(
       `SELECT id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli,
-        impressions, conversion_rate, discount_rate, COALESCE(categories.category, '') AS category,
+        impressions, conversion_rate, discount_rate, rating, review_count, COALESCE(categories.category, '') AS category,
         keyword, product_url, image_url, status, fulfillment_mode, captured_at_ms, capture_day
        FROM my_product_snapshots
        LEFT JOIN my_product_snapshot_categories categories ON categories.snapshot_id = my_product_snapshots.id
@@ -550,8 +595,8 @@ export class MyDataModule {
           .run(fileId, batchId, file.fileName, parsed.fileHash, file.content.byteLength, parsed.rows.length, parsed.errors.length, parsed.duplicateRows, createdAtMs);
         importedFiles += 1;
         const upsert = this.database.prepare(`INSERT INTO my_product_snapshots
-          (id, import_file_id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli, impressions, conversion_rate, discount_rate, keyword, product_url, image_url, status, fulfillment_mode, captured_at_ms, capture_day)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, import_file_id, sku, product_name, current_price_milli, monthly_units, monthly_sales_milli, impressions, conversion_rate, discount_rate, rating, review_count, keyword, product_url, image_url, status, fulfillment_mode, captured_at_ms, capture_day)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (sku, capture_day, keyword) DO UPDATE SET
             import_file_id = excluded.import_file_id,
             product_name = excluded.product_name,
@@ -561,6 +606,8 @@ export class MyDataModule {
             impressions = excluded.impressions,
             conversion_rate = excluded.conversion_rate,
             discount_rate = excluded.discount_rate,
+            rating = excluded.rating,
+            review_count = excluded.review_count,
             product_url = excluded.product_url,
             image_url = excluded.image_url,
             status = excluded.status,
@@ -574,7 +621,7 @@ export class MyDataModule {
            ON CONFLICT (snapshot_id) DO UPDATE SET category = excluded.category`,
         );
         for (const row of parsed.rows) {
-          upsert.run(randomUUID(), fileId, row.sku, row.productName, row.currentPriceMilli, row.monthlyUnits, row.monthlySalesMilli, row.impressions, row.conversionRate, row.discountRate, row.keyword, row.productUrl, row.imageUrl, row.status, row.fulfillmentMode, row.capturedAtMs, row.captureDay);
+          upsert.run(randomUUID(), fileId, row.sku, row.productName, row.currentPriceMilli, row.monthlyUnits, row.monthlySalesMilli, row.impressions, row.conversionRate, row.discountRate, row.rating, row.reviewCount, row.keyword, row.productUrl, row.imageUrl, row.status, row.fulfillmentMode, row.capturedAtMs, row.captureDay);
           const snapshot = findSnapshotId.get(row.sku, row.captureDay, row.keyword);
           if (snapshot) {
             saveCategory.run(snapshot.id, row.category);
@@ -622,7 +669,7 @@ export class MyDataModule {
     const from = "FROM my_product_snapshots snapshots LEFT JOIN my_product_snapshot_categories categories ON categories.snapshot_id = snapshots.id";
     const count = (this.database.prepare(`SELECT COUNT(*) AS count ${from} ${where}`).get(...productConditions.values) as { count: number }).count;
     const offset = (query.page - 1) * query.pageSize;
-    const rows = this.database.prepare(`SELECT snapshots.id, snapshots.sku, snapshots.product_name, snapshots.current_price_milli, snapshots.monthly_units, snapshots.monthly_sales_milli, snapshots.impressions, snapshots.conversion_rate, snapshots.discount_rate, COALESCE(categories.category, '') AS category, snapshots.keyword, snapshots.product_url, snapshots.image_url, snapshots.status, snapshots.fulfillment_mode, snapshots.captured_at_ms, snapshots.capture_day ${from} ${where} ORDER BY ${orderBy[query.sort]}, snapshots.captured_at_ms DESC LIMIT ? OFFSET ?`).all(...productConditions.values, query.pageSize, offset) as ProductRow[];
+    const rows = this.database.prepare(`SELECT snapshots.id, snapshots.sku, snapshots.product_name, snapshots.current_price_milli, snapshots.monthly_units, snapshots.monthly_sales_milli, snapshots.impressions, snapshots.conversion_rate, snapshots.discount_rate, snapshots.rating, snapshots.review_count, COALESCE(categories.category, '') AS category, snapshots.keyword, snapshots.product_url, snapshots.image_url, snapshots.status, snapshots.fulfillment_mode, snapshots.captured_at_ms, snapshots.capture_day ${from} ${where} ORDER BY ${orderBy[query.sort]}, snapshots.captured_at_ms DESC LIMIT ? OFFSET ?`).all(...productConditions.values, query.pageSize, offset) as ProductRow[];
     const captureDays = (this.database.prepare<[], { capture_day: string }>("SELECT DISTINCT capture_day FROM my_product_snapshots ORDER BY capture_day DESC").all() as Array<{ capture_day: string }>).map((item) => item.capture_day);
     const keywordWhere = productConditions.clauses.length > 0 ? `${where} AND snapshots.keyword <> ''` : "WHERE snapshots.keyword <> ''";
     const keywords = (this.database.prepare(`SELECT DISTINCT snapshots.keyword AS keyword ${from} ${keywordWhere} ORDER BY snapshots.keyword`).all(...productConditions.values) as Array<{ keyword: string }>).map((item) => item.keyword);
@@ -698,6 +745,8 @@ export class MyDataModule {
       sku: row.sku,
       productName: row.product_name,
       currentPrice: moneyFromMilli(row.current_price_milli) as Money,
+      rating: row.rating,
+      reviewCount: row.review_count,
       monthlyUnits: row.monthly_units,
       monthlySales: moneyFromMilli(row.monthly_sales_milli) as Money,
       averageOrderValue: moneyFromMilli(aovMilli),

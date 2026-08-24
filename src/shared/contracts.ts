@@ -546,6 +546,8 @@ export interface MyDataProductView {
   sku: string;
   productName: string;
   currentPrice: Money;
+  rating: number | null;
+  reviewCount: number | null;
   monthlyUnits: number;
   monthlySales: Money;
   averageOrderValue: Money | null;

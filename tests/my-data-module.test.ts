@@ -7,6 +7,7 @@ import { runMigrations } from "../src/server/db/migrate";
 import { MyDataModule } from "../src/server/selection/my-data-module";
 
 const header = "SKU,商品名,当前价(₽),月销量,月销售额(₽),展示量,转化率(%),折扣(%),关键词,URL,主图,状态,采集时间";
+const ratingHeader = `${header},评分,评论数`;
 
 function csv(rows: string[]): Buffer {
   return Buffer.from(`\uFEFF${header}\n${rows.join("\n")}\n`, "utf8");
@@ -29,7 +30,40 @@ describe("MyDataModule", () => {
     expect(result.importedFiles).toBe(1);
     expect((await module.commitImport([file], "0817")).duplicateFiles).toBe(1);
     expect(module.getOverview("2026-08-17").monthlySales.amount).toBe("1234.5");
-    expect(module.listProducts({ page: 1, pageSize: 20, sort: "averageOrderValue", captureDay: "2026-08-17" }).items[0]?.averageOrderValue?.amount).toBe("123.45");
+    expect(module.listProducts({ page: 1, pageSize: 20, sort: "averageOrderValue", captureDay: "2026-08-17" }).items[0]).toMatchObject({ averageOrderValue: { amount: "123.45" }, rating: null, reviewCount: null });
+    database.close();
+  });
+
+  it("imports optional rating and review fields and filters their ranges", async () => {
+    const database = new BetterSqlite3(":memory:");
+    runMigrations(database, fileURLToPath(new URL("../migrations", import.meta.url)));
+    const module = new MyDataModule(database);
+    const content = Buffer.from(`\uFEFF${ratingHeader}\n6001,商品 R,0,10,100,1000,1,0,,https://ozon.ru/p/6001,,local,2026-08-24T03:20:24Z,4.8,721\n6002,商品 S,0,20,200,1000,1,0,,https://ozon.ru/p/6002,,local,2026-08-24T03:20:25Z,4.2,50\n6003,商品 T,0,30,300,1000,1,0,,https://ozon.ru/p/6003,,local,2026-08-24T03:20:26Z,,`, "utf8");
+
+    const result = await module.commitImport([{ fileName: "rating.csv", content }], "rating");
+    expect(result.validRows).toBe(3);
+    const all = module.listProducts({ page: 1, pageSize: 20, sort: "monthlyUnits", allDates: true });
+    expect(all.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sku: "6001", rating: 4.8, reviewCount: 721 }),
+      expect.objectContaining({ sku: "6003", rating: null, reviewCount: null }),
+    ]));
+
+    const filtered = module.listProducts({ page: 1, pageSize: 20, sort: "monthlyUnits", allDates: true, minRating: 4.5, maxRating: 5, minReviewCount: 100, maxReviewCount: 1000 });
+    expect(filtered.total).toBe(1);
+    expect(filtered.items[0]).toMatchObject({ sku: "6001", rating: 4.8, reviewCount: 721 });
+    database.close();
+  });
+
+  it("rejects invalid rating and review values while keeping valid rows", async () => {
+    const database = new BetterSqlite3(":memory:");
+    runMigrations(database, fileURLToPath(new URL("../migrations", import.meta.url)));
+    const module = new MyDataModule(database);
+    const content = Buffer.from(`\uFEFF${ratingHeader}\n7001,商品 U,0,10,100,1000,1,0,,https://ozon.ru/p/7001,,local,2026-08-24T03:20:24Z,5.1,1\n7002,商品 V,0,10,100,1000,1,0,,https://ozon.ru/p/7002,,local,2026-08-24T03:20:25Z,4.8,1.5\n7003,商品 W,0,10,100,1000,1,0,,https://ozon.ru/p/7003,,local,2026-08-24T03:20:26Z,4.8,2`, "utf8");
+
+    const result = await module.commitImport([{ fileName: "invalid-rating.csv", content }], "invalid-rating");
+    expect(result.validRows).toBe(1);
+    expect(result.invalidRows).toBe(2);
+    expect(module.listProducts({ page: 1, pageSize: 20, sort: "monthlyUnits", allDates: true }).items[0]).toMatchObject({ sku: "7003", rating: 4.8, reviewCount: 2 });
     database.close();
   });
 

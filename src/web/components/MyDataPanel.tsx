@@ -95,6 +95,10 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
   const [maxUnits, setMaxUnits] = useState("");
   const [minAov, setMinAov] = useState("");
   const [maxAov, setMaxAov] = useState("");
+  const [minRating, setMinRating] = useState("");
+  const [maxRating, setMaxRating] = useState("");
+  const [minReviewCount, setMinReviewCount] = useState("");
+  const [maxReviewCount, setMaxReviewCount] = useState("");
   const [sort, setSort] = useState<MyDataSort>("monthlyUnits");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(20);
@@ -130,6 +134,10 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
     ...(numberValue(maxUnits) !== undefined ? { maxMonthlyUnits: numberValue(maxUnits) } : {}),
     ...(numberValue(minAov) !== undefined ? { minAov: numberValue(minAov) } : {}),
     ...(numberValue(maxAov) !== undefined ? { maxAov: numberValue(maxAov) } : {}),
+    ...(numberValue(minRating) !== undefined ? { minRating: numberValue(minRating) } : {}),
+    ...(numberValue(maxRating) !== undefined ? { maxRating: numberValue(maxRating) } : {}),
+    ...(numberValue(minReviewCount) !== undefined ? { minReviewCount: numberValue(minReviewCount) } : {}),
+    ...(numberValue(maxReviewCount) !== undefined ? { maxReviewCount: numberValue(maxReviewCount) } : {}),
   };
   const productsQuery = useQuery({
     queryKey: ["my-data-products", filters],
@@ -160,6 +168,10 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
     setMaxUnits("");
     setMinAov("");
     setMaxAov("");
+    setMinRating("");
+    setMaxRating("");
+    setMinReviewCount("");
+    setMaxReviewCount("");
     setPage(1);
   }
 
@@ -232,6 +244,8 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
             <label className="my-data-field my-data-category-filter"><span>发货模式</span><select value={fulfillmentMode} onChange={(event) => { setFulfillmentMode(event.target.value as MyDataFulfillmentMode | ""); setPage(1); }}><option value="">全部发货模式</option>{(productsQuery.data?.facets?.fulfillmentModes ?? []).map((item) => <option value={item} key={item}>{fulfillmentLabel(item)}</option>)}</select></label>
             <label className="my-data-range"><span>月销量</span><input inputMode="numeric" value={minUnits} onChange={(event) => { setMinUnits(event.target.value); setPage(1); }} placeholder="最小" /><b>—</b><input inputMode="numeric" value={maxUnits} onChange={(event) => { setMaxUnits(event.target.value); setPage(1); }} placeholder="最大" /></label>
             <label className="my-data-range"><span>客单价 ₽</span><input inputMode="decimal" value={minAov} onChange={(event) => { setMinAov(event.target.value); setPage(1); }} placeholder="最小" /><b>—</b><input inputMode="decimal" value={maxAov} onChange={(event) => { setMaxAov(event.target.value); setPage(1); }} placeholder="最大" /></label>
+            <label className="my-data-range"><span>评分</span><input aria-label="评分最小值" inputMode="decimal" value={minRating} onChange={(event) => { setMinRating(event.target.value); setPage(1); }} placeholder="最小" /><b>—</b><input aria-label="评分最大值" inputMode="decimal" value={maxRating} onChange={(event) => { setMaxRating(event.target.value); setPage(1); }} placeholder="最大" /></label>
+            <label className="my-data-range my-data-review-range"><span>评论数</span><input aria-label="评论数最小值" inputMode="numeric" value={minReviewCount} onChange={(event) => { setMinReviewCount(event.target.value); setPage(1); }} placeholder="最小" /><b>—</b><input aria-label="评论数最大值" inputMode="numeric" value={maxReviewCount} onChange={(event) => { setMaxReviewCount(event.target.value); setPage(1); }} placeholder="最大" /></label>
             <label className="my-data-field"><span>排序</span><select value={sort} onChange={(event) => { setSort(event.target.value as MyDataSort); setPage(1); }}>{sortOptions.map((item) => <option value={item.value} key={item.value}>{item.label}降序</option>)}</select></label>
             <button className="secondary-button compact-button" type="button" onClick={clearFilters}><RefreshCw size={16} />重置筛选</button>
           </div>
@@ -269,11 +283,11 @@ function EmptyMyData(props: { onImport: () => void }): React.JSX.Element {
 }
 
 function MyDataTable(props: { items: MyDataProductPage["items"]; onResell: (sku: string) => void }): React.JSX.Element {
-  return <div className="my-data-table-wrap"><table className="my-data-table"><thead><tr><th scope="col">商品</th><th scope="col">类目</th><th scope="col">SKU</th><th scope="col">月销量</th><th scope="col">月销售额</th><th scope="col">客单价</th><th scope="col">展示量</th><th scope="col">转化率</th><th scope="col">折扣</th><th scope="col">关键词</th><th scope="col">采集日</th><th scope="col">发货模式</th><th scope="col">操作</th></tr></thead><tbody>{props.items.map((item) => {
+  return <div className="my-data-table-wrap"><table className="my-data-table"><thead><tr><th scope="col">商品</th><th scope="col">类目</th><th scope="col">SKU</th><th scope="col">评分</th><th scope="col">评论数</th><th scope="col">月销量</th><th scope="col">月销售额</th><th scope="col">客单价</th><th scope="col">展示量</th><th scope="col">转化率</th><th scope="col">折扣</th><th scope="col">关键词</th><th scope="col">采集日</th><th scope="col">发货模式</th><th scope="col">操作</th></tr></thead><tbody>{props.items.map((item) => {
     const productUrl = safeProductUrl(item.productUrl);
     const productTitle = productUrl ? <a className="my-data-product-link my-data-product-title" href={productUrl} target="_blank" rel="noopener noreferrer" title={item.productName}>{item.productName}</a> : <span className="my-data-product-title" title={item.productName}>{item.productName}</span>;
     const sku = productUrl ? <a className="my-data-sku-link" href={productUrl} target="_blank" rel="noopener noreferrer" aria-label={`打开 ${item.sku} 商品详情`}>{item.sku}</a> : item.sku;
-    return <tr key={item.id}><td><div className="my-data-product"><span className="my-data-thumb">{item.imageUrl ? <img src={item.imageUrl} alt={`${item.productName} 主图`} loading="lazy" /> : <FileSpreadsheet size={18} aria-label="无商品主图" />}</span>{productTitle}</div></td><td className="my-data-category" title={item.category}>{item.category || "—"}</td><td className="tabular-nums">{sku}</td><td className="tabular-nums">{item.monthlyUnits.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatMoney(item.monthlySales)}</td><td className="tabular-nums">{item.averageOrderValue ? formatMoney(item.averageOrderValue) : "—"}</td><td className="tabular-nums">{item.impressions.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatPercent(item.conversionRate)}</td><td className="tabular-nums">{formatPercent(item.discountRate)}</td><td>{item.keyword || "—"}</td><td className="tabular-nums">{item.captureDay}</td><td><span className={`my-data-fulfillment my-data-fulfillment--${item.fulfillmentMode.toLowerCase()}`}>{fulfillmentLabel(item.fulfillmentMode)}</span></td><td><button className="secondary-button compact-button my-data-resell-button" type="button" onClick={() => props.onResell(item.sku)}><Rocket size={15} />一键跟卖</button></td></tr>;
+    return <tr key={item.id}><td><div className="my-data-product"><span className="my-data-thumb">{item.imageUrl ? <img src={item.imageUrl} alt={`${item.productName} 主图`} loading="lazy" /> : <FileSpreadsheet size={18} aria-label="无商品主图" />}</span>{productTitle}</div></td><td className="my-data-category" title={item.category}>{item.category || "—"}</td><td className="tabular-nums">{sku}</td><td className="tabular-nums">{item.rating === null ? "—" : item.rating.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}</td><td className="tabular-nums">{item.reviewCount === null ? "—" : item.reviewCount.toLocaleString("zh-CN")}</td><td className="tabular-nums">{item.monthlyUnits.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatMoney(item.monthlySales)}</td><td className="tabular-nums">{item.averageOrderValue ? formatMoney(item.averageOrderValue) : "—"}</td><td className="tabular-nums">{item.impressions.toLocaleString("zh-CN")}</td><td className="tabular-nums">{formatPercent(item.conversionRate)}</td><td className="tabular-nums">{formatPercent(item.discountRate)}</td><td>{item.keyword || "—"}</td><td className="tabular-nums">{item.captureDay}</td><td><span className={`my-data-fulfillment my-data-fulfillment--${item.fulfillmentMode.toLowerCase()}`}>{fulfillmentLabel(item.fulfillmentMode)}</span></td><td><button className="secondary-button compact-button my-data-resell-button" type="button" onClick={() => props.onResell(item.sku)}><Rocket size={15} />一键跟卖</button></td></tr>;
   })}</tbody></table></div>;
 }
 
