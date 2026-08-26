@@ -41,6 +41,14 @@ export const rolesResponseSchema = z.object({
   ),
 });
 
+/** Minimal contract-currency response returned by the seller account endpoint. */
+export const sellerInfoResponseSchema = z.object({
+  company: z.object({
+    currency: z.string().nullish(),
+    country: z.string().nullish(),
+  }).passthrough().nullish().default({}),
+}).passthrough();
+
 const productInfoSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String).nullish(),
   product_id: z.union([z.string(), z.number()]).transform(String).nullish(),
@@ -48,11 +56,55 @@ const productInfoSchema = z.object({
   images: z.array(z.string()).default([]),
   primary_image: z.array(z.string()).default([]),
   sources: z.array(z.object({ sku: z.union([z.string(), z.number()]) })).default([]),
+  // Some Ozon accounts omit these fields. Treat invalid/zero values as absent
+  // so product-info lookup remains usable for existing-offer detection.
+  type_id: z.union([z.string(), z.number()]).transform(Number).refine((value) => Number.isInteger(value) && value > 0).nullish().catch(null),
+  description_category_id: z.union([z.string(), z.number()]).transform(Number).refine((value) => Number.isInteger(value) && value > 0).nullish().catch(null),
 });
 
 export const productInfoListResponseSchema = z.object({
   items: z.array(productInfoSchema).default([]),
 });
+
+export interface OzonDescriptionCategoryNode {
+  description_category_id: number | null;
+  category_id: number | null;
+  type_id: number | null;
+  title: string;
+  category_name: string;
+  type_name: string;
+  children: OzonDescriptionCategoryNode[];
+}
+
+const descriptionCategoryTreeNodeSchema: z.ZodType<OzonDescriptionCategoryNode> = z.lazy(() => z.object({
+  description_category_id: z.union([z.string(), z.number()]).transform(Number).refine((value) => Number.isInteger(value) && value > 0).nullish().catch(null).default(null),
+  category_id: z.union([z.string(), z.number()]).transform(Number).refine((value) => Number.isInteger(value) && value > 0).nullish().catch(null).default(null),
+  type_id: z.union([z.string(), z.number()]).transform(Number).refine((value) => Number.isInteger(value) && value > 0).nullish().catch(null).default(null),
+  title: z.string().default(""),
+  category_name: z.string().default(""),
+  type_name: z.string().default(""),
+  children: z.array(descriptionCategoryTreeNodeSchema).default([]),
+}).passthrough());
+
+export const descriptionCategoryTreeResponseSchema = z.object({
+  result: z.array(descriptionCategoryTreeNodeSchema).default([]),
+}).passthrough();
+
+/** Raw category-attribute response; Ozon adds fields as category rules evolve. */
+export const descriptionCategoryAttributesResponseSchema = z.object({
+  result: z.union([
+    z.array(z.unknown()),
+    z.object({ attributes: z.array(z.unknown()).default([]) }).passthrough(),
+  ]).default([]),
+}).passthrough();
+
+/** Raw dictionary-value response used by searchable category attributes. */
+export const descriptionCategoryAttributeValuesResponseSchema = z.object({
+  result: z.union([
+    z.array(z.unknown()),
+    z.object({ values: z.array(z.unknown()).default([]) }).passthrough(),
+  ]).default([]),
+}).passthrough();
 
 const identifierSchema = z.union([z.string(), z.number()]).transform(String);
 

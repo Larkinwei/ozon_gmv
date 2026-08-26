@@ -51,6 +51,95 @@ describe("Ozon Seller API client", () => {
     expect(products[0]?.primary_image[0]).toBe("https://cdn.example.com/primary.jpg");
   });
 
+  it("loads the official description category and product type tree", async () => {
+    let requestUrl = "";
+    let requestBody: Record<string, unknown> = {};
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        result: [{
+          description_category_id: 95249,
+          category_name: "宠物 товары",
+          children: [{ type_name: "动物梳子", type_id: 123456, children: [] }],
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({
+      clientId: "client",
+      apiKey: "secret",
+      baseUrl: "https://api-seller.ozon.ru",
+      fetchImplementation,
+      maxAttempts: 1,
+    });
+
+    const tree = await client.getDescriptionCategoryTree();
+
+    expect(requestUrl).toBe("https://api-seller.ozon.ru/v1/description-category/tree");
+    expect(requestBody).toEqual({ language: "DEFAULT" });
+    expect(tree[0]?.description_category_id).toBe(95249);
+    expect(tree[0]?.children[0]?.type_id).toBe(123456);
+  });
+
+  it("loads dynamic required attributes and dictionary values for a target category", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      const payload = url.endsWith("/values")
+        ? { result: [{ id: 12, value: "Черный" }] }
+        : { result: [{ id: 100, name: "Цвет", is_required: true, dictionary_id: 10, is_collection: false }] };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    await expect(client.getDescriptionCategoryAttributes({ descriptionCategoryId: 95249, typeId: 123456 })).resolves.toEqual([{
+      id: 100,
+      name: "Цвет",
+      required: true,
+      dictionaryId: 10,
+      isCollection: false,
+      type: null,
+      raw: { id: 100, name: "Цвет", is_required: true, dictionary_id: 10, is_collection: false },
+    }]);
+    await expect(client.getDescriptionCategoryAttributeValues({ descriptionCategoryId: 95249, typeId: 123456, attributeId: 100 })).resolves.toEqual([{ id: "12", name: "Черный" }]);
+    expect(requests[0]?.body).toMatchObject({ description_category_id: 95249, type_id: 123456, language: "DEFAULT" });
+  });
+
+  it("searches the official dictionary for the Russian no-brand value", async () => {
+    let requestUrl = "";
+    let requestBody: Record<string, unknown> = {};
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ result: [{ id: 126745801, value: "Нет бренда" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = new OzonClient({
+      clientId: "client",
+      apiKey: "secret",
+      baseUrl: "https://api-seller.ozon.ru",
+      fetchImplementation,
+      maxAttempts: 1,
+    });
+
+    await expect(client.searchDescriptionCategoryAttributeValues({
+      descriptionCategoryId: 15621048,
+      typeId: 96766,
+      attributeId: 31,
+      query: "Нет бренда",
+    })).resolves.toEqual([{ id: "126745801", name: "Нет бренда" }]);
+    expect(requestUrl).toBe("https://api-seller.ozon.ru/v1/description-category/attribute/values/search");
+    expect(requestBody).toMatchObject({
+      description_category_id: 15621048,
+      type_id: 96766,
+      attribute_id: 31,
+      value: "Нет бренда",
+    });
+  });
+
   it("uses the official page size for each posting endpoint", async () => {
     const requestBodies: Array<Record<string, unknown>> = [];
     const fetchImplementation = (async (_input: URL | RequestInfo, init?: RequestInit) => {
@@ -167,7 +256,7 @@ describe("Ozon Seller API client", () => {
     }) as typeof fetch;
     const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
 
-    await expect(client.importProductBySku({ sku: "1001", name: "商品", offerId: "MY-1001", price: "1299", currency: "RUB", vat: "0.2" })).resolves.toEqual({ taskId: "123", unmatchedSkuList: [] });
+    await expect(client.importProductBySku({ sku: "1001", name: "商品", typeId: 123, descriptionCategoryId: 456, offerId: "MY-1001", price: "1299", currency: "RUB", vat: "0.2" })).resolves.toEqual({ taskId: "123", unmatchedSkuList: [] });
     await expect(client.getProductImportInfo("123")).resolves.toEqual([{ offerId: "MY-1001", productId: "456", status: "imported", errors: [], warnings: [] }]);
     await expect(client.getWarehouses()).resolves.toEqual([{ id: "7", name: "Москва", status: "active" }]);
     await expect(client.getProductInfoLimit()).resolves.toEqual({ dailyCreateRemaining: 20, totalProductLimit: 1000 });
@@ -182,6 +271,7 @@ describe("Ozon Seller API client", () => {
       "https://api-seller.ozon.ru/v1/product/import/prices",
       "https://api-seller.ozon.ru/v2/products/stocks",
     ]);
+    expect(requests[0]?.body).toMatchObject({ items: [{ type_id: 123, description_category_id: 456 }] });
     expect(requests.at(-1)?.body).toMatchObject({ stocks: [{ offer_id: "MY-1001", product_id: "456", warehouse_id: "7", stock: 2 }] });
   });
 

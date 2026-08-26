@@ -46,15 +46,28 @@ function assetView(row: ImageAssetRow): ResellImageUploadView {
 
 function sourceView(url: string, position: number): ResellImageView {
   return {
-    id: `source-${createHash("sha256").update(url).digest("hex").slice(0, 20)}`,
+    // Source images are not persisted assets, but the browser contract still
+    // requires a stable UUID so they can be submitted as sourceUrl inputs.
+    id: randomUuidFromUrl(url),
     url,
     fileName: `来源图片 ${position + 1}`,
     mimeType: "image/*",
     byteSize: 0,
-    width: 0,
-    height: 0,
+    // Dimensions are unknown until the remote image is downloaded. A positive
+    // placeholder keeps source metadata valid without pretending to know them.
+    width: 1,
+    height: 1,
     source: "source",
   };
+}
+
+function randomUuidFromUrl(url: string): string {
+  const digest = createHash("sha256").update(url).digest();
+  const bytes = Buffer.from(digest.subarray(0, 16));
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function isHttpsUrl(value: string): boolean {

@@ -39,6 +39,7 @@ import { DiscoveryModule } from "./selection/discovery-module";
 import { MyDataModule } from "./selection/my-data-module";
 import { ResellModule } from "./selection/resell-module";
 import { ResellImageService } from "./selection/resell-image-service";
+import { PublishDraftsModule } from "./selection/publish-drafts";
 import { OssImageStorageService } from "./services/oss-image-storage-service";
 
 export interface AppDependencies {
@@ -55,6 +56,7 @@ export interface AppDependencies {
   resell?: ResellModule;
   imageStorage?: OssImageStorageService;
   resellImages?: ResellImageService;
+  publishDrafts?: PublishDraftsModule;
 }
 
 interface SqliteError extends Error {
@@ -163,12 +165,13 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const resell = dependencies.resell ?? new ResellModule(config, database, stores, myData, resellImages, {
     fetchImplementation: proxySettings.createFetch(),
   });
+  const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
   registerStoreRoutes(app, config, stores, syncService);
   registerDashboardRoutes(app, new DashboardRepository(database), events);
-  registerSelectionRoutes(app, selection, myData, resell, resellImages);
+  registerSelectionRoutes(app, selection, myData, resell, resellImages, publishDrafts);
   registerSelectionCategoryRoutes(app, categories);
   registerSelectionDiscoveryRoutes(app, discovery);
   registerSettingsRoutes(app, proxySettings, updates, imageStorage);

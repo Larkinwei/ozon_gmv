@@ -1,12 +1,14 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { myDataFulfillmentModes, myDataSorts, resellModes, resellStatuses, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
+import { myDataFulfillmentModes, myDataSorts, publishSourceTypes, resellModes, resellStatuses, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
 import { requireSession } from "../security/session";
 import type { MyDataImportFile, MyDataModule } from "../selection/my-data-module";
 import type { SelectionImportFile, SelectionModule } from "../selection/selection-module";
 import { ResellModule, ResellValidationError } from "../selection/resell-module";
 import { ResellImageService } from "../selection/resell-image-service";
+import { PublishDraftsModule } from "../selection/publish-drafts";
+import type { ResellPreflightInput, ResellSourceView } from "../../shared/contracts";
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
 const keywordQuerySchema = z.object({
@@ -62,8 +64,44 @@ const candidateCreateSchema = z.object({
   targetPrice: z.string().trim().max(50).optional(),
   note: z.string().trim().max(5000).optional(),
 });
+const packageDimensionsSchema = z.object({
+  depth: z.string().trim().max(30),
+  width: z.string().trim().max(30),
+  height: z.string().trim().max(30),
+  dimensionUnit: z.string().trim().max(20),
+  weight: z.string().trim().max(30),
+  weightUnit: z.string().trim().max(20),
+});
 const resellInputSchema = z.object({
-  sourceSku: z.string().trim().min(1).max(100),
+  sourceSku: z.string().trim().max(100).default(""),
+  sourceType: z.enum(publishSourceTypes).default("follow_sell"),
+  sourceSnapshot: z.object({
+    sku: z.string().max(100).default(""),
+    productName: z.string().max(500),
+    description: z.string().max(20_000).optional(),
+    brand: z.string().max(300).optional(),
+    category: z.string().max(500).optional(),
+    typeName: z.string().max(500).optional(),
+    attributes: z.record(z.string(), z.unknown()).optional(),
+    packageDimensions: packageDimensionsSchema.optional(),
+    barcode: z.string().trim().max(100).optional(),
+    fieldSources: z.record(z.string(), z.string()).optional(),
+    missingFields: z.array(z.string()).optional(),
+    sourceType: z.enum(publishSourceTypes).optional(),
+    typeId: z.number().int().positive().nullable().default(null),
+    descriptionCategoryId: z.number().int().positive().nullable().default(null),
+    currentPrice: z.object({ amount: z.string(), currency: z.string() }),
+    productUrl: z.string().max(2000).default(""),
+    imageUrl: z.string().nullable().default(null),
+    // Seller/browser snapshots may not know remote image dimensions or have a
+    // persisted asset UUID. ResellModule normalizes those values at the trust
+    // boundary before they are used for Ozon requests.
+    images: z.array(z.object({ id: z.string().default(""), url: z.string().url(), fileName: z.string().default(""), mimeType: z.string().default("image/*"), byteSize: z.number().int().nonnegative().default(0), width: z.number().int().nonnegative().default(0), height: z.number().int().nonnegative().default(0), source: z.enum(["source", "uploaded"]).default("source") })).max(30).default([]),
+    monthlyUnits: z.number().int().nonnegative().default(0),
+    monthlySales: z.object({ amount: z.string(), currency: z.string() }),
+    captureDay: z.string().default(""),
+  }).optional(),
+  idempotencyKey: z.string().trim().max(120).optional(),
   storeId: z.string().uuid(),
   mode: z.enum(resellModes).default("quick"),
   offerId: z.string().trim().min(1).max(80),
@@ -77,6 +115,8 @@ const resellInputSchema = z.object({
   title: z.string().trim().max(500).optional(),
   description: z.string().trim().max(20_000).optional(),
   attributes: z.record(z.string(), z.unknown()).optional(),
+  packageDimensions: packageDimensionsSchema.optional(),
+  barcode: z.string().trim().max(100).optional(),
   images: z.array(z.object({ assetId: z.string().uuid().optional(), sourceUrl: z.string().url().optional(), position: z.number().int().min(0) })).max(15).default([]),
 });
 const resellTaskListQuerySchema = z.object({
@@ -87,6 +127,7 @@ const resellTaskListQuerySchema = z.object({
   from: z.string().date().optional(),
   to: z.string().date().optional(),
   sourceSku: z.string().trim().max(100).optional(),
+  sourceType: z.enum(publishSourceTypes).optional(),
 }).refine((query) => !query.from || !query.to || query.from <= query.to, { message: "日期范围不正确", path: ["to"] });
 const candidateUpdateSchema = z.object({
   keywordId: z.string().uuid().nullable().optional(),
@@ -99,6 +140,25 @@ const candidateUpdateSchema = z.object({
   decisionReason: z.string().trim().max(5000).nullable().optional(),
   note: z.string().trim().max(5000).nullable().optional(),
 });
+const publishDraftSchema = z.object({
+  sourceType: z.enum(publishSourceTypes),
+  sourceSku: z.string().trim().max(100).default(""),
+  title: z.string().trim().max(500).nullable().optional(),
+  sourceSnapshot: resellInputSchema.shape.sourceSnapshot.unwrap(),
+  fieldOverrides: z.record(z.string(), z.unknown()).optional(),
+});
+const publishDraftPatchSchema = publishDraftSchema.partial();
+const publishSourceEnrichSchema = z.object({
+  storeId: z.string().uuid(),
+  sourceType: z.enum(publishSourceTypes),
+  sourceSku: z.string().trim().max(100).default(""),
+  sourceSnapshot: resellInputSchema.shape.sourceSnapshot.unwrap(),
+});
+
+
+function parseResellInput(value: unknown): ResellPreflightInput {
+  return resellInputSchema.parse(value) as ResellPreflightInput;
+}
 const wordstatSettingsSchema = z.object({
   folderId: z.string().trim().min(1).max(300),
   apiKey: z.string().trim().min(1).max(2000).optional(),
@@ -124,6 +184,60 @@ interface MultipartImport extends SelectionImportFile {
 interface MultipartMyImport {
   files: MyDataImportFile[];
   fields: Record<string, string>;
+}
+
+interface PublishPackageFile {
+  fileName: string;
+  content: Buffer;
+}
+
+interface PublishPackagePreview {
+  productCount: number;
+  imageCount: number;
+  products: Array<{ sku: string; title: string; imageCount: number; missingFields: string[] }>;
+  errors: string[];
+}
+
+function isSafePackagePath(value: string): boolean {
+  const normalized = value.replaceAll("\\", "/");
+  return Boolean(normalized) && !normalized.startsWith("/") && !normalized.split("/").includes("..") && normalized.length <= 300;
+}
+
+/** Validates a standard manifest and its relative image paths without writing files. */
+function previewPublishPackage(files: PublishPackageFile[]): PublishPackagePreview {
+  const manifestFile = files.find((file) => file.fileName.split("/").at(-1)?.toLowerCase() === "manifest.json");
+  if (!manifestFile) return { productCount: 0, imageCount: 0, products: [], errors: ["文件夹中缺少 manifest.json"] };
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(manifestFile.content.toString("utf8"));
+  } catch {
+    return { productCount: 0, imageCount: 0, products: [], errors: ["manifest.json 不是有效 JSON"] };
+  }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return { productCount: 0, imageCount: 0, products: [], errors: ["manifest.json 顶层必须是对象"] };
+  const input = manifest as { schemaVersion?: unknown; products?: unknown };
+  const errors: string[] = [];
+  if (input.schemaVersion !== 1) errors.push("仅支持 schemaVersion=1 的商品清单");
+  if (!Array.isArray(input.products) || input.products.length === 0) errors.push("manifest.json 中没有 products");
+  if (errors.length > 0) return { productCount: 0, imageCount: 0, products: [], errors };
+  const names = new Set(files.map((file) => file.fileName.replaceAll("\\", "/")));
+  const products: PublishPackagePreview["products"] = [];
+  let imageCount = 0;
+  for (const item of input.products as Array<Record<string, unknown>>) {
+    const sku = typeof item.sku === "string" ? item.sku.trim() : "";
+    const title = typeof item.title === "string" ? item.title.trim() : "";
+    const images = Array.isArray(item.images) ? item.images : [];
+    const missingFields = [!title ? "标题" : "", images.length === 0 ? "图片" : ""].filter(Boolean);
+    if (!sku) missingFields.push("SKU");
+    for (const image of images as Array<Record<string, unknown>>) {
+      const path = typeof image.path === "string" ? image.path.replaceAll("\\", "/") : "";
+      imageCount += 1;
+      if (!isSafePackagePath(path) || !names.has(path) && !names.has(`${manifestFile.fileName.split("/").slice(0, -1).join("/")}/${path}`.replace(/^\//, ""))) {
+        missingFields.push(`图片路径无效：${path || "空路径"}`);
+      }
+    }
+    products.push({ sku, title, imageCount: images.length, missingFields });
+  }
+  return { productCount: products.length, imageCount, products, errors };
 }
 
 function isSqliteConstraint(error: unknown): boolean {
@@ -174,7 +288,7 @@ async function readMultipartMyImport(request: FastifyRequest): Promise<Multipart
 }
 
 /** Registers loopback-admin interfaces for product selection analysis. */
-export function registerSelectionRoutes(app: FastifyInstance, selection: SelectionModule, myData: MyDataModule, resell: ResellModule, resellImages: ResellImageService): void {
+export function registerSelectionRoutes(app: FastifyInstance, selection: SelectionModule, myData: MyDataModule, resell: ResellModule, resellImages: ResellImageService, publishDrafts: PublishDraftsModule): void {
   app.get("/api/selection/overview", { preHandler: requireSession }, async () => selection.getOverview());
 
   app.get("/api/selection/imports", { preHandler: requireSession }, async () => selection.listImports());
@@ -244,11 +358,11 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
     return reply.code(204).send();
   });
   app.post("/api/selection/resell/preflight", { preHandler: requireSession }, async (request) => {
-    return resell.preflight(resellInputSchema.parse(request.body));
+    return resell.preflight(parseResellInput(request.body));
   });
   app.post("/api/selection/resell/tasks", { preHandler: requireSession }, async (request, reply) => {
     try {
-      const task = await resell.createTask(resellInputSchema.parse(request.body));
+      const task = await resell.createTask(parseResellInput(request.body));
       return reply.code(202).send(task);
     } catch (error) {
       if (error instanceof ResellValidationError) {
@@ -273,6 +387,99 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
       if (error instanceof ResellValidationError) {
         return reply.code(409).send({ error: "RESELL_RETRY_FAILED", message: error.message, issues: error.errors });
       }
+      throw error;
+    }
+  });
+  app.delete("/api/selection/resell/tasks/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    try {
+      if (!resell.deleteFailedTask(id)) return reply.code(404).send({ error: "RESELL_TASK_NOT_FOUND", message: "跟卖任务不存在" });
+      return reply.code(204).send();
+    } catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(409).send({ error: "RESELL_DELETE_FAILED", message: error.message, issues: error.errors });
+      throw error;
+    }
+  });
+
+  app.post("/api/selection/publish/sources/preview", { preHandler: requireSession }, async (request, reply) => {
+    try {
+      const files: PublishPackageFile[] = [];
+      for await (const part of request.parts()) {
+        if (part.type === "file") files.push({ fileName: part.filename, content: await part.toBuffer() });
+      }
+      return previewPublishPackage(files);
+    } catch (error) {
+      return reply.code(isFileTooLarge(error) ? 413 : 400).send({ error: "PUBLISH_SOURCE_PREVIEW_FAILED", message: error instanceof Error ? error.message : "无法预览商品包" });
+    }
+  });
+  app.post("/api/selection/publish/sources/import", { preHandler: requireSession }, async (request, reply) => {
+    const body = publishDraftSchema.parse(request.body);
+    return reply.code(201).send(publishDrafts.create(body as { sourceType: typeof body.sourceType; sourceSku: string; title?: string | null; sourceSnapshot: ResellSourceView; fieldOverrides?: Record<string, unknown> }));
+  });
+  app.post("/api/selection/publish/sources/enrich", { preHandler: requireSession }, async (request, reply) => {
+    try {
+      const body = publishSourceEnrichSchema.parse(request.body);
+      return await resell.enrichSource({
+        storeId: body.storeId,
+        sourceType: body.sourceType,
+        sourceSku: body.sourceSku,
+        sourceSnapshot: body.sourceSnapshot as ResellSourceView,
+      });
+    } catch (error) {
+      if (error instanceof ResellValidationError) {
+        return reply.code(422).send({ error: "PUBLISH_SOURCE_ENRICH_FAILED", message: error.message, issues: error.errors });
+      }
+      throw error;
+    }
+  });
+  app.get("/api/selection/publish/sources/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const draft = publishDrafts.get(id);
+    return draft ?? reply.code(404).send({ error: "PUBLISH_DRAFT_NOT_FOUND", message: "商品草稿不存在" });
+  });
+  app.patch("/api/selection/publish/drafts/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const draft = publishDrafts.update(id, publishDraftPatchSchema.parse(request.body) as Parameters<PublishDraftsModule["update"]>[1]);
+    return draft ?? reply.code(404).send({ error: "PUBLISH_DRAFT_NOT_FOUND", message: "商品草稿不存在" });
+  });
+  app.post("/api/selection/publish/preflight", { preHandler: requireSession }, async (request) => resell.preflight(parseResellInput(request.body)));
+  app.post("/api/selection/publish/tasks", { preHandler: requireSession }, async (request, reply) => {
+    try {
+      return reply.code(202).send(await resell.createTask(parseResellInput(request.body)));
+    } catch (error) {
+      if (error instanceof ResellValidationError) {
+        return reply.code(409).send({
+          error: "PUBLISH_VALIDATION_FAILED",
+          message: error.message,
+          issues: error.errors,
+          ...(error.existingTaskId ? { existingTaskId: error.existingTaskId } : {}),
+        });
+      }
+      throw error;
+    }
+  });
+  app.get("/api/selection/publish/tasks", { preHandler: requireSession }, async (request) => resell.listTasks(resellTaskListQuerySchema.parse(request.query)));
+  app.get("/api/selection/publish/tasks/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const task = await resell.getTaskDetail(id);
+    return task ?? reply.code(404).send({ error: "PUBLISH_TASK_NOT_FOUND", message: "发布任务不存在" });
+  });
+  app.post("/api/selection/publish/tasks/:id/retry", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    try {
+      return reply.code(202).send(await resell.retryTask(id));
+    } catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(409).send({ error: "PUBLISH_RETRY_FAILED", message: error.message, issues: error.errors });
+      throw error;
+    }
+  });
+  app.delete("/api/selection/publish/tasks/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    try {
+      if (!resell.deleteFailedTask(id)) return reply.code(404).send({ error: "PUBLISH_TASK_NOT_FOUND", message: "发布任务不存在" });
+      return reply.code(204).send();
+    } catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(409).send({ error: "PUBLISH_DELETE_FAILED", message: error.message, issues: error.errors });
       throw error;
     }
   });

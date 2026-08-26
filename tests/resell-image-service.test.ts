@@ -38,6 +38,8 @@ describe("resell image service", () => {
     try {
       const service = new ResellImageService(context.database, storage);
       const source = service.sourceImage("https://cdn.example.com/source.jpg");
+      expect(source[0]).toMatchObject({ width: 1, height: 1, source: "source" });
+      expect(source[0]?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
       await expect(service.resolve([{ sourceUrl: "https://cdn.example.com/source.jpg", position: 0 }], source)).resolves.toHaveLength(1);
       await expect(service.resolve([{ sourceUrl: "https://evil.example.com/image.jpg", position: 0 }], source)).rejects.toThrow("来源商品主图");
     } finally {

@@ -599,6 +599,9 @@ export interface MyDataOverview {
 export const resellModes = ["quick", "edit"] as const;
 export type ResellMode = (typeof resellModes)[number];
 
+export const publishSourceTypes = ["follow_sell", "normal_publish", "json_import", "seller_bridge", "public_page"] as const;
+export type PublishSourceType = (typeof publishSourceTypes)[number];
+
 export const resellStatuses = [
   "draft",
   "preflight_failed",
@@ -635,6 +638,21 @@ export interface ResellImageInput {
 export interface ResellSourceView {
   sku: string;
   productName: string;
+  description?: string;
+  brand?: string;
+  category?: string;
+  /** Seller's readable leaf product type name, used to resolve the target-store type_id. */
+  typeName?: string;
+  attributes?: Record<string, unknown>;
+  packageDimensions?: ResellPackageDimensions;
+  barcode?: string;
+  fieldSources?: Record<string, PublishSourceType | "manual" | "ozon_category_tree">;
+  missingFields?: string[];
+  sourceType?: PublishSourceType;
+  /** Ozon leaf product type required by product import APIs. */
+  typeId: number | null;
+  /** Optional description category associated with the Ozon product type. */
+  descriptionCategoryId: number | null;
   currentPrice: Money;
   productUrl: string;
   imageUrl: string | null;
@@ -642,6 +660,25 @@ export interface ResellSourceView {
   monthlyUnits: number;
   monthlySales: Money;
   captureDay: string;
+}
+
+export interface ResellPackageDimensions {
+  depth: string;
+  width: string;
+  height: string;
+  dimensionUnit: string;
+  weight: string;
+  weightUnit: string;
+}
+
+export interface ResellRequiredAttribute {
+  id: number;
+  name: string;
+  required: boolean;
+  dictionaryId: number | null;
+  isCollection: boolean;
+  value: unknown;
+  dictionaryValues?: Array<{ id: string; name: string }>;
 }
 
 export interface ResellWarehouseView {
@@ -658,6 +695,9 @@ export interface ResellExistingOfferView {
 
 export interface ResellPreflightInput {
   sourceSku: string;
+  sourceType?: PublishSourceType;
+  sourceSnapshot?: ResellSourceView;
+  idempotencyKey?: string;
   storeId: string;
   mode: ResellMode;
   offerId: string;
@@ -671,6 +711,8 @@ export interface ResellPreflightInput {
   title?: string | undefined;
   description?: string | undefined;
   attributes?: Record<string, unknown> | undefined;
+  packageDimensions?: ResellPackageDimensions | undefined;
+  barcode?: string | undefined;
   images: ResellImageInput[];
 }
 
@@ -688,12 +730,19 @@ export interface ResellPreflightView {
   warehouses: ResellWarehouseView[];
   existingOffer: ResellExistingOfferView | null;
   limits: { dailyCreateRemaining: number | null; totalProductLimit: number | null };
+  contractCurrency: string | null;
   warnings: string[];
   errors: string[];
+  requiredAttributes: ResellRequiredAttribute[];
+  missingRequiredFields: string[];
+  packageDimensions: ResellPackageDimensions | null;
+  quickCreateAllowed: boolean;
+  mustUseEdit: boolean;
 }
 
 export interface ResellTaskView {
   id: string;
+  sourceType: PublishSourceType;
   sourceSku: string;
   storeId: string;
   storeName: string;
@@ -729,6 +778,17 @@ export interface ResellTaskDetailView extends ResellTaskView {
   productTitle: string | null;
   sourceUrl: string | null;
   events: ResellTaskEventView[];
+}
+
+export interface PublishDraftView {
+  id: string;
+  sourceType: PublishSourceType;
+  sourceSku: string;
+  title: string | null;
+  sourceSnapshot: ResellSourceView;
+  fieldOverrides: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ResellTaskListPage {

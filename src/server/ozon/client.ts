@@ -4,6 +4,9 @@ import type { ZodType } from "zod";
 
 import {
   postingListResponseSchema,
+  descriptionCategoryTreeResponseSchema,
+  descriptionCategoryAttributesResponseSchema,
+  descriptionCategoryAttributeValuesResponseSchema,
   productImportInfoResponseSchema,
   productImportResponseSchema,
   productInfoLimitResponseSchema,
@@ -11,8 +14,10 @@ import {
   productPicturesImportResponseSchema,
   productPicturesInfoResponseSchema,
   rolesResponseSchema,
+  sellerInfoResponseSchema,
   warehouseListResponseSchema,
   type OzonPosting,
+  type OzonDescriptionCategoryNode,
   type OzonProductInfo,
   type OzonRoles,
 } from "./schemas";
@@ -55,6 +60,26 @@ export interface OzonProductInfoLimit {
   totalProductLimit: number | null;
 }
 
+export interface OzonSellerInfo {
+  currency: string | null;
+  country: string | null;
+}
+
+export interface OzonCategoryAttribute {
+  id: number;
+  name: string;
+  required: boolean;
+  dictionaryId: number | null;
+  isCollection: boolean;
+  type: string | null;
+  raw: Record<string, unknown>;
+}
+
+export interface OzonCategoryAttributeValue {
+  id: string;
+  name: string;
+}
+
 export class OzonApiError extends Error {
   public constructor(
     message: string,
@@ -82,6 +107,46 @@ function retryDelay(response: Response, attempt: number): number {
   return base + Math.floor(Math.random() * 250);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function positiveNumber(value: unknown): number | null {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function normalizeCategoryAttribute(value: unknown): OzonCategoryAttribute[] {
+  const record = asRecord(value);
+  if (!record) return [];
+  const id = positiveNumber(record.id ?? record.attribute_id);
+  if (!id) return [];
+  const name = String(record.name ?? record.title ?? record.attribute_name ?? `属性 ${id}`).trim();
+  return [{
+    id,
+    name,
+    required: record.is_required === true || record.required === true,
+    dictionaryId: positiveNumber(record.dictionary_id ?? record.dictionaryId),
+    isCollection: record.is_collection === true || record.collection === true,
+    type: typeof record.type === "string" ? record.type : null,
+    raw: record,
+  }];
+}
+
+function normalizeCategoryAttributeValue(value: unknown): OzonCategoryAttributeValue[] {
+  const record = asRecord(value);
+  if (!record) return [];
+  const id = record.id ?? record.value_id ?? record.valueId ?? record.dictionary_value_id;
+  const name = String(record.name ?? record.value ?? record.title ?? "").trim();
+  return id !== undefined && name ? [{ id: String(id), name }] : [];
+}
+
+function responseItems(value: unknown, key: "attributes" | "values"): unknown[] {
+  if (Array.isArray(value)) return value;
+  const record = asRecord(value);
+  return record && Array.isArray(record[key]) ? record[key] : [];
+}
+
 export class OzonClient {
   private readonly fetchImplementation: typeof fetch;
   private readonly maxAttempts: number;
@@ -96,6 +161,14 @@ export class OzonClient {
     return this.request("/v1/roles", {}, rolesResponseSchema);
   }
 
+  /** Returns the settlement currency and country configured for the seller contract. */
+  public async getSellerInfo(): Promise<OzonSellerInfo> {
+    const response = await this.request("/v1/seller/info", {}, sellerInfoResponseSchema);
+    const currency = response.company?.currency?.trim().toUpperCase() || null;
+    const country = response.company?.country?.trim().toUpperCase() || null;
+    return { currency, country };
+  }
+
   /** Returns product card metadata for at most 1000 seller SKUs. */
   public async getProductInfo(skus: string[]): Promise<OzonProductInfo[]> {
     if (skus.length === 0 || skus.length > 1000) {
@@ -105,10 +178,69 @@ export class OzonClient {
     return response.items;
   }
 
+  /** Returns the official product category/type tree for the target seller account. */
+  public async getDescriptionCategoryTree(language = "DEFAULT"): Promise<OzonDescriptionCategoryNode[]> {
+    const response = await this.request("/v1/description-category/tree", { language }, descriptionCategoryTreeResponseSchema);
+    return response.result;
+  }
+
+  /** Returns dynamic required/optional attributes for one target-store product type. */
+  public async getDescriptionCategoryAttributes(input: {
+    descriptionCategoryId: number;
+    typeId: number;
+    language?: string;
+  }): Promise<OzonCategoryAttribute[]> {
+    const response = await this.request("/v1/description-category/attribute", {
+      description_category_id: input.descriptionCategoryId,
+      type_id: input.typeId,
+      language: input.language ?? "DEFAULT",
+    }, descriptionCategoryAttributesResponseSchema);
+    return responseItems(response.result, "attributes").flatMap((value) => normalizeCategoryAttribute(value));
+  }
+
+  /** Returns dictionary values for a category attribute. */
+  public async getDescriptionCategoryAttributeValues(input: {
+    descriptionCategoryId: number;
+    typeId: number;
+    attributeId: number;
+    language?: string;
+  }): Promise<OzonCategoryAttributeValue[]> {
+    const response = await this.request("/v1/description-category/attribute/values", {
+      description_category_id: input.descriptionCategoryId,
+      type_id: input.typeId,
+      attribute_id: input.attributeId,
+      language: input.language ?? "DEFAULT",
+      limit: 100,
+      last_value_id: 0,
+    }, descriptionCategoryAttributeValuesResponseSchema);
+    return responseItems(response.result, "values").flatMap((value) => normalizeCategoryAttributeValue(value));
+  }
+
+  /** Searches dictionary values when a category has a large value set. */
+  public async searchDescriptionCategoryAttributeValues(input: {
+    descriptionCategoryId: number;
+    typeId: number;
+    attributeId: number;
+    query: string;
+    language?: string;
+  }): Promise<OzonCategoryAttributeValue[]> {
+    const response = await this.request("/v1/description-category/attribute/values/search", {
+      description_category_id: input.descriptionCategoryId,
+      type_id: input.typeId,
+      attribute_id: input.attributeId,
+      language: input.language ?? "DEFAULT",
+      limit: 100,
+      value: input.query,
+    }, descriptionCategoryAttributeValuesResponseSchema);
+    return responseItems(response.result, "values").flatMap((value) => normalizeCategoryAttributeValue(value));
+  }
+
   /** Creates a target-store product from an Ozon catalog SKU. */
   public async importProductBySku(input: {
     sku: string;
     name: string;
+    typeId: number;
+    descriptionCategoryId?: number | null | undefined;
     offerId: string;
     price: string;
     oldPrice?: string | undefined;
@@ -119,6 +251,8 @@ export class OzonClient {
       items: [{
         sku: input.sku,
         name: input.name,
+        type_id: input.typeId,
+        ...(input.descriptionCategoryId ? { description_category_id: input.descriptionCategoryId } : {}),
         offer_id: input.offerId,
         price: input.price,
         ...(input.oldPrice ? { old_price: input.oldPrice } : {}),

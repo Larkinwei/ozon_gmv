@@ -13,6 +13,7 @@ import type {
   ResellPreflightInput,
   ResellPreflightView,
   ResellSourceView,
+  PublishDraftView,
   ResellImageUploadView,
   ResellTaskView,
   ResellTaskDetailView,
@@ -20,6 +21,7 @@ import type {
   OrderNotificationSettings,
   OrderDetail,
   ProxyMode,
+  PublishSourceType,
   ProxyTestResult,
   RuntimeView,
   SelectionCandidate,
@@ -74,6 +76,18 @@ interface DashboardFilters {
   to?: string;
 }
 
+/** Preserves the HTTP status and structured error payload for actionable UI recovery. */
+export class ApiRequestError extends Error {
+  public constructor(
+    message: string,
+    public readonly status: number,
+    public readonly payload: { existingTaskId?: string; [key: string]: unknown } | null,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 interface StoreUpdateInput {
   name?: string;
   apiKey?: string;
@@ -93,8 +107,8 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
     headers,
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(body?.message ?? `请求失败（${response.status}）`);
+    const body = (await response.json().catch(() => null)) as { message?: string; existingTaskId?: string; [key: string]: unknown } | null;
+    throw new ApiRequestError(body?.message ?? `请求失败（${response.status}）`, response.status, body);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -498,6 +512,7 @@ export async function fetchResellTasks(filters: {
   from?: string;
   to?: string;
   sourceSku?: string;
+  sourceType?: string;
 }): Promise<ResellTaskListPage> {
   if (DEMO_MODE) {
     return { items: [], page: filters.page, pageSize: filters.pageSize, total: 0 };
@@ -508,15 +523,67 @@ export async function fetchResellTasks(filters: {
   if (filters.from) params.set("from", filters.from);
   if (filters.to) params.set("to", filters.to);
   if (filters.sourceSku?.trim()) params.set("sourceSku", filters.sourceSku.trim());
-  return apiFetch(`/api/selection/resell/tasks?${params.toString()}`);
+  if (filters.sourceType) params.set("sourceType", filters.sourceType);
+  return apiFetch(`/api/selection/publish/tasks?${params.toString()}`);
 }
 
 export async function fetchResellTaskDetail(id: string): Promise<ResellTaskDetailView> {
-  return fetchResellTask(id);
+  return apiFetch(`/api/selection/publish/tasks/${encodeURIComponent(id)}`);
 }
 
 export async function retryResellTask(id: string): Promise<ResellTaskView> {
-  return apiFetch(`/api/selection/resell/tasks/${encodeURIComponent(id)}/retry`, { method: "POST" });
+  return apiFetch(`/api/selection/publish/tasks/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+/** Removes a terminal failed publish task and its cascaded local history. */
+export async function deleteResellTask(id: string): Promise<void> {
+  await apiFetch(`/api/selection/publish/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function previewPublishPackage(files: File[]): Promise<{
+  productCount: number;
+  imageCount: number;
+  products: Array<{ sku: string; title: string; imageCount: number; missingFields: string[] }>;
+  errors: string[];
+}> {
+  const body = new FormData();
+  files.forEach((file) => body.append("files", file, file.webkitRelativePath || file.name));
+  return apiFetch("/api/selection/publish/sources/preview", { method: "POST", body });
+}
+
+export async function createPublishDraft(input: {
+  sourceType: string;
+  sourceSku: string;
+  title?: string | null;
+  sourceSnapshot: ResellSourceView;
+  fieldOverrides?: Record<string, unknown>;
+}): Promise<PublishDraftView> {
+  return apiFetch("/api/selection/publish/sources/import", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function fetchPublishDraft(id: string): Promise<PublishDraftView> {
+  return apiFetch(`/api/selection/publish/sources/${encodeURIComponent(id)}`);
+}
+
+export async function enrichPublishSource(input: {
+  storeId: string;
+  sourceType: PublishSourceType;
+  sourceSku: string;
+  sourceSnapshot: ResellSourceView;
+}): Promise<ResellSourceView> {
+  return apiFetch("/api/selection/publish/sources/enrich", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function updatePublishDraft(id: string, input: Partial<Parameters<typeof createPublishDraft>[0]>): Promise<PublishDraftView> {
+  return apiFetch(`/api/selection/publish/drafts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export async function preflightPublish(input: ResellPreflightInput): Promise<ResellPreflightView> {
+  return apiFetch("/api/selection/publish/preflight", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function createPublishTask(input: ResellPreflightInput): Promise<ResellTaskView> {
+  return apiFetch("/api/selection/publish/tasks", { method: "POST", body: JSON.stringify(input) });
 }
 
 export async function fetchImageStorageSettings(): Promise<ImageStorageView> {
