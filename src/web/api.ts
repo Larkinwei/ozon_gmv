@@ -535,6 +535,11 @@ export async function retryResellTask(id: string): Promise<ResellTaskView> {
   return apiFetch(`/api/selection/publish/tasks/${encodeURIComponent(id)}/retry`, { method: "POST" });
 }
 
+/** Applies inventory to an already-created FBS/rFBS product without re-importing it. */
+export async function setResellTaskStock(id: string): Promise<ResellTaskView> {
+  return apiFetch(`/api/selection/publish/tasks/${encodeURIComponent(id)}/stock`, { method: "POST" });
+}
+
 /** Removes a terminal failed publish task and its cascaded local history. */
 export async function deleteResellTask(id: string): Promise<void> {
   await apiFetch(`/api/selection/publish/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });

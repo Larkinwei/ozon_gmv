@@ -166,6 +166,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
     fetchImplementation: proxySettings.createFetch(),
   });
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
+  resell.start();
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
@@ -179,7 +180,10 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerWallboardManagementRoutes(app, config, pairings);
   app.get("/api/runtime", async () => ({ role: "admin" as const }));
   registerHealthRoutes(app, database);
-  app.addHook("onClose", async () => notifications.close());
+  app.addHook("onClose", async () => {
+    resell.stop();
+    notifications.close();
+  });
   await registerWebAssets(app);
   registerErrorHandler(app);
   return app;

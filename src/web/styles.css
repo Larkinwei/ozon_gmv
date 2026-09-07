@@ -4001,6 +4001,8 @@ td {
 .resell-status--success { color: #bbf7d0; background: rgb(34 197 94 / 14%); border: 1px solid rgb(34 197 94 / 35%); }
 .resell-status--warning { color: #fde68a; background: rgb(245 158 11 / 14%); border: 1px solid rgb(245 158 11 / 35%); }
 .resell-status--error { color: #fecaca; background: rgb(248 113 113 / 14%); border: 1px solid rgb(248 113 113 / 35%); }
+.resell-task-info { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px 12px; color: #bfdbfe; background: rgb(59 130 246 / 8%); border: 1px solid rgb(59 130 246 / 28%); border-radius: 8px; font-size: 12px; line-height: 1.5; }
+.resell-task-info svg { flex: 0 0 auto; margin-top: 1px; }
 .resell-task-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 18px 0 0; }
 .resell-task-meta div { padding: 10px; background: var(--surface-soft); border-radius: 8px; }
 .resell-task-meta dt { color: var(--muted); font-size: 11px; }

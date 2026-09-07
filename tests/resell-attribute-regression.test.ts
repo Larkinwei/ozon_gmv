@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeOzonAttributes } from "../src/server/selection/resell-module";
+import { normalizeOzonAttributes, normalizeProductBarcode } from "../src/server/selection/resell-module";
 import { hasPublishAttributeValue } from "../src/shared/publish-attributes";
 
 describe("resell attribute payload regression", () => {
@@ -20,5 +20,30 @@ describe("resell attribute payload regression", () => {
     expect(hasPublishAttributeValue({ dictionary_value_id: 126745801 })).toBe(true);
     expect(hasPublishAttributeValue({ values: [{ dictionary_value_id: 126745801 }] })).toBe(true);
     expect(hasPublishAttributeValue({ values: [] })).toBe(false);
+  });
+
+  it("keeps Seller image attributes out of the product attribute payload", () => {
+    const payload = normalizeOzonAttributes({
+      "4194": "https://cdn.example.com/main.jpg",
+      "4195": "https://cdn.example.com/sub.jpg",
+      "attribute_31": { id: 31, values: [{ dictionary_value_id: 126745801 }] },
+    });
+
+    expect(payload.map((attribute) => attribute.id)).toEqual([31]);
+  });
+
+  it("keeps barcode out of generic attributes", () => {
+    const payload = normalizeOzonAttributes({
+      "7822": { id: 7822, values: [{ value: "4006381333931" }] },
+      "31": { id: 31, values: [{ dictionary_value_id: 126745801 }] },
+    });
+
+    expect(payload.map((attribute) => attribute.id)).toEqual([31]);
+  });
+
+  it("accepts real GTIN check digits and rejects synthetic OZN barcodes", () => {
+    expect(normalizeProductBarcode("4006381333931")).toBe("4006381333931");
+    expect(normalizeProductBarcode("OZN2084612101")).toBeNull();
+    expect(normalizeProductBarcode("4006381333932")).toBeNull();
   });
 });

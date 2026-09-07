@@ -4,7 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import type { FulfillmentMode, PublishSourceType, ResellImageView, ResellMode, ResellPackageDimensions, ResellPreflightInput, ResellPreflightView, ResellSourceView, ResellStatus } from "../../shared/contracts";
-import { ApiRequestError, createPublishTask, createPublishDraft, enrichPublishSource, fetchResellSource, fetchResellTask, fetchStores, preflightPublish, previewPublishPackage, retryResellTask, updatePublishDraft, uploadResellImage } from "../api";
+import { ApiRequestError, createPublishTask, createPublishDraft, enrichPublishSource, fetchResellSource, fetchResellTask, fetchStores, preflightPublish, previewPublishPackage, retryResellTask, setResellTaskStock, updatePublishDraft, uploadResellImage } from "../api";
 import { hasPublishAttributeValue } from "../../shared/publish-attributes";
 import { AppNav } from "../components/AppNav";
 import { formatMoney } from "../format";
@@ -19,6 +19,7 @@ const statusLabels: Record<ResellStatus, string> = {
   setting_images: "正在上传商品图片",
   setting_price: "正在设置价格",
   setting_stock: "正在设置库存",
+  stock_pending: "库存待设置",
   moderating: "等待审核或打标",
   sellable: "已提交并完成库存配置",
   needs_input: "需要补充信息",
@@ -116,7 +117,7 @@ function noBrandPreflightInput(result: ResellPreflightView, input: ResellPreflig
     if (!isBrandAttribute(attribute)) continue;
     const option = noBrandOption(attribute.dictionaryValues ?? []);
     if (!option) continue;
-    const current = attributes[String(attribute.id)];
+    const current = readAttributeValue(attributes, attribute.id);
     const selected = attributeSelectionValues(current, attribute.dictionaryValues ?? []);
     const isNoBrandLabel = typeof current === "string" && /^(без\s+бренд|нет\s+бренд|no\s+brand|无品牌)/i.test(current.trim());
     if (!hasPublishAttributeValue(current) || (isNoBrandLabel && selected[0] !== option.id)) {
@@ -182,6 +183,11 @@ function defaultPrice(amount: string, monthlySales: string, monthlyUnits: number
   return "";
 }
 
+/** Reads an editor attribute in either compact or Seller/Ozon-shaped form. */
+function readAttributeValue(attributes: Record<string, unknown>, id: number): unknown {
+  return attributes[String(id)] ?? attributes[`attribute_${id}`];
+}
+
 function safeProductUrl(value: string): string | null {
   try {
     const url = new URL(value);
@@ -241,7 +247,7 @@ function getPublishCompleteness(input: {
   const attributes = input.requiredAttributes;
   let completedAttributes = 0;
   for (const attribute of attributes) {
-    const value = input.attributes[String(attribute.id)];
+    const value = readAttributeValue(input.attributes, attribute.id);
     const hasValue = hasPublishAttributeValue(value);
     if (hasValue) completedAttributes += 1;
     else missing.push(`属性 ${attribute.id}`);
@@ -360,7 +366,7 @@ function inputFromState(state: {
 function taskStatusTone(status: ResellStatus): string {
   if (status === "sellable") return "resell-status--success";
   if (["failed", "preflight_failed", "needs_input"].includes(status)) return "resell-status--error";
-  if (status === "moderating") return "resell-status--warning";
+  if (["moderating", "stock_pending"].includes(status)) return "resell-status--warning";
   return "resell-status--active";
 }
 
@@ -504,25 +510,35 @@ export default function ResellPage(): React.JSX.Element {
   }), [title, images, price, currency, typeId, storeId, warehouseId, packageDimensions, preflight?.requiredAttributes, parsedAttributeValues]);
 
   useEffect(() => {
-    // A previous preflight can finish before React applies an attribute edit.
-    // Remove only its now-resolved “missing attribute” messages; submission
-    // still performs a fresh server preflight for authoritative validation.
-    if (!preflight || completeness.missing.some((item) => item.startsWith("属性 "))) return;
-    if (preflight.missingRequiredFields.length === 0 && !preflight.errors.some(isMissingRequiredAttributeMessage)) return;
-    setPreflight((current) => {
-      if (!current) return current;
-      const errors = current.errors.filter((error) => !isMissingRequiredAttributeMessage(error));
-      return { ...current, errors, missingRequiredFields: [], valid: errors.length === 0 };
+    // Reconcile server validation with the values currently visible in the
+    // editor. A preflight can finish before React applies an attribute edit,
+    // leaving a stale error from a previous category or attribute set.
+    if (!preflight) return;
+    const missingRequiredFields = preflight.requiredAttributes
+      .filter((attribute) => !hasPublishAttributeValue(readAttributeValue(parsedAttributeValues, attribute.id)))
+      .map((attribute) => `${attribute.name}（属性 ID ${attribute.id}）`);
+    const retainedErrors = preflight.errors.filter((error) => !isMissingRequiredAttributeMessage(error));
+    const errors = missingRequiredFields.length > 0
+      ? [...retainedErrors, `缺少必填商品属性：${missingRequiredFields.join("、")}`]
+      : retainedErrors;
+    const sameMissing = JSON.stringify(preflight.missingRequiredFields) === JSON.stringify(missingRequiredFields);
+    const sameErrors = JSON.stringify(preflight.errors) === JSON.stringify(errors);
+    if (sameMissing && sameErrors) return;
+    setPreflight((current) => current
+      ? { ...current, errors, missingRequiredFields, valid: errors.length === 0 }
+      : current);
+    setFormError((current) => {
+      if (!current || !isMissingRequiredAttributeMessage(current)) return current;
+      return missingRequiredFields.length > 0 ? `缺少必填商品属性：${missingRequiredFields.join("、")}` : null;
     });
-    setFormError((current) => current && isMissingRequiredAttributeMessage(current) ? null : current);
-  }, [completeness.missing, preflight]);
+  }, [parsedAttributeValues, preflight]);
 
   /** Applies an official no-brand value when the target category requires one. */
   function applyNoBrandDefaults(result: ResellPreflightView, forceAttribute = false): void {
     const brandAttribute = result.requiredAttributes.find(isBrandAttribute);
     const currentAttributes = parseAttributeObject(attributesText);
     const currentBrandAttributeValue = brandAttribute
-      ? currentAttributes[String(brandAttribute.id)]
+      ? readAttributeValue(currentAttributes, brandAttribute.id)
       : undefined;
     const brandAlreadyKnown = Boolean(
       result.source.brand?.trim()
@@ -538,7 +554,7 @@ export default function ResellPage(): React.JSX.Element {
     if (forceAttribute) markEditedField(editedFieldsRef.current, "attributes");
     setAttributesText((current) => {
       const attributes = parseAttributeObject(current);
-      const currentValue = attributes[String(brandAttribute.id)];
+      const currentValue = readAttributeValue(attributes, brandAttribute.id);
       if (!forceAttribute && hasPublishAttributeValue(currentValue)) return current;
       const value = hasPublishAttributeValue(brandAttribute.value) ? brandAttribute.value : option.id;
       return `${JSON.stringify({ ...attributes, [brandAttribute.id]: value }, null, 2)}\n`;
@@ -562,7 +578,10 @@ export default function ResellPage(): React.JSX.Element {
       // Target-store product info can resolve a missing type ID. Mirror the
       // resolved values into the form instead of leaving the user with a blank
       // field that would be sent again on the next action.
-      setSourceOverride(result.source);
+      // Preflight may only return target-store metadata. Keep the complete
+      // source snapshot (including MY price/sales and Seller images) when it
+      // is absent from that response.
+      setSourceOverride((current) => current ? mergeSellerSource(current, result.source) : result.source);
       if (result.packageDimensions) setPackageDimensions(result.packageDimensions);
       setTypeId(result.source.typeId ? String(result.source.typeId) : "");
       setDescriptionCategoryId(result.source.descriptionCategoryId ? String(result.source.descriptionCategoryId) : "");
@@ -668,6 +687,11 @@ export default function ResellPage(): React.JSX.Element {
     onSuccess: (task) => setTaskId(task.id),
     onError: (error) => setFormError(error.message),
   });
+  const stockMutation = useMutation({
+    mutationFn: () => setResellTaskStock(taskId!),
+    onSuccess: (task) => setTaskId(task.id),
+    onError: (error) => setFormError(error.message),
+  });
 
   async function openConfirmation(): Promise<void> {
     try {
@@ -681,8 +705,7 @@ export default function ResellPage(): React.JSX.Element {
       let result = preflightRun.result;
       input = preflightRun.input;
       const resolvedWarehouseId = input.warehouseId || result.warehouses[0]?.id || "";
-      if (!resolvedWarehouseId) throw new Error("目标店铺没有可用仓库，请先配置店铺仓库");
-      if (!input.warehouseId) {
+      if (!input.warehouseId && resolvedWarehouseId) {
         setWarehouseId(resolvedWarehouseId);
         input = { ...input, warehouseId: resolvedWarehouseId };
         preflightRun = await runPreflightWithAutoMode(input);
@@ -868,12 +891,16 @@ export default function ResellPage(): React.JSX.Element {
             ...(sellerSnapshot.typeId ? [] : ["商品类型 ID"]),
           ],
         };
-        const nextSource = await enrichPublishSource({
+        const enrichedSource = await enrichPublishSource({
           storeId,
           sourceType: "seller_bridge",
           sourceSku: sellerSnapshotWithMissingFields.sku,
           sourceSnapshot: sellerSnapshotWithMissingFields,
         });
+        // The enrichment endpoint is allowed to return only target-store
+        // resolution fields. Merge it back onto the complete Seller/MY
+        // snapshot so it cannot erase the price or analytics fallback.
+        const nextSource = mergeSellerSource(sellerSnapshotWithMissingFields, enrichedSource);
         const isEdited = (field: string): boolean => editedFieldsRef.current.has(field);
         const nextTitle = isEdited("title") ? title : title || nextSource.productName;
         const nextDescription = isEdited("description") ? description : description || nextSource.description || "";
@@ -901,9 +928,10 @@ export default function ResellPage(): React.JSX.Element {
         // The Seller bridge can finish before the source initialization effect has
         // committed its Offer ID and price state. Resolve those values from the
         // same snapshot before the preflight request to avoid sending empty strings.
+        const resolvedSourceSku = nextSource.sku || sellerSnapshotWithMissingFields.sku || sku;
         const nextOfferId = editedFieldsRef.current.has("offerId")
           ? offerId
-          : offerId || `${sourceType === "follow_sell" ? "MY" : "OZON"}-${nextSource.sku || "NEW"}`
+          : offerId || `${sourceType === "follow_sell" ? "MY" : "OZON"}-${resolvedSourceSku || "NEW"}`
             .replace(/[^A-Za-z0-9._-]/g, "-")
             .slice(0, 80);
         const nextPrice = editedFieldsRef.current.has("price")
@@ -970,7 +998,7 @@ export default function ResellPage(): React.JSX.Element {
       }
     };
     window.addEventListener("message", handleMessage);
-    window.postMessage({ type: "OZON_GMV_REQUEST_SOURCE", requestId, sku: source.sku }, "*");
+    window.postMessage({ type: "OZON_GMV_REQUEST_SOURCE", requestId, sku: source.sku || sku }, "*");
     timeoutId = window.setTimeout(() => {
       window.removeEventListener("message", handleMessage);
       sellerSyncInFlightRef.current = false;
@@ -981,12 +1009,15 @@ export default function ResellPage(): React.JSX.Element {
   }
 
   useEffect(() => {
-    if (sourceType !== "follow_sell" || !source.sku || !storeId || enabledStores.length === 0) return;
-    const enrichmentKey = `${source.sku}:${storeId}`;
+    // Wait for the MY query to finish. The placeholder source contains only
+    // the route SKU and zero metrics; starting enrichment against it would
+    // erase the real MY price and sales before Seller returns.
+    if (sourceType !== "follow_sell" || !sourceQuery.data || !sourceQuery.data.sku || !storeId || enabledStores.length === 0) return;
+    const enrichmentKey = `${sourceQuery.data.sku}:${storeId}`;
     if (autoEnrichmentKeyRef.current === enrichmentKey || source.sourceType === "seller_bridge") return;
     autoEnrichmentKeyRef.current = enrichmentKey;
     void requestSellerEnrichment();
-  }, [enabledStores.length, source.sku, source.sourceType, sourceType, storeId]);
+  }, [enabledStores.length, sourceQuery.data, source.sourceType, sourceType, storeId]);
 
   function moveImage(index: number, offset: number): void {
     const target = index + offset;
@@ -1034,6 +1065,9 @@ export default function ResellPage(): React.JSX.Element {
 
   const task = taskQuery.data;
   const productUrl = safeProductUrl(source.productUrl);
+  const sourceDisplayPrice = numberPrice(source.currentPrice.amount) > 0
+    ? source.currentPrice
+    : { amount: defaultPrice(source.currentPrice.amount, source.monthlySales.amount, source.monthlyUnits), currency: source.monthlySales.currency };
   return (
     <div className="admin-page resell-page">
       <AppNav />
@@ -1045,7 +1079,7 @@ export default function ResellPage(): React.JSX.Element {
             <p className="eyebrow">SOURCE SUMMARY</p>
             <div className="resell-source-product"><span className="resell-source-image">{source.images[0] ? <img src={source.images[0].url} alt={`${source.productName || "商品"} 主图`} /> : <PackagePlus size={24} aria-label="无商品主图" />}</span><div><h2 title={source.productName}>{source.productName || "待填写商品标题"}</h2><p>Ozon SKU：<strong>{source.sku || "待填写"}</strong></p>{productUrl && <a href={productUrl} target="_blank" rel="noreferrer">打开原商品 <ExternalLink size={14} /></a>}</div></div>
             <dl className="resell-source-metrics"><div><dt>来源类型</dt><dd>{sourceLabel(sourceType)}</dd></div><div><dt>图片数量</dt><dd>{source.images.length} 张</dd></div><div><dt>来源日期</dt><dd>{source.captureDay || "—"}</dd></div></dl>
-            <div className="publish-source-facts"><span>类目：{source.category || "待补充"}</span><span>品牌：{source.brand || "待补充"}</span><span>商品类型：{source.typeId ? "已自动匹配" : "待补充"}</span><span>属性：{preflight ? `${preflight.requiredAttributes.filter((attribute) => { const value = parsedAttributeValues[String(attribute.id)]; return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && String(value).trim() !== ""; }).length}/${preflight.requiredAttributes.length} 项已完成` : "等待预检"}</span><span>价格：{formatMoney(source.currentPrice)}</span><span>月销量：{source.monthlyUnits.toLocaleString("zh-CN")}</span></div>
+            <div className="publish-source-facts"><span>类目：{source.category || "待补充"}</span><span>品牌：{source.brand || "待补充"}</span><span>商品类型：{source.typeId ? "已自动匹配" : "待补充"}</span><span>属性：{preflight ? `${preflight.requiredAttributes.filter((attribute) => hasPublishAttributeValue(readAttributeValue(parsedAttributeValues, attribute.id))).length}/${preflight.requiredAttributes.length} 项已完成` : "等待预检"}</span><span>价格：{sourceDisplayPrice.amount ? formatMoney(sourceDisplayPrice) : "待补充"}</span><span>月销量：{source.monthlyUnits.toLocaleString("zh-CN")}</span></div>
             {(source.missingFields?.length ?? 0) > 0 && <div className="publish-missing-fields"><CircleAlert size={15} />缺失：{source.missingFields?.join("、")}</div>}
         </section>
         <div className="resell-layout">
@@ -1063,7 +1097,7 @@ export default function ResellPage(): React.JSX.Element {
               <label className="field"><span>币种 * {preflight?.contractCurrency && <small>目标店铺合同：{preflight.contractCurrency}</small>}</span><input value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} maxLength={3} /></label>
               <label className="field"><span>VAT *</span><input value={vat} onChange={(event) => setVat(event.target.value)} placeholder="例如 0 或 0.2" /><small>当前默认按中国店铺规则填写 0；其他国家请以目标店铺 Ozon 规则为准。</small>{vat.trim() && validateVat(vat) === null && Number(vat.replace(",", ".")) !== 0 && <small className="resell-vat-warning">当前 VAT 非 0，请确认与目标店铺国家税率一致。</small>}</label>
               <label className="field"><span>库存数量 *</span><input type="number" min="0" step="1" value={stock} onChange={(event) => setStock(event.target.value)} /><small>默认库存为 2，可按目标店铺实际库存修改。</small></label>
-              <label className="field" id="publish-warehouse-field"><span>仓库 *</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">正在读取目标店铺仓库…</option>{(preflight?.warehouses ?? []).map((warehouse) => <option value={warehouse.id} key={warehouse.id}>{warehouse.name} · {warehouse.status}</option>)}</select></label>
+              <label className="field" id="publish-warehouse-field"><span>仓库 <small>库存可稍后设置</small></span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">未选择仓库（可稍后设置库存）</option>{(preflight?.warehouses ?? []).map((warehouse) => <option value={warehouse.id} key={warehouse.id}>{warehouse.name} · {warehouse.status}</option>)}</select></label>
               <section className="field field--wide publish-package-fields" aria-labelledby="package-fields-heading"><span id="package-fields-heading">包装尺寸与重量 * <small>必须填写真实包装数据</small></span><div className="publish-package-grid">{([['depth', '长度'], ['width', '宽度'], ['height', '高度'], ['weight', '重量']] as const).map(([key, label]) => <label className="field" key={key}><span>{label}</span><input inputMode="decimal" value={packageDimensions[key]} onChange={(event) => updatePackageDimension(key, event.target.value)} placeholder="必须大于 0" /></label>)}<label className="field"><span>尺寸单位</span><select value={packageDimensions.dimensionUnit} onChange={(event) => updatePackageDimension("dimensionUnit", event.target.value)}><option value="mm">mm</option><option value="cm">cm</option></select></label><label className="field"><span>重量单位</span><select value={packageDimensions.weightUnit} onChange={(event) => updatePackageDimension("weightUnit", event.target.value)}><option value="g">g</option><option value="kg">kg</option></select></label></div><small>Ozon 会按包装后的长度、宽度、高度和重量校验，不能填 0。</small></section>
               <label className="field field--wide" id="publish-title-field"><span>商品标题</span><input value={title} onChange={(event) => { markEditedField(editedFieldsRef.current, "title"); setTitle(event.target.value); }} maxLength={500} placeholder="请输入可售商品标题" /></label>
               <details id="publish-advanced-section" className="publish-advanced-section" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
@@ -1079,7 +1113,7 @@ export default function ResellPage(): React.JSX.Element {
                   {mode === "edit" && <label className="field field--wide"><span>商品属性 JSON <small>高级</small></span><textarea value={attributesText} onChange={(event) => { markEditedField(editedFieldsRef.current, "attributes"); setAttributesText(event.target.value); }} rows={7} spellCheck={false} /><small>可粘贴 Seller 补全或 Ozon 类目属性 JSON；提交前会校验格式。</small></label>}
                 </div>
               </details>
-              {mode === "edit" && preflight && preflight.requiredAttributes.length > 0 && <section className="field field--wide publish-required-attributes" aria-labelledby="required-attributes-heading"><span id="required-attributes-heading">目标类目必填属性</span>{preflight.requiredAttributes.map((attribute) => { const values = attribute.dictionaryValues ?? []; const currentValue = parsedAttributeValues[String(attribute.id)] ?? attribute.value; const selectedValues = attributeSelectionValues(currentValue, values); return <label className="field" key={attribute.id}><span>{translatedAttributeName(attribute.name, attribute.id)} * <small>ID {attribute.id}{attribute.dictionaryId ? ` · 字典 ${attribute.dictionaryId}` : ""}</small></span>{values.length > 0 ? <select multiple={attribute.isCollection} value={attribute.isCollection ? selectedValues : selectedValues[0] ?? ""} onChange={(event) => updateRequiredAttribute(attribute.id, attribute.isCollection ? Array.from(event.target.selectedOptions, (option) => option.value) : event.target.value)}>{!attribute.isCollection && <option value="">请选择</option>}{values.map((option) => <option key={option.id} value={option.id}>{displayDictionaryValueName(option.name)}</option>)}</select> : <input value={typeof currentValue === "string" ? currentValue : ""} onChange={(event) => updateRequiredAttribute(attribute.id, event.target.value)} placeholder="请填写属性值" />}</label>; })}</section>}
+              {mode === "edit" && preflight && preflight.requiredAttributes.length > 0 && <section className="field field--wide publish-required-attributes" aria-labelledby="required-attributes-heading"><span id="required-attributes-heading">目标类目必填属性</span>{preflight.requiredAttributes.map((attribute) => { const values = attribute.dictionaryValues ?? []; const currentValue = readAttributeValue(parsedAttributeValues, attribute.id) ?? attribute.value; const selectedValues = attributeSelectionValues(currentValue, values); return <label className="field" key={attribute.id}><span>{translatedAttributeName(attribute.name, attribute.id)} * <small>ID {attribute.id}{attribute.dictionaryId ? ` · 字典 ${attribute.dictionaryId}` : ""}</small></span>{values.length > 0 ? <select multiple={attribute.isCollection} value={attribute.isCollection ? selectedValues : selectedValues[0] ?? ""} onChange={(event) => updateRequiredAttribute(attribute.id, attribute.isCollection ? Array.from(event.target.selectedOptions, (option) => option.value) : event.target.value)}>{!attribute.isCollection && <option value="">请选择</option>}{values.map((option) => <option key={option.id} value={option.id}>{displayDictionaryValueName(option.name)}</option>)}</select> : <input value={typeof currentValue === "string" ? currentValue : ""} onChange={(event) => updateRequiredAttribute(attribute.id, event.target.value)} placeholder="请填写属性值" />}</label>; })}</section>}
             </div>
             <section className="publish-health-card" aria-labelledby="publish-health-heading"><div><p className="eyebrow">CONTENT CHECK</p><h3 id="publish-health-heading"><ClipboardCheck size={17} />内容体检 <span>{completeness.completed}/{completeness.total} 项</span></h3></div>{completeness.missing.length > 0 ? <div className="publish-health-list" role="status">{completeness.missing.slice(0, 4).map((item) => <button type="button" key={item} onClick={() => focusMissingField(item)}>{item}待补充</button>)}{completeness.missing.length > 4 && <span>另有 {completeness.missing.length - 4} 项待补充</span>}</div> : <p className="publish-health-success"><CheckCircle2 size={15} />核心字段已完成，提交时会再次自动检查</p>}</section>
             <div className="resell-actions"><button className="secondary-button" type="button" onClick={() => saveDraftMutation.mutate()} disabled={saveDraftMutation.isPending}>{saveDraftMutation.isPending ? "保存中…" : "保存草稿"}</button><button className="primary-button" type="button" onClick={() => void openConfirmation()} disabled={createMutation.isPending || preflightMutation.isPending || Boolean(taskId)}><Rocket size={17} />{preflightMutation.isPending ? "正在自动检查…" : "提交发布"}</button></div>
@@ -1104,7 +1138,7 @@ export default function ResellPage(): React.JSX.Element {
             <p className="publish-summary-note"><CircleAlert size={15} />提交发布时会自动检查目标店铺、VAT、仓库和必填属性。</p>
           </aside>
         </div>
-        {task && <TaskStatus task={task} onRetry={() => retryMutation.mutate()} retrying={retryMutation.isPending} />}
+        {task && <TaskStatus task={task} onRetry={() => retryMutation.mutate()} retrying={retryMutation.isPending} onSetStock={() => stockMutation.mutate()} settingStock={stockMutation.isPending} />}
       </main>
       {confirmOpen && <div className="dialog-backdrop" role="presentation"><section className="dialog resell-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="resell-confirm-title"><div className="dialog-heading"><div><p className="eyebrow">ACTION CONFIRMATION</p><h2 id="resell-confirm-title">确认提交发布？</h2></div><button className="icon-button" type="button" onClick={() => setConfirmOpen(false)} aria-label="取消"><CircleAlert size={19} /></button></div><p>服务将使用目标店铺的 Seller API 创建商品、上传图片、设置价格并写入库存。Ozon 仍可能要求审核或补充资料。</p><dl className="resell-confirm-list"><div><dt>来源类型</dt><dd>{sourceLabel(sourceType)}</dd></div><div><dt>目标店铺</dt><dd>{selectedStore?.name ?? "—"}</dd></div><div><dt>SKU / Offer ID</dt><dd>{source.sku || "普通商品"} / {offerId}</dd></div><div><dt>图片</dt><dd>{images.length} 张（已上传 {images.filter((image) => image.source === "uploaded").length} 张）</dd></div><div><dt>价格 / 库存</dt><dd>{price} {currency} / {stock} 件</dd></div><div><dt>VAT</dt><dd>{vat}（请确认与目标店铺国家税率一致）</dd></div><div><dt>履约 / 仓库</dt><dd>{fulfillmentMode} / {preflight?.warehouses.find((item) => item.id === warehouseId)?.name ?? warehouseId}</dd></div></dl><div className="resell-confirm-thumbs">{images.slice(0, 6).map((image, index) => <img key={`${image.id}-${index}`} src={image.url} alt={`${index === 0 ? "主图" : "副图"}预览`} />)}</div>{preflight?.warnings.map((warning) => <p className="resell-warning" key={warning}><CircleAlert size={16} />{warning}</p>)}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setConfirmOpen(false)}>返回修改</button><button className="primary-button" type="button" onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>{createMutation.isPending ? "提交中…" : "确认发布"}</button></div></section></div>}
     </div>
@@ -1115,9 +1149,11 @@ function PreflightSummary(props: { result: ResellPreflightView; completeness: Pu
   return <div className={props.result.valid ? "resell-preflight resell-preflight--valid" : "resell-preflight resell-preflight--invalid"} role={props.result.valid ? "status" : "alert"}><div><strong>{props.result.valid ? <><CheckCircle2 size={16} />内容体检通过 · {props.completeness.completed}/{props.completeness.total} 项</> : <><CircleAlert size={16} />内容体检需要修正 · {props.completeness.completed}/{props.completeness.total} 项</>}</strong>{props.result.errors.map((error) => <span key={error}>{translatedValidationMessage(error)}</span>)}{props.result.missingRequiredFields.length > 0 && <span>缺少属性：{props.result.missingRequiredFields.map(translatedValidationMessage).join("、")}</span>}{props.result.warnings.map((warning) => <span key={warning}>{translatedValidationMessage(warning)}</span>)}</div>{props.result.limits.dailyCreateRemaining !== null && <small>今日剩余创建额度：{props.result.limits.dailyCreateRemaining}</small>}</div>;
 }
 
-function TaskStatus(props: { task: Awaited<ReturnType<typeof fetchResellTask>>; onRetry: () => void; retrying: boolean }): React.JSX.Element {
+function TaskStatus(props: { task: Awaited<ReturnType<typeof fetchResellTask>>; onRetry: () => void; retrying: boolean; onSetStock: () => void; settingStock: boolean }): React.JSX.Element {
   const task = props.task;
   const hasError = ["failed", "needs_input"].includes(task.status);
   const canRetry = hasError && !task.productId;
-  return <section className="resell-task-card" aria-live="polite"><div className="resell-task-heading"><div><p className="eyebrow">PUBLISH TASK</p><h2>跟卖任务状态</h2></div><span className={`resell-status ${taskStatusTone(task.status)}`}>{hasError ? <CircleAlert size={15} /> : task.status === "sellable" ? <CheckCircle2 size={15} /> : <RefreshCw size={15} />}{statusLabels[task.status]}</span></div><dl className="resell-task-meta"><div><dt>目标店铺</dt><dd>{task.storeName}</dd></div><div><dt>Ozon Task ID</dt><dd>{task.ozonTaskId ?? "等待返回"}</dd></div><div><dt>Product ID</dt><dd>{task.productId ?? "等待导入完成"}</dd></div><div><dt>最终库存</dt><dd>{task.stock} 件</dd></div></dl>{task.lastError && <div className="field-error" role="alert"><CircleAlert size={17} />{task.lastError}</div>}{task.productId && hasError && <p className="resell-warning"><CircleAlert size={16} />商品已在 Ozon 创建，请先修正已有商品，不要重复创建。</p>}{canRetry && <button className="secondary-button compact-button" type="button" onClick={props.onRetry} disabled={props.retrying}>{props.retrying ? "重新提交中…" : "重新提交任务"}</button>}</section>;
+  const canSetStock = task.status === "stock_pending" && Boolean(task.productId) && task.fulfillmentMode !== "FBO";
+  const statusMessageIsError = hasError || task.status === "failed";
+  return <section className="resell-task-card" aria-live="polite"><div className="resell-task-heading"><div><p className="eyebrow">PUBLISH TASK</p><h2>跟卖任务状态</h2></div><span className={`resell-status ${taskStatusTone(task.status)}`}>{statusMessageIsError ? <CircleAlert size={15} /> : task.status === "sellable" ? <CheckCircle2 size={15} /> : <RefreshCw size={15} />}{statusLabels[task.status]}</span></div><dl className="resell-task-meta"><div><dt>目标店铺</dt><dd>{task.storeName}</dd></div><div><dt>Ozon Task ID</dt><dd>{task.ozonTaskId ?? "等待返回"}</dd></div><div><dt>Product ID</dt><dd>{task.productId ?? "等待导入完成"}</dd></div><div><dt>{task.fulfillmentMode === "FBO" ? "库存说明" : "库存校验"}</dt><dd>{task.fulfillmentMode === "FBO" ? "FBO 库存需入 Ozon 仓库后产生" : task.actualStock !== undefined ? `请求 ${task.stock} 件 / 实际 ${task.actualStock ?? "未读到"} 件` : `${task.stock} 件`}</dd></div></dl>{task.stockCheckedAt && <p className="resell-task-stock-check">最后校验：{new Date(task.stockCheckedAt).toLocaleString("zh-CN")}</p>}{task.lastError && <div className={statusMessageIsError ? "field-error" : "resell-task-info"} role={statusMessageIsError ? "alert" : "status"}><CircleAlert size={17} />{task.lastError}</div>}{canSetStock && <button className="secondary-button compact-button" type="button" onClick={props.onSetStock} disabled={props.settingStock}>{props.settingStock ? "库存设置中…" : "稍后设置库存"}</button>}{task.productId && hasError && <p className="resell-warning"><CircleAlert size={16} />商品已在 Ozon 创建，请先修正已有商品，不要重复创建。</p>}{canRetry && <button className="secondary-button compact-button" type="button" onClick={props.onRetry} disabled={props.retrying}>{props.retrying ? "重新提交中…" : "重新提交任务"}</button>}</section>;
 }

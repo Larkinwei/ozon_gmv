@@ -390,6 +390,15 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
       throw error;
     }
   });
+  app.post("/api/selection/resell/tasks/:id/stock", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    try {
+      return reply.code(202).send(await resell.setTaskStock(id));
+    } catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(409).send({ error: "RESELL_STOCK_FAILED", message: error.message, issues: error.errors });
+      throw error;
+    }
+  });
   app.delete("/api/selection/resell/tasks/:id", { preHandler: requireSession }, async (request, reply) => {
     const { id } = idParamsSchema.parse(request.params);
     try {
@@ -470,6 +479,15 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
       return reply.code(202).send(await resell.retryTask(id));
     } catch (error) {
       if (error instanceof ResellValidationError) return reply.code(409).send({ error: "PUBLISH_RETRY_FAILED", message: error.message, issues: error.errors });
+      throw error;
+    }
+  });
+  app.post("/api/selection/publish/tasks/:id/stock", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    try {
+      return reply.code(202).send(await resell.setTaskStock(id));
+    } catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(409).send({ error: "PUBLISH_STOCK_FAILED", message: error.message, issues: error.errors });
       throw error;
     }
   });

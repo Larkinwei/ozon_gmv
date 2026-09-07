@@ -139,6 +139,37 @@ export const warehouseListResponseSchema = z.object({
   }).passthrough()).default([]),
 }).passthrough();
 
+/** Per-offer result returned by Ozon after a stock update or stock readback. */
+const stockResultItemSchema = z.object({
+  offer_id: z.union([z.string(), z.number()]).transform(String).nullish(),
+  product_id: z.union([z.string(), z.number()]).transform(String).nullish(),
+  warehouse_id: z.union([z.string(), z.number()]).transform(String).nullish(),
+  updated: z.boolean().nullish(),
+  errors: z.array(z.union([
+    z.string(),
+    z.object({ code: z.string().nullish(), message: z.string().nullish() }).passthrough(),
+  ])).default([]),
+  stock: z.union([z.number(), z.string()]).transform(Number).nullish(),
+  present: z.union([z.number(), z.string()]).transform(Number).nullish(),
+  reserved: z.union([z.number(), z.string()]).transform(Number).nullish(),
+}).passthrough();
+
+/** Response contract for `/v2/products/stocks`. */
+export const stockUpdateResponseSchema = z.object({
+  result: z.union([
+    z.object({ items: z.array(stockResultItemSchema).default([]) }).passthrough(),
+    z.array(stockResultItemSchema),
+  ]),
+}).passthrough();
+
+/** Response contract for the current FBS warehouse stock readback endpoint. */
+export const stockReadbackResponseSchema = z.object({
+  result: z.union([
+    z.object({ items: z.array(stockResultItemSchema).default([]) }).passthrough(),
+    z.array(stockResultItemSchema),
+  ]),
+}).passthrough();
+
 export const productInfoLimitResponseSchema = z.object({
   daily_create_remaining: z.number().int().nonnegative().nullish(),
   total_product_limit: z.number().int().nonnegative().nullish(),

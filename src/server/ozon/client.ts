@@ -13,6 +13,8 @@ import {
   productInfoListResponseSchema,
   productPicturesImportResponseSchema,
   productPicturesInfoResponseSchema,
+  stockReadbackResponseSchema,
+  stockUpdateResponseSchema,
   rolesResponseSchema,
   sellerInfoResponseSchema,
   warehouseListResponseSchema,
@@ -80,6 +82,22 @@ export interface OzonCategoryAttributeValue {
   name: string;
 }
 
+export interface OzonStockUpdateResult {
+  updated: boolean;
+  errors: string[];
+  offerId: string | null;
+  productId: string | null;
+  warehouseId: string | null;
+}
+
+export interface OzonProductStock {
+  offerId: string | null;
+  productId: string | null;
+  warehouseId: string | null;
+  stock: number | null;
+  reserved: number | null;
+}
+
 export class OzonApiError extends Error {
   public constructor(
     message: string,
@@ -145,6 +163,31 @@ function responseItems(value: unknown, key: "attributes" | "values"): unknown[] 
   if (Array.isArray(value)) return value;
   const record = asRecord(value);
   return record && Array.isArray(record[key]) ? record[key] : [];
+}
+
+function stockItems(response: { result: unknown }): Array<{
+  offer_id?: string | null;
+  product_id?: string | null;
+  warehouse_id?: string | null;
+  updated?: boolean | null;
+  errors?: Array<string | { code?: string | null; message?: string | null }>;
+  stock?: number | null;
+  present?: number | null;
+  reserved?: number | null;
+}> {
+  const result = response.result;
+  if (Array.isArray(result)) return result;
+  const record = asRecord(result);
+  return record && Array.isArray(record.items) ? record.items as Array<{
+    offer_id?: string | null;
+    product_id?: string | null;
+    warehouse_id?: string | null;
+    updated?: boolean | null;
+    errors?: Array<string | { code?: string | null; message?: string | null }>;
+    stock?: number | null;
+    present?: number | null;
+    reserved?: number | null;
+  }> : [];
 }
 
 export class OzonClient {
@@ -344,15 +387,67 @@ export class OzonClient {
     productId: string;
     warehouseId: string;
     stock: number;
-  }): Promise<void> {
-    await this.request("/v2/products/stocks", {
+  }): Promise<OzonStockUpdateResult> {
+    const response = await this.request("/v2/products/stocks", {
       stocks: [{
         offer_id: input.offerId,
         product_id: input.productId,
         warehouse_id: input.warehouseId,
         stock: input.stock,
       }],
-    }, null);
+    }, stockUpdateResponseSchema);
+    const item = stockItems(response)[0];
+    if (!item) {
+      throw new Error("Ozon 库存接口未返回目标商品结果");
+    }
+    const errors = (item.errors ?? []).flatMap((error) => {
+      if (typeof error === "string") return [error];
+      return [error.code, error.message].filter((value): value is string => Boolean(value));
+    });
+    const result: OzonStockUpdateResult = {
+      updated: item.updated === true,
+      errors,
+      offerId: item.offer_id ?? null,
+      productId: item.product_id ?? null,
+      warehouseId: item.warehouse_id ?? null,
+    };
+    const identityMismatch = [
+      result.offerId && result.offerId !== input.offerId ? `Offer ID 不匹配（返回 ${result.offerId}）` : null,
+      result.productId && result.productId !== input.productId ? `Product ID 不匹配（返回 ${result.productId}）` : null,
+      result.warehouseId && result.warehouseId !== input.warehouseId ? `仓库 ID 不匹配（返回 ${result.warehouseId}）` : null,
+    ].filter((message): message is string => Boolean(message));
+    if (!result.updated || result.errors.length > 0 || identityMismatch.length > 0) {
+      throw new Error(`Ozon 库存配置未确认：${[...identityMismatch, ...result.errors].join("；") || "updated=false"}`);
+    }
+    return result;
+  }
+
+  /** Reads the actual stock in the selected FBS/rFBS warehouse after an update. */
+  public async getFbsStockByWarehouse(input: {
+    offerId: string;
+    productId: string;
+    warehouseId: string;
+  }): Promise<OzonProductStock | null> {
+    const response = await this.request("/v2/product/info/stocks-by-warehouse/fbs", {
+      warehouse_id: Number(input.warehouseId) || input.warehouseId,
+      limit: 100,
+      offset: 0,
+    }, stockReadbackResponseSchema);
+    const item = stockItems(response).find((candidate) => {
+      const productMatches = !candidate.product_id || candidate.product_id === input.productId;
+      const warehouseMatches = !candidate.warehouse_id || candidate.warehouse_id === input.warehouseId;
+      const offerMatches = !candidate.offer_id || candidate.offer_id === input.offerId;
+      return productMatches && warehouseMatches && offerMatches;
+    });
+    if (!item) return null;
+    const stock = item.stock ?? item.present ?? null;
+    return {
+      offerId: item.offer_id ?? null,
+      productId: item.product_id ?? null,
+      warehouseId: item.warehouse_id ?? null,
+      stock: Number.isFinite(stock) ? stock : null,
+      reserved: item.reserved ?? null,
+    };
   }
 
   /** Iterates current cursor-paginated FBO v3 or FBS v4 posting pages. */

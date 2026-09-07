@@ -246,22 +246,27 @@ describe("Ozon Seller API client", () => {
       if (url.endsWith("/v1/product/import-by-sku")) {
         payload = { result: { task_id: 123, unmatched_sku_list: [] } };
       } else if (url.endsWith("/v1/product/import/info")) {
-        payload = { result: { items: [{ offer_id: "MY-1001", product_id: 456, status: "imported", errors: [] }] } };
+        payload = { result: { items: [{ offer_id: "MY-1001", product_id: 456, status: "processed", errors: [] }] } };
       } else if (url.endsWith("/v2/warehouse/list")) {
         payload = { warehouses: [{ warehouse_id: 7, name: "Москва", status: "active" }] };
       } else if (url.endsWith("/v4/product/info/limit")) {
         payload = { daily_create_remaining: 20, total_product_limit: 1000 };
+      } else if (url.endsWith("/v2/products/stocks")) {
+        payload = { result: { items: [{ offer_id: "MY-1001", product_id: "456", warehouse_id: "7", updated: true, errors: [] }] } };
+      } else if (url.endsWith("/v2/product/info/stocks-by-warehouse/fbs")) {
+        payload = { result: { items: [{ offer_id: "MY-1001", product_id: "456", warehouse_id: "7", stock: 2, reserved: 0 }] } };
       }
       return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
     const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
 
     await expect(client.importProductBySku({ sku: "1001", name: "商品", typeId: 123, descriptionCategoryId: 456, offerId: "MY-1001", price: "1299", currency: "RUB", vat: "0.2" })).resolves.toEqual({ taskId: "123", unmatchedSkuList: [] });
-    await expect(client.getProductImportInfo("123")).resolves.toEqual([{ offerId: "MY-1001", productId: "456", status: "imported", errors: [], warnings: [] }]);
+    await expect(client.getProductImportInfo("123")).resolves.toEqual([{ offerId: "MY-1001", productId: "456", status: "processed", errors: [], warnings: [] }]);
     await expect(client.getWarehouses()).resolves.toEqual([{ id: "7", name: "Москва", status: "active" }]);
     await expect(client.getProductInfoLimit()).resolves.toEqual({ dailyCreateRemaining: 20, totalProductLimit: 1000 });
     await expect(client.updateProductPrice({ offerId: "MY-1001", price: "1299", currency: "RUB", vat: "0.2" })).resolves.toBeUndefined();
-    await expect(client.updateProductStock({ offerId: "MY-1001", productId: "456", warehouseId: "7", stock: 2 })).resolves.toBeUndefined();
+    await expect(client.updateProductStock({ offerId: "MY-1001", productId: "456", warehouseId: "7", stock: 2 })).resolves.toMatchObject({ updated: true, offerId: "MY-1001" });
+    await expect(client.getFbsStockByWarehouse({ offerId: "MY-1001", productId: "456", warehouseId: "7" })).resolves.toMatchObject({ stock: 2, warehouseId: "7" });
 
     expect(requests.map((request) => request.url)).toEqual([
       "https://api-seller.ozon.ru/v1/product/import-by-sku",
@@ -270,9 +275,11 @@ describe("Ozon Seller API client", () => {
       "https://api-seller.ozon.ru/v4/product/info/limit",
       "https://api-seller.ozon.ru/v1/product/import/prices",
       "https://api-seller.ozon.ru/v2/products/stocks",
+      "https://api-seller.ozon.ru/v2/product/info/stocks-by-warehouse/fbs",
     ]);
     expect(requests[0]?.body).toMatchObject({ items: [{ type_id: 123, description_category_id: 456 }] });
-    expect(requests.at(-1)?.body).toMatchObject({ stocks: [{ offer_id: "MY-1001", product_id: "456", warehouse_id: "7", stock: 2 }] });
+    expect(requests.find((request) => request.url.endsWith("/v2/products/stocks"))?.body).toMatchObject({ stocks: [{ offer_id: "MY-1001", product_id: "456", warehouse_id: "7", stock: 2 }] });
+    expect(requests.find((request) => request.url.endsWith("/v2/product/info/stocks-by-warehouse/fbs"))?.body).toEqual({ warehouse_id: 7, limit: 100, offset: 0 });
   });
 
   it("replaces and verifies the complete ordered product image list", async () => {
@@ -294,5 +301,15 @@ describe("Ozon Seller API client", () => {
       body: { product_id: 456, images: ["https://cdn.example.com/main.jpg", "https://cdn.example.com/sub.jpg"] },
     });
     expect(requests[1]).toMatchObject({ url: "https://api-seller.ozon.ru/v2/product/pictures/info", body: { product_id: [456] } });
+  });
+
+  it("rejects an HTTP 200 stock update that Ozon did not apply", async () => {
+    const fetchImplementation = (async () => new Response(JSON.stringify({
+      result: { items: [{ offer_id: "MY-1001", product_id: "456", warehouse_id: "7", updated: false, errors: [{ code: "WAREHOUSE_NOT_FOUND", message: "仓库不存在" }] }] },
+    }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    await expect(client.updateProductStock({ offerId: "MY-1001", productId: "456", warehouseId: "7", stock: 2 }))
+      .rejects.toThrow("WAREHOUSE_NOT_FOUND");
   });
 });

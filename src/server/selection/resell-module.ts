@@ -8,6 +8,7 @@ import type {
   ResellPreflightView,
   ResellPackageDimensions,
   ResellRequiredAttribute,
+  ResellStockVerification,
   ResellSourceView,
   ResellStatus,
   ResellTaskDetailView,
@@ -27,8 +28,9 @@ import { ResellImageService } from "./resell-image-service";
 import { hasPublishAttributeValue } from "../../shared/publish-attributes";
 
 const DEFAULT_STOCK = 2;
-const MAX_IMPORT_POLLS = 15;
-const IMPORT_POLL_INTERVAL_MS = 2_000;
+const PENDING_IMPORT_POLL_INTERVAL_MS = 30_000;
+const MAX_STOCK_POLLS = 6;
+const STOCK_POLL_INTERVAL_MS = 2_000;
 
 interface ResellTaskRow {
   id: string;
@@ -77,6 +79,11 @@ interface CategoryTreeCacheEntry {
 const DEFAULT_CATEGORY_TREE_LANGUAGE = "DEFAULT";
 const SIMPLIFIED_CHINESE_CATEGORY_TREE_LANGUAGE = "ZH_HANS";
 
+// Seller bridge stores primary/secondary image URLs in these attributes. They
+// are sent through the dedicated pictures endpoint, never as product fields.
+const IMAGE_ATTRIBUTE_IDS = new Set([4194, 4195]);
+const BARCODE_ATTRIBUTE_ID = 7822;
+
 export interface ResellTaskListQuery {
   page: number;
   pageSize: number;
@@ -102,8 +109,8 @@ export class ResellValidationError extends Error {
   }
 }
 
-function isSuccessfulImportStatus(status: string): boolean {
-  return ["imported", "processed", "success", "created"].includes(status.toLowerCase());
+function isProcessedImportStatus(status: string): boolean {
+  return status.toLowerCase() === "processed";
 }
 
 function isFailedImportStatus(status: string): boolean {
@@ -137,6 +144,22 @@ function isPositiveMoney(value: string): boolean {
 
 function isPositiveTypeId(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+/** Normalizes a real EAN/UPC/GTIN barcode and rejects synthetic OZN values. */
+export function normalizeProductBarcode(value: string | null | undefined): string | null {
+  const barcode = String(value ?? "").trim();
+  if (!/^\d+$/.test(barcode) || /^OZN\d+$/i.test(barcode) || ![8, 12, 13, 14].includes(barcode.length)) {
+    return null;
+  }
+  const digits = barcode.split("").map(Number);
+  const checkDigit = digits.pop();
+  if (checkDigit === undefined) return null;
+  const checksum = digits.reduce((sum, digit, index) => {
+    const fromRight = digits.length - index;
+    return sum + digit * (fromRight % 2 === 1 ? 3 : 1);
+  }, 0);
+  return (10 - (checksum % 10)) % 10 === checkDigit ? barcode : null;
 }
 
 /** Identifies the generic and category-specific Ozon brand attributes. */
@@ -225,6 +248,7 @@ export function normalizeOzonAttributes(attributes: Record<string, unknown> | un
     if (value && typeof value === "object" && !Array.isArray(value) && "values" in value) {
       const payload = value as Record<string, unknown>;
       const id = Number(payload.id ?? key.replace(/^attribute_/, ""));
+      if (IMAGE_ATTRIBUTE_IDS.has(id) || id === BARCODE_ATTRIBUTE_ID) continue;
       if (!Number.isInteger(id) || id <= 0 || !hasPublishAttributeValue(payload.values)) continue;
       const current = byId.get(id);
       const values = Array.isArray(payload.values) ? payload.values : [payload.values];
@@ -234,6 +258,7 @@ export function normalizeOzonAttributes(attributes: Record<string, unknown> | un
       continue;
     }
     const id = Number(key.replace(/^attribute_/, ""));
+    if (IMAGE_ATTRIBUTE_IDS.has(id) || id === BARCODE_ATTRIBUTE_ID) continue;
     if (!Number.isInteger(id) || id <= 0 || !hasPublishAttributeValue(value)) continue;
     const definition = definitionsById.get(String(id));
     const values = Array.isArray(value) ? value : [value];
@@ -379,6 +404,16 @@ function findTypeLeaf(nodes: OzonDescriptionCategoryNode[], typeId: number): Cat
 }
 
 function taskView(row: ResellTaskRow, store: StoreRecord): ResellTaskView {
+  let verification: ResellStockVerification | undefined;
+  if (row.source_snapshot_json) {
+    try {
+      const snapshot = JSON.parse(row.source_snapshot_json) as ResellSourceView;
+      verification = snapshot.stockVerification;
+    } catch {
+      // Historical snapshots are user data; a malformed optional field must
+      // not prevent the task history from rendering.
+    }
+  }
   return {
     id: row.id,
     sourceType: row.source_type,
@@ -401,6 +436,7 @@ function taskView(row: ResellTaskRow, store: StoreRecord): ResellTaskView {
     createdAt: new Date(row.created_at_ms).toISOString(),
     updatedAt: new Date(row.updated_at_ms).toISOString(),
     completedAt: row.completed_at_ms ? new Date(row.completed_at_ms).toISOString() : null,
+    ...(verification ? { actualStock: verification.actual, stockCheckedAt: verification.checkedAt } : {}),
   };
 }
 
@@ -416,6 +452,9 @@ function dayAfterEndMs(day: string): number {
 export class ResellModule {
   private readonly fetchImplementation: typeof fetch;
   private readonly categoryTreeCache = new Map<string, CategoryTreeCacheEntry>();
+  private readonly activeTaskIds = new Set<string>();
+  private pendingImportTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingImportPollRunning = false;
 
   public constructor(
     private readonly config: AppConfig,
@@ -426,6 +465,21 @@ export class ResellModule {
     options: ResellModuleOptions = {},
   ) {
     this.fetchImplementation = options.fetchImplementation ?? fetch;
+  }
+
+  /** Starts the background continuation loop for Ozon imports that are still pending. */
+  public start(): void {
+    if (this.pendingImportTimer) return;
+    void this.pollPendingImports();
+    this.pendingImportTimer = setInterval(() => void this.pollPendingImports(), PENDING_IMPORT_POLL_INTERVAL_MS);
+    this.pendingImportTimer.unref();
+  }
+
+  /** Stops the pending-import loop during a graceful service shutdown. */
+  public stop(): void {
+    if (!this.pendingImportTimer) return;
+    clearInterval(this.pendingImportTimer);
+    this.pendingImportTimer = null;
   }
 
   /** Returns the newest MY snapshot used to seed the follow-sale form. */
@@ -453,12 +507,15 @@ export class ResellModule {
 
   /** Normalizes an imported/plugin snapshot into the same source contract as MY data. */
   public getSourceFromSnapshot(snapshot: ResellSourceView, sourceType: PublishSourceType): ResellSourceView {
+    const barcode = normalizeProductBarcode(snapshot.barcode);
+    const { barcode: _ignoredBarcode, ...snapshotWithoutBarcode } = snapshot;
     return {
-      ...snapshot,
+      ...snapshotWithoutBarcode,
       sourceType,
       typeId: isPositiveTypeId(snapshot.typeId) ? snapshot.typeId : null,
       descriptionCategoryId: isPositiveTypeId(snapshot.descriptionCategoryId) ? snapshot.descriptionCategoryId : null,
       images: normalizeSourceImages(snapshot.images),
+      ...(barcode ? { barcode } : {}),
     };
   }
 
@@ -668,9 +725,30 @@ export class ResellModule {
     if (resolvedSource && attributes) {
       resolvedSource = { ...resolvedSource, attributes };
     }
+    // Barcode attribute 7822 is submitted as the top-level barcode field. Keep
+    // its required-state in sync with the validated real barcode so a stale
+    // attribute entry cannot either bypass validation or create a duplicate.
+    const barcodeAttributeValue = attributeValue(rawAttributes, BARCODE_ATTRIBUTE_ID);
+    const barcodeFromAttribute = typeof barcodeAttributeValue === "object" && barcodeAttributeValue !== null
+      ? (() => {
+        const record = barcodeAttributeValue as Record<string, unknown>;
+        return normalizeProductBarcode(String(record.value ?? record.barcode ?? ""));
+      })()
+      : normalizeProductBarcode(typeof barcodeAttributeValue === "string" || typeof barcodeAttributeValue === "number"
+        ? String(barcodeAttributeValue)
+        : undefined);
+    const validatedBarcode = normalizeProductBarcode(input.barcode)
+      ?? normalizeProductBarcode(resolvedSource?.barcode)
+      ?? barcodeFromAttribute;
     const requiredAttributes = requiredAttributeViews(categoryAttributes, attributes, dictionaryValues);
     const missingRequiredFields = requiredAttributes
-      .filter((attribute) => !hasPublishAttributeValue(attribute.value))
+      .filter((attribute) => {
+        if (attribute.id === BARCODE_ATTRIBUTE_ID) {
+          attribute.value = validatedBarcode;
+          return !validatedBarcode;
+        }
+        return !hasPublishAttributeValue(attribute.value);
+      })
       .map((attribute) => `${attribute.name}（属性 ID ${attribute.id}）`);
     const missingDimensions = missingPackageDimensions(packageDimensions ?? undefined);
     const quickCreateAllowed = input.mode === "quick" && missingRequiredFields.length === 0 && missingDimensions.length === 0;
@@ -723,9 +801,6 @@ export class ResellModule {
       result = await this.preflight(effectiveInput);
     }
     const errors = [...result.errors];
-    if (!effectiveInput.warehouseId.trim()) {
-      errors.push("请选择仓库");
-    }
     if (errors.length > 0) {
       throw new ResellValidationError(errors);
     }
@@ -752,7 +827,7 @@ export class ResellModule {
     const taskSource: ResellSourceView = {
       ...result.source,
       ...(effectiveInput.packageDimensions ? { packageDimensions: effectiveInput.packageDimensions } : {}),
-      ...(effectiveInput.barcode ? { barcode: effectiveInput.barcode } : {}),
+      ...(normalizeProductBarcode(effectiveInput.barcode) ? { barcode: normalizeProductBarcode(effectiveInput.barcode)! } : {}),
       ...(effectiveInput.attributes ? { attributes: effectiveInput.attributes } : {}),
     };
     this.database.transaction(() => {
@@ -855,9 +930,6 @@ export class ResellModule {
     if (!["failed", "needs_input", "moderating"].includes(row.status)) {
       throw new ResellValidationError(["当前任务状态不允许重试"]);
     }
-    if (row.product_id) {
-      throw new ResellValidationError(["商品已在 Ozon 创建，请先修正已有商品，不要重复创建"]);
-    }
     const source = row.source_snapshot_json
       ? JSON.parse(row.source_snapshot_json) as ResellSourceView
       : this.getSource(row.source_sku);
@@ -883,7 +955,7 @@ export class ResellModule {
       ...(row.description ? { description: row.description } : {}),
       ...(attributes ? { attributes } : {}),
       ...(source.packageDimensions ? { packageDimensions: source.packageDimensions } : {}),
-      ...(source.barcode ? { barcode: source.barcode } : {}),
+      ...(normalizeProductBarcode(source.barcode) ? { barcode: normalizeProductBarcode(source.barcode)! } : {}),
       images: this.images.listTaskImageUrls(id).map((url, position) => ({ sourceUrl: url, position })),
     };
     let retryPreflight = await this.preflight(retryInput);
@@ -891,7 +963,6 @@ export class ResellModule {
       retryPreflight = await this.preflight({ ...retryInput, currency: retryPreflight.contractCurrency });
     }
     const retryErrors = [...retryPreflight.errors];
-    if (!retryInput.warehouseId.trim()) retryErrors.push("请选择仓库");
     if (retryErrors.length > 0) {
       throw new ResellValidationError(retryErrors);
     }
@@ -920,6 +991,39 @@ export class ResellModule {
   }
 
   private async runTask(id: string): Promise<void> {
+    if (this.activeTaskIds.has(id)) return;
+    this.activeTaskIds.add(id);
+    try {
+      await this.runTaskInternal(id);
+    } finally {
+      this.activeTaskIds.delete(id);
+    }
+  }
+
+  /** Continues tasks whose Ozon import request was accepted but not processed yet. */
+  private async pollPendingImports(): Promise<void> {
+    if (this.pendingImportPollRunning) return;
+    this.pendingImportPollRunning = true;
+    try {
+      const rows = this.database.prepare(`SELECT id FROM resell_tasks
+        WHERE status = 'pending' AND ozon_task_id IS NOT NULL AND product_id IS NULL`).all() as Array<{ id: string }>;
+      await Promise.all(rows.map((row) => this.runTask(row.id).catch((error: unknown) => {
+        const message = formatError(error);
+        // A transient network/proxy/category lookup failure must not discard a
+        // valid Ozon task. Keep it pending so the next scheduled pass retries
+        // the existing Ozon task instead of creating a duplicate product.
+        if (message.includes("Ozon 返回商品状态：")) {
+          this.updateTask(row.id, "failed", message);
+        } else {
+          this.updateTask(row.id, "pending", `后台查询 Ozon 导入失败，稍后自动重试：${message}`);
+        }
+      })));
+    } finally {
+      this.pendingImportPollRunning = false;
+    }
+  }
+
+  private async runTaskInternal(id: string): Promise<void> {
     const row = this.readTask(id);
     const store = await this.stores.findById(row.store_id);
     let source = row.source_snapshot_json
@@ -973,41 +1077,50 @@ export class ResellModule {
       weight: Number(packageDimensions.weight.replace(",", ".")),
       weight_unit: packageDimensions.weightUnit,
     } : {};
-    const result = row.mode === "quick" && row.source_type === "follow_sell"
-      ? await client.importProductBySku({ sku: row.source_sku, name: row.title ?? source.productName, typeId: resolvedTypeId, descriptionCategoryId, offerId: row.target_offer_id, price: row.price, ...(row.old_price ? { oldPrice: row.old_price } : {}), currency: taskCurrency, vat: row.vat })
-      : await client.importProduct({
-        type_id: resolvedTypeId,
-        ...(descriptionCategoryId ? { description_category_id: descriptionCategoryId } : {}),
-        offer_id: row.target_offer_id,
-        name: row.title ?? source.productName,
-        ...(row.description ? { description: row.description } : {}),
-        price: row.price,
-        ...(row.old_price ? { old_price: row.old_price } : {}),
-        currency_code: taskCurrency,
-        vat: row.vat,
-        ...(source.barcode ? { barcode: source.barcode } : {}),
-        ...(row.mode === "edit" ? dimensionsPayload : {}),
-        ...(imageUrls.length > 0 ? { images: imageUrls } : {}),
-        ...(ozonAttributes.length > 0 ? { attributes: ozonAttributes } : {}),
-      });
-    if (result.unmatchedSkuList.length > 0) {
-      throw new Error(`Ozon 无法匹配 SKU：${result.unmatchedSkuList.join(", ")}`);
-    }
-    this.setTaskOzonId(id, result.taskId);
-    this.updateTask(id, "pending", null);
-
-    const imported = await this.waitForImport(client, result.taskId);
-    const importedItem = imported.find((item) => item.offerId === row.target_offer_id) ?? imported[0];
+    // A task with an existing Product ID is retried in-place. Re-importing the
+    // SKU would create a second draft, so only image/price/stock steps run.
+    const importedItem = row.product_id
+      ? { offerId: row.target_offer_id, productId: row.product_id, status: "processed", errors: [], warnings: [] }
+      : row.ozon_task_id
+        ? await (async () => {
+          const imported = await this.waitForImport(client, row.ozon_task_id!, row.target_offer_id);
+          return imported.find((item) => item.offerId === row.target_offer_id) ?? imported[0];
+        })()
+      : await (async () => {
+        const result = row.mode === "quick" && row.source_type === "follow_sell"
+          ? await client.importProductBySku({ sku: row.source_sku, name: row.title ?? source.productName, typeId: resolvedTypeId, descriptionCategoryId, offerId: row.target_offer_id, price: row.price, ...(row.old_price ? { oldPrice: row.old_price } : {}), currency: taskCurrency, vat: row.vat })
+          : await client.importProduct({
+            type_id: resolvedTypeId,
+            ...(descriptionCategoryId ? { description_category_id: descriptionCategoryId } : {}),
+            offer_id: row.target_offer_id,
+            name: row.title ?? source.productName,
+            ...(row.description ? { description: row.description } : {}),
+            price: row.price,
+            ...(row.old_price ? { old_price: row.old_price } : {}),
+            currency_code: taskCurrency,
+            vat: row.vat,
+            ...(normalizeProductBarcode(source.barcode) ? { barcode: normalizeProductBarcode(source.barcode)! } : {}),
+            ...(row.mode === "edit" ? dimensionsPayload : {}),
+            ...(ozonAttributes.length > 0 ? { attributes: ozonAttributes } : {}),
+          });
+        if (result.unmatchedSkuList.length > 0) {
+          throw new Error(`Ozon 无法匹配 SKU：${result.unmatchedSkuList.join(", ")}`);
+        }
+        this.setTaskOzonId(id, result.taskId);
+        this.updateTask(id, "pending", null);
+        const imported = await this.waitForImport(client, result.taskId, row.target_offer_id);
+        return imported.find((item) => item.offerId === row.target_offer_id) ?? imported[0];
+      })();
     if (!importedItem) {
-      this.updateTask(id, "pending", "Ozon 仍在处理商品导入，请稍后刷新或重试");
+      this.updateTask(id, "pending", "Ozon 仍在处理商品导入，系统每 30 秒自动查询，完成后继续上传图片");
       return;
     }
     const blockingErrors = importedItem.errors.filter((error) => !error.toLowerCase().includes("warning"));
     if (isFailedImportStatus(importedItem.status) || blockingErrors.length > 0) {
       throw new Error(blockingErrors.join("；") || importedItem.errors.join("；") || `Ozon 返回商品状态：${importedItem.status}`);
     }
-    if (!isSuccessfulImportStatus(importedItem.status)) {
-      this.updateTask(id, "pending", `Ozon 返回商品状态：${importedItem.status}`);
+    if (!isProcessedImportStatus(importedItem.status)) {
+      this.updateTask(id, "pending", `Ozon 返回商品状态：${importedItem.status}；系统每 30 秒自动查询，完成后继续上传图片`);
       return;
     }
     if (!importedItem.productId) {
@@ -1022,28 +1135,79 @@ export class ResellModule {
     }
     this.updateTask(id, "setting_price", null);
     await client.updateProductPrice({ offerId: row.target_offer_id, price: row.price, ...(row.old_price ? { oldPrice: row.old_price } : {}), currency: taskCurrency, vat: row.vat });
+    if (row.fulfillment_mode === "FBO") {
+      this.updateTask(id, "moderating", "FBO 库存需入 Ozon 仓库后产生，未调用卖家库存接口");
+      return;
+    }
+    await this.configureStock(id, row, client, importedItem.productId);
+  }
+
+  /**
+   * Configures and verifies FBS/rFBS stock independently from product images
+   * and pricing. A stock failure keeps the published product auditable and
+   * allows the operator to retry inventory later without creating a product.
+   */
+  private async configureStock(id: string, row: ResellTaskRow, client: OzonClient, productId: string): Promise<void> {
     this.updateTask(id, "setting_stock", null);
     try {
-      await client.updateProductStock({ offerId: row.target_offer_id, productId: importedItem.productId, warehouseId: row.warehouse_id, stock: row.stock });
+      await client.updateProductStock({ offerId: row.target_offer_id, productId, warehouseId: row.warehouse_id, stock: row.stock });
+      this.updateTask(id, "setting_stock", "Ozon 已接受库存请求，正在回读目标仓库实际库存");
+      const actualStock = await this.waitForStockReadback(client, {
+        offerId: row.target_offer_id,
+        productId,
+        warehouseId: row.warehouse_id,
+        expectedStock: row.stock,
+      });
+      this.updateTaskStockVerification(id, {
+        requested: row.stock,
+        actual: actualStock,
+        warehouseId: row.warehouse_id,
+        checkedAt: new Date().toISOString(),
+      });
+      if (actualStock !== row.stock) {
+        this.updateTask(id, "stock_pending", `Ozon 已接受库存请求，但目标仓库实际库存仍为 ${actualStock ?? 0}，可稍后重新设置库存`);
+        return;
+      }
     } catch (error) {
-      const message = formatError(error);
-      this.updateTask(id, message.includes("TAGGED") ? "moderating" : "failed", message);
+      this.updateTask(id, "stock_pending", `商品和图片已完成，库存稍后设置：${formatError(error)}`);
       return;
     }
     this.updateTask(id, "sellable", null);
   }
 
-  private async waitForImport(client: OzonClient, taskId: string): Promise<OzonProductImportItemResult[]> {
-    let latest: OzonProductImportItemResult[] = [];
-    for (let attempt = 0; attempt < MAX_IMPORT_POLLS; attempt += 1) {
-      latest = await client.getProductImportInfo(taskId);
-      const item = latest[0];
-      if (item && (isSuccessfulImportStatus(item.status) || isFailedImportStatus(item.status))) {
-        return latest;
-      }
-      await wait(IMPORT_POLL_INTERVAL_MS);
+  /** Re-applies inventory for a created FBS/rFBS product without re-importing it. */
+  public async setTaskStock(id: string): Promise<ResellTaskView> {
+    const row = this.readTaskOrNull(id);
+    if (!row) throw new ResellValidationError(["跟卖任务不存在"]);
+    if (!row.product_id) throw new ResellValidationError(["商品尚未获得 Product ID，暂时不能单独设置库存"]);
+    if (row.fulfillment_mode === "FBO") throw new ResellValidationError(["FBO 库存需入 Ozon 仓库后产生，不能通过卖家库存接口设置"]);
+    if (!row.warehouse_id.trim()) throw new ResellValidationError(["请选择目标仓库后再设置库存"]);
+    const store = await this.stores.findById(row.store_id);
+    if (!store) throw new ResellValidationError(["目标店铺不存在"]);
+    await this.configureStock(id, row, this.clientFor(store), row.product_id);
+    return taskView(this.readTask(id), store);
+  }
+
+  /** Reads the requested target offer once; the 30-second scheduler retries pending imports. */
+  private async waitForImport(client: OzonClient, taskId: string, targetOfferId: string): Promise<OzonProductImportItemResult[]> {
+    return client.getProductImportInfo(taskId);
+  }
+
+  /** Polls Ozon until the selected FBS/rFBS warehouse reflects the requested stock. */
+  private async waitForStockReadback(client: OzonClient, input: {
+    offerId: string;
+    productId: string;
+    warehouseId: string;
+    expectedStock: number;
+  }): Promise<number | null> {
+    let actual: number | null = null;
+    for (let attempt = 0; attempt < MAX_STOCK_POLLS; attempt += 1) {
+      const result = await client.getFbsStockByWarehouse(input);
+      actual = result?.stock ?? null;
+      if (actual === input.expectedStock) return actual;
+      if (attempt + 1 < MAX_STOCK_POLLS) await wait(STOCK_POLL_INTERVAL_MS);
     }
-    return latest;
+    return actual;
   }
 
   private validateInput(input: ResellTaskInput, store: StoreRecord | null, source: ResellSourceView | null): string[] {
@@ -1058,6 +1222,9 @@ export class ResellModule {
     if (!isPositiveMoney(input.price)) errors.push("销售价必须是大于 0 的数字");
     if (input.oldPrice && !isPositiveMoney(input.oldPrice)) errors.push("划线价必须是大于 0 的数字");
     if (!/^[A-Z]{3}$/.test(input.currency)) errors.push("币种必须是 3 位大写代码");
+    if (input.barcode?.trim() && !normalizeProductBarcode(input.barcode)) {
+      errors.push("当前条码不是有效商品条码，不能使用 OZN + SKU 代替；请填写真实 EAN/GTIN/UPC，或按目标类目规则留空");
+    }
     const vat = Number(input.vat.replace(",", "."));
     if (!input.vat.trim()) errors.push("VAT 不能为空");
     else if (!Number.isFinite(vat) || vat < 0 || vat > 1) errors.push("VAT 必须是 0 到 1 之间的数字，例如 0 或 0.2");
@@ -1182,6 +1349,9 @@ export class ResellModule {
   }
 
   private updateTask(id: string, status: ResellStatus, error: string | null): void {
+    const current = this.database.prepare("SELECT status, last_error FROM resell_tasks WHERE id = ?")
+      .get(id) as { status: ResellStatus; last_error: string | null } | undefined;
+    if (current?.status === status && current.last_error === error) return;
     const now = Date.now();
     this.database.transaction(() => {
       this.database.prepare("UPDATE resell_tasks SET status = ?, last_error = ?, updated_at_ms = ?, completed_at_ms = ? WHERE id = ?")
@@ -1193,6 +1363,20 @@ export class ResellModule {
   private updateTaskSourceSnapshot(id: string, source: ResellSourceView): void {
     this.database.prepare("UPDATE resell_tasks SET source_snapshot_json = ?, updated_at_ms = ? WHERE id = ?")
       .run(JSON.stringify(source), Date.now(), id);
+  }
+
+  /** Persists the latest requested/actual warehouse stock comparison in the task snapshot. */
+  private updateTaskStockVerification(id: string, verification: ResellStockVerification): void {
+    const row = this.readTask(id);
+    let source: ResellSourceView = this.emptySource(row.source_sku, row.source_type);
+    if (row.source_snapshot_json) {
+      try {
+        source = JSON.parse(row.source_snapshot_json) as ResellSourceView;
+      } catch {
+        // Preserve the task even when a legacy snapshot is malformed.
+      }
+    }
+    this.updateTaskSourceSnapshot(id, { ...source, stockVerification: verification });
   }
 
   private recordEvent(taskId: string, status: string, message: string | null): void {

@@ -611,6 +611,7 @@ export const resellStatuses = [
   "setting_images",
   "setting_price",
   "setting_stock",
+  "stock_pending",
   "moderating",
   "sellable",
   "needs_input",
@@ -660,6 +661,15 @@ export interface ResellSourceView {
   monthlyUnits: number;
   monthlySales: Money;
   captureDay: string;
+  /** Last seller-warehouse stock readback, when the fulfillment mode supports it. */
+  stockVerification?: ResellStockVerification;
+}
+
+export interface ResellStockVerification {
+  requested: number;
+  actual: number | null;
+  warehouseId: string;
+  checkedAt: string;
 }
 
 export interface ResellPackageDimensions {
@@ -762,6 +772,9 @@ export interface ResellTaskView {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /** Actual Ozon warehouse stock confirmed after the update request. */
+  actualStock?: number | null;
+  stockCheckedAt?: string | null;
 }
 
 export interface ResellTaskListItem extends ResellTaskView {
