@@ -10,6 +10,7 @@ import { StoreFormDialog, type StoreFormValue } from "../components/StoreFormDia
 import { HealthIcon } from "../components/StatusPill";
 import { formatBeijingTime, syncHealthLabel } from "../format";
 import { pickAvailableStoreColor } from "../store-colors";
+import { isStoreSynchronizing } from "../store-sync-status";
 
 interface Notice {
   tone: "success" | "error";
@@ -22,13 +23,6 @@ type SyncDays = (typeof syncDayOptions)[number];
 type StoreAction =
   | { id: string; action: "test" }
   | { id: string; action: "sync"; days: SyncDays };
-
-function isStoreSynchronizing(store: StoreView): boolean {
-  if (!store.lastSyncStartedAt) {
-    return false;
-  }
-  return !store.lastSyncFinishedAt || store.lastSyncStartedAt > store.lastSyncFinishedAt;
-}
 
 export default function StoresPage(): React.JSX.Element {
   const queryClient = useQueryClient();
@@ -61,7 +55,7 @@ export default function StoresPage(): React.JSX.Element {
         name: value.name,
         color: value.color,
         fulfillmentModes: value.fulfillmentModes,
-        ...(value.apiKey ? { apiKey: value.apiKey } : {}),
+        ...(value.apiToken ? { apiToken: value.apiToken } : value.apiKey ? { apiKey: value.apiKey } : {}),
       }),
     onSuccess: async () => {
       setEditingStore(undefined);
@@ -99,10 +93,16 @@ export default function StoresPage(): React.JSX.Element {
       updateMutation.mutate({ id: editingStore.id, value });
       return;
     }
+    if (value.platform === "wildberries") {
+      if (!value.apiToken) return;
+      createMutation.mutate({ platform: "wildberries", name: value.name, apiToken: value.apiToken, color: value.color });
+      return;
+    }
     if (!value.apiKey) {
       return;
     }
     createMutation.mutate({
+      platform: "ozon",
       name: value.name,
       clientId: value.clientId,
       apiKey: value.apiKey,
@@ -128,7 +128,7 @@ export default function StoresPage(): React.JSX.Element {
           <div>
             <p className="eyebrow">STORE CONNECTIONS</p>
             <h2>店铺管理</h2>
-            <p>管理 Seller API 密钥、履约模式、同步状态和连接有效期。</p>
+            <p>管理 Ozon 与 Wildberries 的 API 凭证、同步状态和连接有效期。</p>
           </div>
           <button className="primary-button" type="button" onClick={() => setEditingStore(null)}>
             <Plus size={18} aria-hidden="true" /> 连接新店铺
@@ -139,7 +139,7 @@ export default function StoresPage(): React.JSX.Element {
         {connectionResult && (
           <section className="webhook-result" aria-labelledby="store-created-title">
             <div><p className="eyebrow">LOCAL POLLING</p><h3 id="store-created-title">店铺已创建</h3></div>
-            <p>系统正在后台回填最近 90 天订单；之后 FBO、FBS 与 rFBS 均每 60 秒增量同步。</p>
+            <p>系统正在后台回填最近 90 天数据；之后会按平台的同步周期增量同步。</p>
           </section>
         )}
 
@@ -176,8 +176,8 @@ export default function StoresPage(): React.JSX.Element {
                         && actionMutation.variables.id === store.id;
                       return (
                         <tr key={store.id}>
-                          <td><div className="store-identity"><span style={{ background: store.color }} /><div><strong>{store.name}</strong><small>Client ID · {store.clientId}</small></div></div></td>
-                          <td><div className="mode-tags">{store.fulfillmentModes.map((mode) => <span key={mode}>{mode}</span>)}</div></td>
+                          <td><div className="store-identity"><span style={{ background: store.color }} /><div><strong>{store.name}</strong><small>{store.platform === "wildberries" ? "Wildberries" : `Ozon · Client ID ${store.clientId}`}</small></div></div></td>
+                          <td><div className="mode-tags">{store.platform === "wildberries" ? <span>统计/财务只读</span> : store.fulfillmentModes.map((mode) => <span key={mode}>{mode}</span>)}</div></td>
                           <td>
                             {synchronizing ? (
                               <div className="health-label health-label--syncing"><RefreshCw className="sync-spinner" size={16} aria-hidden="true" /><div><strong>正在同步</strong><small>后台拉取订单中</small></div></div>
@@ -185,7 +185,7 @@ export default function StoresPage(): React.JSX.Element {
                               <div className={`health-label health-label--${store.syncHealth}`}><HealthIcon health={store.syncHealth} /><div><strong>{syncHealthLabel(store.syncHealth)}</strong><small>{store.lastSyncFinishedAt ? `${formatBeijingTime(store.lastSyncFinishedAt, "MM-dd HH:mm:ss")} 更新` : "尚未同步"}</small></div></div>
                             )}
                           </td>
-                          <td>{store.apiKeyExpiresAt ? formatBeijingTime(store.apiKeyExpiresAt, "yyyy-MM-dd") : <span className="muted">以 Ozon 控制台为准</span>}</td>
+                          <td>{store.apiKeyExpiresAt ? formatBeijingTime(store.apiKeyExpiresAt, "yyyy-MM-dd") : <span className="muted">以平台控制台为准</span>}</td>
                           <td><label className="switch"><input type="checkbox" checked={store.enabled} onChange={(event) => toggleMutation.mutate({ id: store.id, enabled: event.target.checked })} aria-label={`${store.name}启用状态`} /><span /></label></td>
                           <td><div className="table-actions">
                             <button type="button" onClick={() => actionMutation.mutate({ id: store.id, action: "test" })} aria-label={`测试 ${store.name} 连接`}><KeyRound size={17} /> 测试</button>
@@ -201,7 +201,7 @@ export default function StoresPage(): React.JSX.Element {
             </section>
           </>
         )}
-        <p className="admin-footnote"><Unplug size={15} /> 停用店铺不会删除历史订单，也不会再发起新的 Ozon API 请求。</p>
+        <p className="admin-footnote"><Unplug size={15} /> 停用店铺不会删除历史订单，也不会再发起新的平台 API 请求。</p>
       </main>
 
       {editingStore !== undefined && (

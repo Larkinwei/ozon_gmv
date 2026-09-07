@@ -146,8 +146,9 @@ export function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawerProps):
             </section>
 
             <dl className="order-detail-meta">
+              <div><dt>平台</dt><dd>{order.platform === "wildberries" ? "Wildberries" : "Ozon"}</dd></div>
               <div><dt>发货单号</dt><dd>{order.postingNumber}</dd></div>
-              <div><dt>Ozon 订单号</dt><dd>{order.orderNumber}</dd></div>
+              <div><dt>{order.platform === "wildberries" ? "WB 订单号" : "Ozon 订单号"}</dt><dd>{order.orderNumber}</dd></div>
               <div><dt>下单时间</dt><dd>{formatBeijingTime(order.orderAt, "yyyy-MM-dd HH:mm:ss")}</dd></div>
               <div><dt>履约模式</dt><dd>{order.fulfillment}</dd></div>
               <div><dt>订单状态</dt><dd>{order.status}</dd></div>

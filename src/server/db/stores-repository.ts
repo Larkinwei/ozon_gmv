@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import type { FulfillmentMode, StoreView, SyncHealth } from "../../shared/contracts";
+import type { FulfillmentMode, StoreCapabilities, StorePlatform, StoreView, SyncHealth } from "../../shared/contracts";
 import type { AppDatabase } from "./database";
 
 interface StoreRow {
@@ -14,6 +14,8 @@ interface StoreRow {
   last_sync_started_at_ms: number | null;
   last_sync_finished_at_ms: number | null;
   last_sync_error: string | null;
+  platform: StorePlatform;
+  external_store_id: string | null;
 }
 
 interface ModeRow {
@@ -22,11 +24,15 @@ interface ModeRow {
 
 export interface StoreRecord extends StoreView {
   apiKeyCiphertext: string;
+  credentialType: "ozon_api_key" | "wildberries_api_token";
 }
 
 export interface CreateStoreRecord {
   id: string;
   name: string;
+  platform?: StorePlatform;
+  externalStoreId?: string | null;
+  credentialType?: "ozon_api_key" | "wildberries_api_token";
   clientId: string;
   apiKeyCiphertext: string;
   color: string;
@@ -41,6 +47,27 @@ export interface UpdateStoreRecord {
   fulfillmentModes?: FulfillmentMode[];
   apiKeyCiphertext?: string;
   apiKeyExpiresAt?: string | null;
+}
+
+function capabilitiesFor(platform: StorePlatform): StoreCapabilities {
+  if (platform === "wildberries") {
+    return {
+      orders: true,
+      sales: true,
+      balance: true,
+      notifications: true,
+      inventory: false,
+      writeOperations: false,
+    };
+  }
+  return {
+    orders: true,
+    sales: true,
+    balance: true,
+    notifications: true,
+    inventory: true,
+    writeOperations: true,
+  };
 }
 
 function toIsoString(timestamp: number | null): string | null {
@@ -62,7 +89,7 @@ function calculateSyncHealth(row: StoreRow, now = Date.now()): SyncHealth {
 }
 
 export function toStoreView(store: StoreRecord): StoreView {
-  const { apiKeyCiphertext: _apiKey, ...view } = store;
+  const { apiKeyCiphertext: _apiKey, credentialType: _credentialType, ...view } = store;
   return view;
 }
 
@@ -90,15 +117,30 @@ export class StoresRepository {
       this.database.prepare(
         `INSERT INTO stores (
           id, name, client_id, api_key_ciphertext, webhook_token_hash, color,
-          api_key_expires_at_ms, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          api_key_expires_at_ms, created_at_ms, updated_at_ms, platform, external_store_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         input.id,
         input.name,
-        input.clientId,
+        input.platform === "wildberries" ? `wb:${input.id}` : input.clientId,
         input.apiKeyCiphertext,
         createHash("sha256").update(randomBytes(32)).digest("hex"),
         input.color,
+        input.apiKeyExpiresAt ? Date.parse(input.apiKeyExpiresAt) : null,
+        now,
+        now,
+        input.platform ?? "ozon",
+        input.externalStoreId ?? null,
+      );
+      this.database.prepare(
+        `INSERT INTO store_credentials (
+          store_id, platform, credential_type, credential_ciphertext, expires_at_ms, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        input.id,
+        input.platform ?? "ozon",
+        input.credentialType ?? "ozon_api_key",
+        input.apiKeyCiphertext,
         input.apiKeyExpiresAt ? Date.parse(input.apiKeyExpiresAt) : null,
         now,
         now,
@@ -134,6 +176,20 @@ export class StoresRepository {
       if (input.fulfillmentModes) {
         this.replaceModes(id, input.fulfillmentModes);
       }
+      if (input.apiKeyCiphertext || input.apiKeyExpiresAt !== undefined) {
+        this.database.prepare(
+          `UPDATE store_credentials
+           SET credential_ciphertext = ?, expires_at_ms = ?, updated_at_ms = ?
+           WHERE store_id = ?`,
+        ).run(
+          input.apiKeyCiphertext ?? existing.apiKeyCiphertext,
+          input.apiKeyExpiresAt === undefined
+            ? existing.apiKeyExpiresAt ? Date.parse(existing.apiKeyExpiresAt) : null
+            : input.apiKeyExpiresAt ? Date.parse(input.apiKeyExpiresAt) : null,
+          Date.now(),
+          id,
+        );
+      }
     })();
     return this.findById(id);
   }
@@ -165,8 +221,13 @@ export class StoresRepository {
     return {
       id: row.id,
       name: row.name,
+      platform: row.platform ?? "ozon",
+      externalStoreId: row.external_store_id,
+      credentialExpiresAt: toIsoString(row.api_key_expires_at_ms),
+      capabilities: capabilitiesFor(row.platform ?? "ozon"),
       clientId: row.client_id,
       apiKeyCiphertext: row.api_key_ciphertext,
+      credentialType: row.platform === "wildberries" ? "wildberries_api_token" : "ozon_api_key",
       color: row.color,
       enabled: Boolean(row.enabled),
       fulfillmentModes: modes.map((entry) => entry.mode),

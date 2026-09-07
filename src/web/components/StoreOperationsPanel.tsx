@@ -34,6 +34,8 @@ function statusLabel(state: StoreOperationsState): string {
       return "数据可能已过期";
     case "permission_denied":
       return "无权限或未开通";
+    case "unsupported":
+      return "暂未接入";
     case "error":
       return "接口异常";
   }
@@ -46,6 +48,8 @@ function statusClassName(state: StoreOperationsState): string {
     case "stale":
       return "is-warning";
     case "permission_denied":
+      return "is-warning";
+    case "unsupported":
       return "is-warning";
     case "error":
       return "is-danger";
@@ -107,7 +111,7 @@ function BalanceStoreRow({ store, showMetrics }: { store: StoreOperationsStoreVi
             <strong>{formatMoney(balance.primary)}</strong>
             <span>当前余额</span>
           </div>
-          {showMetrics && <BalanceMetrics balance={balance} />}
+          {showMetrics && store.platform === "ozon" && <BalanceMetrics balance={balance} />}
         </>
       ) : (
         <div className="operations-empty-row operations-empty-row--balance">
@@ -173,6 +177,7 @@ function questionStatusSummary(stores: StoreOperationsStoreView[]): string {
     ok: 0,
     stale: 0,
     permission_denied: 0,
+    unsupported: 0,
     error: 0,
   };
   stores.forEach((store) => {
@@ -192,10 +197,16 @@ function questionStatusSummary(stores: StoreOperationsStoreView[]): string {
   if (counts.error > 0) {
     summary.push(`${counts.error} 家接口异常`);
   }
+  if (counts.unsupported > 0) {
+    summary.push(`${counts.unsupported} 家暂未接入`);
+  }
   return summary.join(" · ");
 }
 
-function questionSummaryTitle(unprocessed: number | null): string {
+function questionSummaryTitle(unprocessed: number | null, stores: StoreOperationsStoreView[]): string {
+  if (stores.length > 0 && stores.every((store) => store.questions.status.state === "unsupported")) {
+    return "WB 暂未接入买家问题";
+  }
   if (unprocessed === null) {
     return "问题权限待确认";
   }
@@ -334,7 +345,7 @@ export function StoreOperationsPanel({ snapshot, isLoading, error, onRetry }: St
               <MessageCircleQuestion size={20} />
             </span>
             <div>
-              <strong>{questionSummaryTitle(unprocessed)}</strong>
+              <strong>{questionSummaryTitle(unprocessed, snapshot.stores)}</strong>
               <p>{questionStatusSummary(snapshot.stores)}</p>
             </div>
           </div>

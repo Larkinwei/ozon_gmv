@@ -131,4 +131,43 @@ describe("StoreOperationsService", () => {
       context.cleanup();
     }
   });
+
+  it("reads WB balance and marks unsupported buyer questions without failing the store", async () => {
+    const context = createTestDatabase();
+    const stores = new StoresRepository(context.database);
+    const storeId = "8f9dc7d2-35a8-45d5-b199-c39c5a100033";
+    await stores.create({
+      id: storeId,
+      name: "WB 店铺",
+      platform: "wildberries",
+      clientId: "",
+      apiKeyCiphertext: "cipher-wb",
+      color: "#F59E0B",
+      fulfillmentModes: [],
+      apiKeyExpiresAt: null,
+    });
+    const settings = new SettingsRepository(context.database);
+    settings.set("network.proxy_mode", "direct");
+    const service = new StoreOperationsService(
+      context.config,
+      stores,
+      new ProxySettingsService(context.config, settings),
+      {
+        clientFactory: () => ({
+          getBalance: vi.fn(async () => ({ currency: "RUB", current: "500.00", for_withdraw: "300.00" })),
+        }),
+      },
+    );
+
+    try {
+      const snapshot = await service.getOverview([]);
+      expect(snapshot.stores[0]).toMatchObject({
+        platform: "wildberries",
+        balance: { primary: { amount: "500.00", currency: "RUB" }, primaryLabel: "可用余额", status: { state: "ok" } },
+        questions: { status: { state: "unsupported" }, counts: null, latest: [] },
+      });
+    } finally {
+      context.cleanup();
+    }
+  });
 });

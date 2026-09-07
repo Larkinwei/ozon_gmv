@@ -18,6 +18,7 @@ const snapshot: StoreOperationsSnapshot = {
     storeId: "store-1",
     storeName: "店铺 A",
     storeColor: "#3B82F6",
+    platform: "ozon",
     balance: {
       status: { state: "ok", message: null, updatedAt: "2026-08-31T12:00:00.000Z" },
       primary: { amount: "1450.75", currency: "RUB" },

@@ -6,6 +6,7 @@ import type {
   FulfillmentMode,
   Money,
   OrderNotificationEvent,
+  StorePlatform,
   OrderNotificationSettings,
 } from "../../shared/contracts";
 import type { SettingsRepository } from "../db/settings-repository";
@@ -21,15 +22,18 @@ const AGENT_CONNECTED_WINDOW_MS = 90 * 1000;
 
 interface PostingCreatedData {
   id: string;
+  postingNumber?: string;
   storeId: string;
   storeName: string;
   storeColor: string;
   amount: Money;
   orderAt: string;
-  fulfillment: FulfillmentMode;
+  fulfillment: string;
   productNames: string[];
   productSkus: string[];
   itemCount: number;
+  platform?: StorePlatform;
+  externalOrderId?: string;
 }
 
 /** Projects fresh dashboard order events into the private desktop-notification stream. */
@@ -68,7 +72,9 @@ export class OrderNotificationService {
       id: `${Date.now()}-${randomUUID()}`,
       kind: "test",
       occurredAt: new Date().toISOString(),
+      platform: "ozon",
       orderId: null,
+      externalOrderId: null,
       storeName: "通知测试",
       storeColor: "#3B82F6",
       amount: { amount: "99.00", currency: "RUB" },
@@ -124,15 +130,18 @@ export class OrderNotificationService {
       return;
     }
     const data = event.data as PostingCreatedData;
+    const platform = data.platform ?? "ozon";
     const orderAtMs = Date.parse(data.orderAt);
-    if (!Number.isFinite(orderAtMs) || Date.now() - orderAtMs > FRESH_ORDER_WINDOW_MS || orderAtMs - Date.now() > FRESH_ORDER_WINDOW_MS) {
+    if (platform === "ozon" && (!Number.isFinite(orderAtMs) || Date.now() - orderAtMs > FRESH_ORDER_WINDOW_MS || orderAtMs - Date.now() > FRESH_ORDER_WINDOW_MS)) {
       return;
     }
     this.emit({
       id: event.id,
       kind: "order",
       occurredAt: event.occurredAt,
+      platform,
       orderId: data.id,
+      externalOrderId: data.externalOrderId ?? data.postingNumber ?? null,
       storeName: data.storeName,
       storeColor: data.storeColor,
       amount: data.amount,

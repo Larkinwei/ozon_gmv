@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { useSearchParams } from "react-router-dom";
 
-import type { DashboardRange, RecentOrder } from "../../shared/contracts";
+import type { DashboardRange, RecentOrder, StorePlatform } from "../../shared/contracts";
 import { fetchDashboard, fetchStoreOperations, fetchStores } from "../api";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { KpiGrid } from "../components/KpiGrid";
@@ -43,6 +43,7 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   const [searchParams, setSearchParams] = useSearchParams();
   const orderIdFromUrl = searchParams.get("order");
   const [storeId, setStoreId] = useState("all");
+  const [platform, setPlatform] = useState<StorePlatform | "all">("all");
   const [range, setRange] = useState<DashboardRange>("today");
   const [customFrom, setCustomFrom] = useState(() => defaultCustomTime(-24));
   const [customTo, setCustomTo] = useState(() => defaultCustomTime(0));
@@ -94,10 +95,11 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
     return {
       range,
       storeId,
+      platform,
       ...(from ? { from } : {}),
       ...(to ? { to } : {}),
     };
-  }, [customFrom, customTo, range, storeId]);
+  }, [customFrom, customTo, platform, range, storeId]);
   const customRangeValid = range !== "custom" || Boolean(filters.from && filters.to && filters.from < filters.to);
 
   const storesQuery = useQuery({ queryKey: ["stores"], queryFn: fetchStores, enabled: !wallboard });
@@ -109,8 +111,8 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
     placeholderData: (previous) => previous,
   });
   const operationsQuery = useQuery({
-    queryKey: ["store-operations", storeId],
-    queryFn: () => fetchStoreOperations(storeId),
+    queryKey: ["store-operations", platform, storeId],
+    queryFn: () => fetchStoreOperations(storeId, platform),
     enabled: !wallboard,
     refetchInterval: 5 * 60_000,
     placeholderData: (previous) => previous,
@@ -131,12 +133,14 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
       <DashboardHeader
         stores={stores}
         storeId={storeId}
+        platform={platform}
         range={range}
         streamStatus={streamStatus}
         wallboard={wallboard}
         customFrom={customFrom}
         customTo={customTo}
         onStoreChange={setStoreId}
+        onPlatformChange={(nextPlatform) => { setPlatform(nextPlatform); setStoreId("all"); }}
         onRangeChange={setRange}
         onCustomFromChange={setCustomFrom}
         onCustomToChange={setCustomTo}

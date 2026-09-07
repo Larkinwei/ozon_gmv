@@ -8,6 +8,8 @@ import { openDatabase, closeDatabase } from "./db/database";
 import { runMigrations } from "./db/migrate";
 import { PostingsRepository } from "./db/postings-repository";
 import { ProductImagesRepository } from "./db/product-images-repository";
+import { MarketplaceRepository } from "./db/marketplace-repository";
+import { MarketplaceSyncCheckpointsRepository } from "./db/marketplace-sync-checkpoints-repository";
 import { SettingsRepository } from "./db/settings-repository";
 import { StoresRepository } from "./db/stores-repository";
 import { SyncCheckpointsRepository } from "./db/sync-checkpoints-repository";
@@ -39,6 +41,8 @@ const syncService = new SyncService(
   events,
   proxySettings,
   productImages,
+  new MarketplaceRepository(database),
+  new MarketplaceSyncCheckpointsRepository(database),
 );
 const updates = new UpdateService(config, proxySettings);
 const selection = new SelectionModule(config, database, {

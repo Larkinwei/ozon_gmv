@@ -1,12 +1,14 @@
 import { KeyRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { fulfillmentModes, type FulfillmentMode, type StoreView } from "../../shared/contracts";
+import { fulfillmentModes, type FulfillmentMode, type StorePlatform, type StoreView } from "../../shared/contracts";
 
 export interface StoreFormValue {
+  platform: StorePlatform;
   name: string;
   clientId: string;
   apiKey?: string;
+  apiToken?: string;
   color: string;
   fulfillmentModes: FulfillmentMode[];
 }
@@ -31,6 +33,7 @@ function getSubmitLabel(pending: boolean, editing: boolean): string {
 
 export function StoreFormDialog(props: StoreFormDialogProps): React.JSX.Element {
   const [name, setName] = useState(props.store?.name ?? "");
+  const [platform, setPlatform] = useState<StorePlatform>(props.store?.platform ?? "ozon");
   const [clientId, setClientId] = useState(props.store?.clientId ?? "");
   const [apiKey, setApiKey] = useState("");
   const [color, setColor] = useState(props.store?.color ?? props.suggestedColor);
@@ -52,8 +55,9 @@ export function StoreFormDialog(props: StoreFormDialogProps): React.JSX.Element 
     event.preventDefault();
     props.onSubmit({
       name: name.trim(),
+      platform,
       clientId: clientId.trim(),
-      ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+      ...(apiKey.trim() ? platform === "wildberries" ? { apiToken: apiKey.trim() } : { apiKey: apiKey.trim() } : {}),
       color,
       fulfillmentModes: modes,
     });
@@ -74,18 +78,26 @@ export function StoreFormDialog(props: StoreFormDialogProps): React.JSX.Element 
         <form className="store-form" onSubmit={submit}>
           <div className="form-grid">
             <label className="field">
+              <span>平台 *</span>
+              <select value={platform} onChange={(event) => setPlatform(event.target.value as StorePlatform)} disabled={Boolean(props.store)}>
+                <option value="ozon">Ozon</option>
+                <option value="wildberries">Wildberries</option>
+              </select>
+              <small>{props.store ? "平台保存后不可修改。" : "选择要连接的销售平台。"}</small>
+            </label>
+            <label className="field">
               <span>店铺名称 *</span>
               <input ref={firstInput} value={name} onChange={(event) => setName(event.target.value)} required maxLength={100} />
               <small>用于图表、订单流和店铺标签。</small>
             </label>
-            <label className="field">
+            {platform === "ozon" && <label className="field">
               <span>Client ID *</span>
               <input value={clientId} onChange={(event) => setClientId(event.target.value)} disabled={Boolean(props.store)} required />
               <small>{props.store ? "Client ID 保存后不可修改。" : "来自 Ozon Seller API 设置。"}</small>
-            </label>
+            </label>}
           </div>
           <label className="field">
-            <span>{props.store ? "替换 API Key" : "API Key *"}</span>
+            <span>{props.store ? "替换 API 凭证" : platform === "wildberries" ? "API 令牌 *" : "API Key *"}</span>
             <span className="input-with-icon">
               <KeyRound size={17} aria-hidden="true" />
               <input
@@ -94,12 +106,12 @@ export function StoreFormDialog(props: StoreFormDialogProps): React.JSX.Element 
                 value={apiKey}
                 onChange={(event) => setApiKey(event.target.value)}
                 required={!props.store}
-                placeholder={props.store ? "留空则保持现有密钥" : "输入 Seller API Key"}
+                placeholder={props.store ? "留空则保持现有凭证" : platform === "wildberries" ? "输入 WB API 令牌" : "输入 Seller API Key"}
               />
             </span>
-            <small>密钥写入后仅以 AES-256-GCM 密文保存，页面不会再次返回。</small>
+            <small>{platform === "wildberries" ? "令牌仅以 AES-256-GCM 密文保存，页面不会再次返回。" : "密钥写入后仅以 AES-256-GCM 密文保存，页面不会再次返回。"}</small>
           </label>
-          <fieldset className="mode-fieldset">
+          {platform === "ozon" && <fieldset className="mode-fieldset">
             <legend>履约模式 *</legend>
             <div className="mode-options">
               {fulfillmentModes.map((mode) => (
@@ -109,7 +121,7 @@ export function StoreFormDialog(props: StoreFormDialogProps): React.JSX.Element 
                 </label>
               ))}
             </div>
-          </fieldset>
+          </fieldset>}
           <label className="field color-field">
             <span>店铺识别色</span>
             <span>

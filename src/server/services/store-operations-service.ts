@@ -10,11 +10,13 @@ import type {
   StoreOperationsStatus,
   StoreOperationsStoreView,
   StoreQuestionsView,
+  StorePlatform,
 } from "../../shared/contracts";
 import type { AppConfig } from "../config";
 import { StoresRepository, type StoreRecord } from "../db/stores-repository";
 import { decryptSecret } from "../security/encryption";
 import { OzonApiError, OzonClient, type OzonFinanceAmount, type OzonQuestion, type OzonQuestionCount, type OzonQuestionList } from "../ozon/client";
+import { WildberriesApiError, WildberriesClient } from "../wildberries/client";
 import type { ProxySettingsService } from "./proxy-settings-service";
 
 const QUESTION_PREVIEW_LIMIT = 5;
@@ -32,13 +34,17 @@ export interface StoreOperationsClient {
   getQuestionInfo(questionId: string): Promise<OzonQuestion>;
 }
 
+interface WildberriesOperationsClient {
+  getBalance(): Promise<{ currency?: string | null | undefined; current?: string | null | undefined; for_withdraw?: string | null | undefined }>;
+}
+
 export interface StoreOperationsReader {
-  getOverview(storeIds: string[]): Promise<StoreOperationsSnapshot>;
+  getOverview(storeIds: string[], platform?: StorePlatform | "all"): Promise<StoreOperationsSnapshot>;
   getQuestionDetail(storeId: string, questionId: string): Promise<BuyerQuestionView | null>;
 }
 
 interface StoreOperationsServiceOptions {
-  clientFactory?: (store: StoreRecord) => StoreOperationsClient;
+  clientFactory?: (store: StoreRecord) => StoreOperationsClient | WildberriesOperationsClient;
   now?: () => Date;
   cacheTtlMs?: number;
 }
@@ -83,14 +89,14 @@ function toBuyerQuestion(store: StoreRecord, question: OzonQuestion): BuyerQuest
 }
 
 function isPermissionError(error: unknown): boolean {
-  return error instanceof OzonApiError && (error.status === 401 || error.status === 403);
+  return (error instanceof OzonApiError || error instanceof WildberriesApiError) && (error.status === 401 || error.status === 403);
 }
 
 function operationErrorMessage(label: string, error: unknown): string {
   if (isPermissionError(error)) {
-    return `${label}无权限或未开通，请检查 Ozon API Key 权限和店铺套餐`;
+    return `${label}无权限或未开通，请检查平台 API 凭证权限和店铺套餐`;
   }
-  if (error instanceof OzonApiError && error.status > 0) {
+  if ((error instanceof OzonApiError || error instanceof WildberriesApiError) && error.status > 0) {
     return `${label}请求失败（HTTP ${error.status}），稍后会自动重试`;
   }
   return `${label}暂时不可用，稍后会自动重试`;
@@ -145,7 +151,7 @@ function mergeQuestionStatus(
 export class StoreOperationsService implements StoreOperationsReader {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inFlight = new Map<string, Promise<StoreOperationsStoreView>>();
-  private readonly clientFactory: (store: StoreRecord) => StoreOperationsClient;
+  private readonly clientFactory: (store: StoreRecord) => StoreOperationsClient | WildberriesOperationsClient;
   private readonly now: () => Date;
   private readonly cacheTtlMs: number;
 
@@ -157,16 +163,26 @@ export class StoreOperationsService implements StoreOperationsReader {
   ) {
     this.now = options.now ?? (() => new Date());
     this.cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
-    this.clientFactory = options.clientFactory ?? ((store) => new OzonClient({
-      clientId: store.clientId,
-      apiKey: decryptSecret(store.apiKeyCiphertext, this.config.ENCRYPTION_KEY),
-      baseUrl: this.config.OZON_API_BASE_URL,
-      fetchImplementation: this.proxySettings.createFetch(),
-    }));
+    this.clientFactory = options.clientFactory ?? ((store) => {
+      const secret = decryptSecret(store.apiKeyCiphertext, this.config.ENCRYPTION_KEY);
+      if (store.platform === "wildberries") {
+        return new WildberriesClient({
+          apiToken: secret,
+          fetchImplementation: this.proxySettings.createFetch(),
+          directFetchImplementation: fetch,
+        });
+      }
+      return new OzonClient({
+        clientId: store.clientId,
+        apiKey: secret,
+        baseUrl: this.config.OZON_API_BASE_URL,
+        fetchImplementation: this.proxySettings.createFetch(),
+      });
+    });
   }
 
-  public async getOverview(storeIds: string[]): Promise<StoreOperationsSnapshot> {
-    const activeStores = await this.stores.listActive();
+  public async getOverview(storeIds: string[], platform: StorePlatform | "all" = "all"): Promise<StoreOperationsSnapshot> {
+    const activeStores = (await this.stores.listActive()).filter((store) => platform === "all" || store.platform === platform);
     const selectedStores = storeIds.length === 0
       ? activeStores
       : activeStores.filter((store) => storeIds.includes(store.id));
@@ -179,7 +195,10 @@ export class StoreOperationsService implements StoreOperationsReader {
     if (!store || !store.enabled) {
       return null;
     }
-    const question = await this.clientFactory(store).getQuestionInfo(questionId);
+    if (store.platform === "wildberries") {
+      return null;
+    }
+    const question = await (this.clientFactory(store) as StoreOperationsClient).getQuestionInfo(questionId);
     return toBuyerQuestion(store, question);
   }
 
@@ -209,17 +228,70 @@ export class StoreOperationsService implements StoreOperationsReader {
     previous: StoreOperationsStoreView | undefined,
   ): Promise<StoreOperationsStoreView> {
     const client = this.clientFactory(store);
+    if (store.platform === "wildberries") {
+      return {
+        storeId: store.id,
+        storeName: store.name,
+        storeColor: store.color,
+        platform: store.platform,
+        balance: await this.refreshWildberriesBalance(client, previous?.balance),
+        questions: {
+          status: { state: "unsupported", message: "WB 暂未接入买家问题", updatedAt: null },
+          counts: null,
+          latest: [],
+        },
+      };
+    }
+    const ozonClient = client as StoreOperationsClient;
     const [balance, questions] = await Promise.all([
-      this.refreshBalance(client, previous?.balance),
-      this.refreshQuestions(client, store, previous?.questions),
+      this.refreshBalance(ozonClient, previous?.balance),
+      this.refreshQuestions(ozonClient, store, previous?.questions),
     ]);
     return {
       storeId: store.id,
       storeName: store.name,
       storeColor: store.color,
+      platform: store.platform,
       balance,
       questions,
     };
+  }
+
+  private async refreshWildberriesBalance(
+    client: StoreOperationsClient | WildberriesOperationsClient,
+    previous: StoreBalanceView | undefined,
+  ): Promise<StoreBalanceView> {
+    try {
+      const value = await (client as WildberriesOperationsClient).getBalance();
+      const currency = value.currency?.trim().toUpperCase() || "RUB";
+      const current = value.current ? { amount: value.current, currency } : null;
+      if (!current) {
+        throw new Error("WB 余额接口未返回当前余额");
+      }
+      const now = this.now();
+      return {
+        status: successStatus(now),
+        primary: current,
+        primaryLabel: "可用余额",
+        openingBalance: null,
+        closingBalance: current,
+        accrued: null,
+        payments: value.for_withdraw ? [{ amount: value.for_withdraw, currency }] : [],
+      };
+    } catch (error) {
+      if (previous) {
+        return { ...previous, status: failureStatus("WB 店铺余额接口", error, previous.status) };
+      }
+      return {
+        status: failureStatus("WB 店铺余额接口", error, undefined),
+        primary: null,
+        primaryLabel: "可用余额",
+        openingBalance: null,
+        closingBalance: null,
+        accrued: null,
+        payments: [],
+      };
+    }
   }
 
   private async refreshBalance(

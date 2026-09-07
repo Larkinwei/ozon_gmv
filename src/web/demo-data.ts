@@ -18,6 +18,9 @@ export const demoStores: StoreView[] = [
   {
     id: "8f9dc7d2-35a8-45d5-b199-c39c5a100001",
     name: "北极星旗舰店",
+    platform: "ozon",
+    externalStoreId: "1849201",
+    capabilities: { orders: true, sales: true, balance: true, notifications: true, inventory: true, writeOperations: true },
     clientId: "1849201",
     color: "#3B82F6",
     enabled: true,
@@ -31,6 +34,9 @@ export const demoStores: StoreView[] = [
   {
     id: "8f9dc7d2-35a8-45d5-b199-c39c5a100002",
     name: "Moscow Select",
+    platform: "ozon",
+    externalStoreId: "1849202",
+    capabilities: { orders: true, sales: true, balance: true, notifications: true, inventory: true, writeOperations: true },
     clientId: "1849202",
     color: "#22C55E",
     enabled: true,
@@ -44,6 +50,9 @@ export const demoStores: StoreView[] = [
   {
     id: "8f9dc7d2-35a8-45d5-b199-c39c5a100003",
     name: "Volga Home",
+    platform: "ozon",
+    externalStoreId: "1849203",
+    capabilities: { orders: true, sales: true, balance: true, notifications: true, inventory: true, writeOperations: true },
     clientId: "1849203",
     color: "#A78BFA",
     enabled: true,
@@ -57,6 +66,9 @@ export const demoStores: StoreView[] = [
   {
     id: "8f9dc7d2-35a8-45d5-b199-c39c5a100004",
     name: "西伯利亚优选",
+    platform: "ozon",
+    externalStoreId: "1849204",
+    capabilities: { orders: true, sales: true, balance: true, notifications: true, inventory: true, writeOperations: true },
     clientId: "1849204",
     color: "#F59E0B",
     enabled: true,
@@ -120,6 +132,8 @@ function makeRecentOrders(): RecentOrder[] {
     const store = demoStores[index % demoStores.length] as StoreView;
     return {
       id: `demo-order-${index}`,
+      platform: store.platform,
+      externalOrderId: `WB-${index}`,
       postingNumber: `24219509-${String(8820 - index).padStart(4, "0")}-${(index % 3) + 1}`,
       storeId: store.id,
       storeName: store.name,
@@ -143,6 +157,7 @@ function makeBreakdown(selectedStoreId: string): StoreBreakdown[] {
       storeId: store.id,
       storeName: store.name,
       color: store.color,
+      platform: store.platform,
       orders: storeTotals[index]?.orders ?? 0,
       gmv: [{ amount: (storeTotals[index]?.gmv ?? 0).toFixed(2), currency: "RUB" }],
     }))
@@ -185,6 +200,7 @@ export function createDemoSnapshot(range: DashboardRange, selectedStoreId: strin
       cancelledOrders: 11,
       cancelledGmv: [{ amount: "32760.00", currency: "RUB" }],
     },
+    platforms: [{ platform: "ozon", orders, gmv: [{ amount: gmv.toFixed(2), currency: "RUB" }] }],
     timeSeries: makeSeries(selectedStoreId),
     stores,
     recentOrders: makeRecentOrders().filter((order) => selectedStoreId === "all" || storeIds.has(order.storeId)),
@@ -233,6 +249,7 @@ export function createDemoStoreOperations(selectedStoreId: string): StoreOperati
         storeId: store.id,
         storeName: store.name,
         storeColor: store.color,
+        platform: store.platform,
         balance: {
           status: { state: "ok" as const, message: null, updatedAt: generatedAt },
           primary: { amount: closing.toFixed(2), currency: "RUB" },
@@ -276,6 +293,8 @@ export function createDemoOrderDetail(id: string): OrderDetail {
   let assignedQuantity = 0;
   return {
     id: order.id,
+    platform: order.platform,
+    externalOrderId: order.externalOrderId,
     postingNumber: order.postingNumber,
     orderNumber: order.postingNumber.split("-").slice(0, -1).join("-"),
     storeId: order.storeId,

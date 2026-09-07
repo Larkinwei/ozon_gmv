@@ -1,6 +1,20 @@
 export const fulfillmentModes = ["FBO", "FBS", "RFBS"] as const;
 export type FulfillmentMode = (typeof fulfillmentModes)[number];
 
+export const storePlatforms = ["ozon", "wildberries"] as const;
+export type StorePlatform = (typeof storePlatforms)[number];
+
+export type WildberriesFulfillmentMode = "FBW" | "FBS" | "DBW" | "DBS" | "EDBS" | "C&C";
+
+export interface StoreCapabilities {
+  orders: boolean;
+  sales: boolean;
+  balance: boolean;
+  notifications: boolean;
+  inventory: boolean;
+  writeOperations: boolean;
+}
+
 export const dashboardRanges = ["today", "yesterday", "7d", "30d", "custom"] as const;
 export type DashboardRange = (typeof dashboardRanges)[number];
 
@@ -14,6 +28,10 @@ export interface Money {
 export interface StoreView {
   id: string;
   name: string;
+  platform: StorePlatform;
+  externalStoreId: string | null;
+  credentialExpiresAt?: string | null;
+  capabilities: StoreCapabilities;
   clientId: string;
   color: string;
   enabled: boolean;
@@ -53,12 +71,21 @@ export interface StoreBreakdown {
   storeId: string;
   storeName: string;
   color: string;
+  platform: StorePlatform;
+  orders: number;
+  gmv: Money[];
+}
+
+export interface PlatformBreakdown {
+  platform: StorePlatform;
   orders: number;
   gmv: Money[];
 }
 
 export interface RecentOrder {
   id: string;
+  platform: StorePlatform;
+  externalOrderId: string;
   postingNumber: string;
   storeId: string;
   storeName: string;
@@ -67,7 +94,7 @@ export interface RecentOrder {
   amount: Money;
   itemCount: number;
   productNames: string[];
-  fulfillment: FulfillmentMode;
+  fulfillment: string;
   status: string;
   cancelled: boolean;
 }
@@ -85,13 +112,15 @@ export interface OrderDetailItem {
 
 export interface OrderDetail {
   id: string;
+  platform: StorePlatform;
+  externalOrderId: string;
   postingNumber: string;
   orderNumber: string;
   storeId: string;
   storeName: string;
   storeColor: string;
   orderAt: string;
-  fulfillment: FulfillmentMode;
+  fulfillment: string;
   status: string;
   substatus: string | null;
   cancelled: boolean;
@@ -108,13 +137,14 @@ export interface DashboardSnapshot {
   to: string;
   granularity: "15m" | "hour" | "day";
   kpis: DashboardKpis;
+  platforms: PlatformBreakdown[];
   timeSeries: TimeSeriesPoint[];
   stores: StoreBreakdown[];
   recentOrders: RecentOrder[];
   sync: StoreView[];
 }
 
-export type StoreOperationsState = "ok" | "stale" | "permission_denied" | "error";
+export type StoreOperationsState = "ok" | "stale" | "permission_denied" | "unsupported" | "error";
 
 export interface StoreOperationsStatus {
   state: StoreOperationsState;
@@ -165,6 +195,7 @@ export interface StoreOperationsStoreView {
   storeId: string;
   storeName: string;
   storeColor: string;
+  platform: StorePlatform;
   balance: StoreBalanceView;
   questions: StoreQuestionsView;
 }
@@ -281,24 +312,36 @@ export interface OrderNotificationEvent {
   id: string;
   kind: "order" | "test";
   occurredAt: string;
+  platform: StorePlatform;
   orderId: string | null;
+  externalOrderId: string | null;
   storeName: string;
   storeColor: string;
   amount: Money;
   orderAt: string;
-  fulfillment: FulfillmentMode;
+  fulfillment: string;
   productName: string;
   imageUrl: string | null;
   itemCount: number;
 }
 
-export interface StoreCreateInput {
+export interface OzonStoreCreateInput {
+  platform?: "ozon";
   name: string;
   clientId: string;
   apiKey: string;
   color: string;
   fulfillmentModes: FulfillmentMode[];
 }
+
+export interface WildberriesStoreCreateInput {
+  platform: "wildberries";
+  name: string;
+  apiToken: string;
+  color: string;
+}
+
+export type StoreCreateInput = OzonStoreCreateInput | WildberriesStoreCreateInput;
 
 export interface StoreCreateResult {
   store: StoreView;

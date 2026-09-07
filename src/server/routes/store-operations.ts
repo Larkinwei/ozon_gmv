@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
+import { storePlatforms } from "../../shared/contracts";
 import type { StoreOperationsReader } from "../services/store-operations-service";
 import { requireSession } from "../security/session";
 
-const overviewQuerySchema = z.object({ storeIds: z.string().optional() });
+const overviewQuerySchema = z.object({ storeIds: z.string().optional(), platform: z.enum(storePlatforms).optional() });
 const questionParamsSchema = z.object({
   storeId: z.string().uuid(),
   questionId: z.string().trim().min(1).max(200),
@@ -24,7 +25,8 @@ function parseStoreIds(value?: string): string[] {
 export function registerStoreOperationsRoutes(app: FastifyInstance, operations: StoreOperationsReader): void {
   app.get("/api/store-operations/overview", { preHandler: requireSession }, async (request) => {
     const query = overviewQuerySchema.parse(request.query);
-    return operations.getOverview(parseStoreIds(query.storeIds));
+    const storeIds = parseStoreIds(query.storeIds);
+    return query.platform ? operations.getOverview(storeIds, query.platform) : operations.getOverview(storeIds);
   });
 
   app.get("/api/store-operations/questions/:storeId/:questionId", { preHandler: requireSession }, async (request, reply) => {

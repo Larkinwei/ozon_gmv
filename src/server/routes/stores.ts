@@ -12,22 +12,37 @@ import { requireSession } from "../security/session";
 import type { SyncService } from "../services/sync-service";
 
 const colorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
-const createStoreSchema = z.object({
+const ozonCreateStoreSchema = z.object({
+  platform: z.literal("ozon"),
   name: z.string().trim().min(1).max(100),
   clientId: z.string().trim().min(1).max(100),
   apiKey: z.string().trim().min(10).max(1000),
   color: colorSchema,
   fulfillmentModes: z.array(z.enum(fulfillmentModes)).min(1),
 });
+const wildberriesCreateStoreSchema = z.object({
+  platform: z.literal("wildberries"),
+  name: z.string().trim().min(1).max(100),
+  apiToken: z.string().trim().min(10).max(2000),
+  color: colorSchema,
+});
+const createStoreSchema = z.preprocess(
+  (value) => value && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>), platform: (value as Record<string, unknown>).platform ?? "ozon" }
+    : value,
+  z.discriminatedUnion("platform", [ozonCreateStoreSchema, wildberriesCreateStoreSchema]),
+);
 const updateStoreSchema = z
   .object({
     name: z.string().trim().min(1).max(100).optional(),
     apiKey: z.string().trim().min(10).max(1000).optional(),
+    apiToken: z.string().trim().min(10).max(2000).optional(),
     color: colorSchema.optional(),
     enabled: z.boolean().optional(),
     fulfillmentModes: z.array(z.enum(fulfillmentModes)).min(1).optional(),
   })
-  .refine((value) => Object.keys(value).length > 0, "至少提供一个修改字段");
+  .refine((value) => Object.keys(value).length > 0, "至少提供一个修改字段")
+  .refine((value) => !(value.apiKey && value.apiToken), "不能同时提供 Ozon API Key 和 WB API 令牌");
 const storeParamsSchema = z.object({ id: z.string().uuid() });
 const syncStoreSchema = z.object({ days: z.number().int().min(1).max(90) });
 
@@ -43,9 +58,36 @@ export function registerStoreRoutes(
 
   app.post("/api/stores", { preHandler: requireSession }, async (request, reply) => {
     const input = createStoreSchema.parse(request.body);
+    const id = randomUUID();
+    if (input.platform === "wildberries") {
+      const credentials = await syncService.testWildberriesCredentials(input.apiToken);
+      const store = await stores.create({
+        id,
+        name: input.name,
+        platform: "wildberries",
+        externalStoreId: credentials.externalStoreId,
+        credentialType: "wildberries_api_token",
+        clientId: "",
+        apiKeyCiphertext: encryptSecret(input.apiToken, config.ENCRYPTION_KEY),
+        color: input.color,
+        fulfillmentModes: [],
+        apiKeyExpiresAt: credentials.expiresAt,
+      });
+      void syncService.backfillStore(store.id).catch((error: unknown) => {
+        app.log.error({ err: error, storeId: store.id }, "Initial Wildberries store backfill failed");
+      });
+      return reply.code(201).send({
+        store: toStoreView(store),
+        backfillDays: 90,
+        pollIntervalSeconds: 300,
+      });
+    }
     const credentials = await syncService.testCredentials(input.clientId, input.apiKey, input.fulfillmentModes);
     const store = await stores.create({
-      id: randomUUID(),
+      id,
+      platform: "ozon",
+      externalStoreId: input.clientId,
+      credentialType: "ozon_api_key",
       name: input.name,
       clientId: input.clientId,
       apiKeyCiphertext: encryptSecret(input.apiKey, config.ENCRYPTION_KEY),
@@ -74,7 +116,19 @@ export function registerStoreRoutes(
 
     let apiKeyCiphertext: string | undefined;
     let apiKeyExpiresAt: string | null | undefined;
-    if (input.apiKey || input.fulfillmentModes) {
+    if (input.apiKey || input.apiToken || input.fulfillmentModes) {
+      if (existing.platform === "wildberries") {
+        const apiToken = input.apiToken ?? decryptSecret(existing.apiKeyCiphertext, config.ENCRYPTION_KEY);
+        const credentials = await syncService.testWildberriesCredentials(apiToken);
+        const updated = await stores.update(id, {
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.color ? { color: input.color } : {}),
+          ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(input.apiToken ? { apiKeyCiphertext: encryptSecret(apiToken, config.ENCRYPTION_KEY) } : {}),
+          apiKeyExpiresAt: credentials.expiresAt,
+        });
+        return updated ? toStoreView(updated) : reply.code(404).send({ error: "STORE_NOT_FOUND" });
+      }
       const apiKey = input.apiKey ?? decryptSecret(existing.apiKeyCiphertext, config.ENCRYPTION_KEY);
       const credentials = await syncService.testCredentials(
         existing.clientId,
@@ -103,6 +157,10 @@ export function registerStoreRoutes(
     const store = await stores.findById(id);
     if (!store) {
       return reply.code(404).send({ error: "STORE_NOT_FOUND", message: "店铺不存在" });
+    }
+    if (store.platform === "wildberries") {
+      const wbResult = await syncService.testWildberriesCredentials(decryptSecret(store.apiKeyCiphertext, config.ENCRYPTION_KEY));
+      return { ok: true, expiresAt: wbResult.expiresAt, roles: [] };
     }
     const result = await syncService.testCredentials(
       store.clientId,

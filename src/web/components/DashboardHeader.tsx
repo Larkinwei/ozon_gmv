@@ -1,7 +1,7 @@
 import { CalendarDays, ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import type { DashboardRange, StoreView } from "../../shared/contracts";
+import type { DashboardRange, StorePlatform, StoreView } from "../../shared/contracts";
 import { formatBeijingTime } from "../format";
 import type { StreamStatus } from "../hooks/use-dashboard-stream";
 import { AppNav } from "./AppNav";
@@ -19,12 +19,14 @@ const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
 interface DashboardHeaderProps {
   stores: StoreView[];
   storeId: string;
+  platform: StorePlatform | "all";
   range: DashboardRange;
   streamStatus: StreamStatus;
   wallboard: boolean;
   customFrom: string;
   customTo: string;
   onStoreChange: (storeId: string) => void;
+  onPlatformChange: (platform: StorePlatform | "all") => void;
   onRangeChange: (range: DashboardRange) => void;
   onCustomFromChange: (value: string) => void;
   onCustomToChange: (value: string) => void;
@@ -51,10 +53,19 @@ export function DashboardHeader(props: DashboardHeaderProps): React.JSX.Element 
 
       <div className="dashboard-controls">
         <label className="select-control">
+          <span className="sr-only">选择平台</span>
+          <select value={props.platform} onChange={(event) => props.onPlatformChange(event.target.value as StorePlatform | "all")}>
+            <option value="all">全部平台</option>
+            <option value="ozon">Ozon</option>
+            <option value="wildberries">Wildberries</option>
+          </select>
+          <ChevronDown size={16} aria-hidden="true" />
+        </label>
+        <label className="select-control">
           <span className="sr-only">选择店铺</span>
           <select value={props.storeId} onChange={(event) => props.onStoreChange(event.target.value)}>
             <option value="all">全部店铺</option>
-            {props.stores.map((store) => (
+            {props.stores.filter((store) => props.platform === "all" || store.platform === props.platform).map((store) => (
               <option key={store.id} value={store.id}>
                 {store.name}
               </option>

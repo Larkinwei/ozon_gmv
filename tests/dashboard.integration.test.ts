@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { DashboardRepository } from "../src/server/db/dashboard-repository";
+import { MarketplaceRepository } from "../src/server/db/marketplace-repository";
 import { PostingsRepository } from "../src/server/db/postings-repository";
 import { StoresRepository } from "../src/server/db/stores-repository";
 import type { NormalizedPosting } from "../src/server/ozon/normalize";
+import type { WildberriesOrder, WildberriesSale } from "../src/server/wildberries/normalize";
 import { createTestDatabase } from "./test-context";
 
 const STORE_A_ID = "8f9dc7d2-35a8-45d5-b199-c39c5a100011";
@@ -88,6 +90,77 @@ describe("Dashboard store time series", () => {
       expect(storeA.kpis.orders).toBe(1);
       expect(storeA.timeSeries.every((point) => point.stores.length === 1)).toBe(true);
       expect(storeA.timeSeries[0]?.stores[0]).toMatchObject({ storeId: STORE_A_ID, orders: 1 });
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("combines Ozon and WB while keeping sales GMV separate from order counts", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await stores.create({
+        id: STORE_A_ID,
+        name: "Ozon 店铺",
+        clientId: "client-ozon",
+        apiKeyCiphertext: "cipher-ozon",
+        color: "#3B82F6",
+        fulfillmentModes: ["FBS"],
+        apiKeyExpiresAt: null,
+      });
+      await stores.create({
+        id: STORE_B_ID,
+        name: "WB 店铺",
+        platform: "wildberries",
+        clientId: "",
+        apiKeyCiphertext: "cipher-wb",
+        color: "#F59E0B",
+        fulfillmentModes: [],
+        apiKeyExpiresAt: null,
+      });
+      await new PostingsRepository(context.database).upsert(STORE_A_ID, posting("ozon-1", "2026-08-02T10:00:00.000Z", "100.00", "RUB"));
+      const marketplace = new MarketplaceRepository(context.database);
+      const wbOrder: WildberriesOrder = {
+        externalOrderId: "wb-order-1",
+        orderNumber: "wb-order-1",
+        fulfillmentMode: "WB",
+        orderAt: new Date("2026-08-02T11:00:00.000Z"),
+        status: "ORDERED",
+        substatus: null,
+        grossAmount: "150.00",
+        currency: "RUB",
+        cancelledAt: null,
+        items: [{ sku: "111", offerId: "WB-A", name: "WB 商品", quantity: 1, unitPrice: "150.00", currency: "RUB" }],
+        rawJson: "{}",
+      };
+      const wbSale: WildberriesSale = {
+        externalSaleId: "wb-sale-1",
+        sourceOrderId: "wb-order-1",
+        saleAt: new Date("2026-08-02T11:00:00.000Z"),
+        factType: "sale",
+        amount: "130.00",
+        currency: "RUB",
+        sku: "111",
+        offerId: "WB-A",
+        name: "WB 商品",
+        quantity: 1,
+        rawJson: "{}",
+      };
+      await marketplace.upsertOrder(STORE_B_ID, wbOrder);
+      await marketplace.upsertSale(STORE_B_ID, wbSale);
+
+      const snapshot = await new DashboardRepository(context.database).getSnapshot("custom", {
+        from: new Date("2026-08-01T16:00:00.000Z"),
+        to: new Date("2026-08-03T16:00:00.000Z"),
+        granularity: "day",
+      }, []);
+      expect(snapshot.kpis.orders).toBe(2);
+      expect(snapshot.kpis.gmv).toEqual([{ amount: "230.00", currency: "RUB" }]);
+      expect(snapshot.platforms).toEqual([
+        { platform: "ozon", orders: 1, gmv: [{ amount: "100.00", currency: "RUB" }] },
+        { platform: "wildberries", orders: 1, gmv: [{ amount: "130.00", currency: "RUB" }] },
+      ]);
+      expect(snapshot.recentOrders.map((order) => order.platform)).toEqual(["wildberries", "ozon"]);
     } finally {
       context.cleanup();
     }

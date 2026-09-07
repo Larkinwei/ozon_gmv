@@ -93,7 +93,8 @@ const notificationImages = process.platform === "win32" ? new NotificationImageC
 
 async function showOrder(event: OrderNotificationEvent): Promise<void> {
   const path = event.orderId ? `/dashboard?order=${encodeURIComponent(event.orderId)}` : "/dashboard";
-  const title = event.kind === "test" ? "Ozon GMV 通知测试" : `新订单 · ${event.storeName}`;
+  const platformLabel = event.platform === "wildberries" ? "WB" : "Ozon";
+  const title = event.kind === "test" ? "GMV 通知测试" : `${platformLabel} 新订单 · ${event.storeName}`;
   const message = `${formatAmount(event.amount.amount, event.amount.currency)}\n${event.productName} · ${event.itemCount} 件 · ${event.fulfillment}`;
   if (process.platform === "win32") {
     try {

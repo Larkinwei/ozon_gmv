@@ -26,12 +26,22 @@ export function millisecondsUntilNextNightlyRun(now = new Date()): number {
 export function startScheduler(syncService: SyncService): SchedulerHandle {
   const incrementalTimer = setInterval(() => {
     const now = new Date();
-    void syncService.syncActiveStores(subMinutes(now, 15), now, undefined, 10_000).catch(() => undefined);
+    void syncService.syncActiveStores(subMinutes(now, 15), now, undefined, 10_000, "ozon").catch(() => undefined);
   }, MINUTE);
+
+  const wildberriesOrdersTimer = setInterval(() => {
+    const now = new Date();
+    void syncService.syncActiveStores(subMinutes(now, 120), now, undefined, 10_000, "wildberries", ["orders"]).catch(() => undefined);
+  }, 5 * MINUTE);
+
+  const wildberriesSalesTimer = setInterval(() => {
+    const now = new Date();
+    void syncService.syncActiveStores(subHours(now, 24), now, undefined, 10_000, "wildberries", ["sales"]).catch(() => undefined);
+  }, 15 * MINUTE);
 
   const reconcileTimer = setInterval(() => {
     const now = new Date();
-    void syncService.syncActiveStores(subHours(now, 24), now, undefined, 10_000).catch(() => undefined);
+    void syncService.syncActiveStores(subHours(now, 24), now, undefined, 10_000, "ozon").catch(() => undefined);
   }, 15 * MINUTE);
 
   let stopped = false;
@@ -42,7 +52,8 @@ export function startScheduler(syncService: SyncService): SchedulerHandle {
         return;
       }
       const now = new Date();
-      void syncService.syncActiveStores(subDays(now, 7), now, undefined, 10_000).catch(() => undefined);
+      void syncService.syncActiveStores(subDays(now, 7), now, undefined, 10_000, "ozon").catch(() => undefined);
+      void syncService.syncActiveStores(subDays(now, 7), now, undefined, 10_000, "wildberries").catch(() => undefined);
       scheduleNightlyReconciliation();
     }, millisecondsUntilNextNightlyRun());
     nightlyTimer.unref();
@@ -56,6 +67,8 @@ export function startScheduler(syncService: SyncService): SchedulerHandle {
     stop: () => {
       stopped = true;
       clearInterval(incrementalTimer);
+      clearInterval(wildberriesOrdersTimer);
+      clearInterval(wildberriesSalesTimer);
       clearInterval(reconcileTimer);
       clearTimeout(nightlyTimer);
     },

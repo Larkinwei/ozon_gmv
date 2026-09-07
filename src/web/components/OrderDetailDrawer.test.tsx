@@ -10,6 +10,8 @@ import { OrderDetailDrawer } from "./OrderDetailDrawer";
 
 const detail: OrderDetail = {
   id: "00000000-0000-4000-8000-000000000001",
+  platform: "ozon",
+  externalOrderId: "123-0001-1",
   postingNumber: "123-0001-1",
   orderNumber: "123-0001",
   storeId: "store-1",

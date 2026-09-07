@@ -61,6 +61,7 @@ import type {
   StoreCreateResult,
   StoreOperationsSnapshot,
   StoreView,
+  StorePlatform,
   UpdateView,
   WallboardPairingView,
   WordstatJobView,
@@ -74,6 +75,7 @@ let runtimeRole: RuntimeView["role"] = "admin";
 interface DashboardFilters {
   range: DashboardRange;
   storeId: string;
+  platform: StorePlatform | "all";
   from?: string;
   to?: string;
 }
@@ -93,6 +95,7 @@ export class ApiRequestError extends Error {
 interface StoreUpdateInput {
   name?: string;
   apiKey?: string;
+  apiToken?: string;
   color?: string;
   enabled?: boolean;
   fulfillmentModes?: StoreView["fulfillmentModes"];
@@ -163,6 +166,9 @@ export async function fetchDashboard(filters: DashboardFilters): Promise<Dashboa
   if (filters.storeId !== "all") {
     params.set("storeIds", filters.storeId);
   }
+  if (filters.platform !== "all") {
+    params.set("platform", filters.platform);
+  }
   if (filters.from) {
     params.set("from", filters.from);
   }
@@ -191,13 +197,16 @@ export async function fetchStores(): Promise<StoreView[]> {
 }
 
 /** Loads the selected stores' finance balance and buyer-question summaries. */
-export async function fetchStoreOperations(storeId: string): Promise<StoreOperationsSnapshot> {
+export async function fetchStoreOperations(storeId: string, platform: StorePlatform | "all" = "all"): Promise<StoreOperationsSnapshot> {
   if (DEMO_MODE) {
     return createDemoStoreOperations(storeId);
   }
   const params = new URLSearchParams();
   if (storeId !== "all") {
     params.set("storeIds", storeId);
+  }
+  if (platform !== "all") {
+    params.set("platform", platform);
   }
   const query = params.toString();
   return apiFetch(`/api/store-operations/overview${query ? `?${query}` : ""}`);
@@ -216,10 +225,15 @@ export async function createStore(input: StoreCreateInput): Promise<StoreCreateR
     const store: StoreView = {
       id: crypto.randomUUID(),
       name: input.name,
-      clientId: input.clientId,
+      platform: input.platform ?? "ozon",
+      externalStoreId: null,
+      capabilities: {
+        orders: true, sales: true, balance: true, notifications: true, inventory: true, writeOperations: true,
+      },
+      clientId: "clientId" in input ? input.clientId : "",
       color: input.color,
       enabled: true,
-      fulfillmentModes: input.fulfillmentModes,
+      fulfillmentModes: "fulfillmentModes" in input ? input.fulfillmentModes : [],
       apiKeyExpiresAt: null,
       lastSyncStartedAt: new Date().toISOString(),
       lastSyncFinishedAt: new Date().toISOString(),

@@ -59,6 +59,7 @@ export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect }: Li
                 </p>
                 <div className="order-row__meta">
                   <span>{formatBeijingTime(order.orderAt)}</span>
+                  <span>{order.platform === "wildberries" ? "WB" : "Ozon"}</span>
                   <span>{order.fulfillment}</span>
                   <span>{order.itemCount} 件商品</span>
                 </div>

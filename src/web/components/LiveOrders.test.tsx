@@ -9,6 +9,8 @@ import { LiveOrders } from "./LiveOrders";
 
 const order: RecentOrder = {
   id: "order-1",
+  platform: "ozon",
+  externalOrderId: "posting-1",
   postingNumber: "123-0001-1",
   storeId: "store-1",
   storeName: "YOGOLD",

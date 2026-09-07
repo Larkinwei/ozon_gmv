@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { dashboardRanges } from "../../shared/contracts";
+import { dashboardRanges, storePlatforms } from "../../shared/contracts";
 import { DashboardRepository } from "../db/dashboard-repository";
 import { resolveDashboardWindow } from "../domain/time-range";
 import type { DashboardEventBus } from "../realtime/event-bus";
@@ -12,6 +12,7 @@ const dashboardQuerySchema = z.object({
   storeIds: z.string().optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
+  platform: z.enum(storePlatforms).optional(),
 });
 const orderParamsSchema = z.object({ id: z.string().uuid() });
 
@@ -44,7 +45,7 @@ export function registerDashboardRoutes(
   app.get(`${prefix}/overview`, { preHandler: authorization }, async (request) => {
     const query = dashboardQuerySchema.parse(request.query);
     const window = resolveDashboardWindow(query.range, new Date(), query.from, query.to);
-    return dashboard.getSnapshot(query.range, window, parseStoreIds(query.storeIds));
+    return dashboard.getSnapshot(query.range, window, parseStoreIds(query.storeIds), query.platform ?? "all");
   });
 
   app.get(`${prefix}/stream`, { preHandler: authorization }, async (request, reply) => {
