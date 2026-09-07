@@ -114,6 +114,66 @@ export interface DashboardSnapshot {
   sync: StoreView[];
 }
 
+export type StoreOperationsState = "ok" | "stale" | "permission_denied" | "error";
+
+export interface StoreOperationsStatus {
+  state: StoreOperationsState;
+  message: string | null;
+  updatedAt: string | null;
+}
+
+export interface StoreBalanceView {
+  status: StoreOperationsStatus;
+  primary: Money | null;
+  primaryLabel: "可用余额" | "期末余额";
+  openingBalance: Money | null;
+  closingBalance: Money | null;
+  accrued: Money | null;
+  payments: Money[];
+}
+
+export interface QuestionCountView {
+  all: number;
+  new: number;
+  processed: number;
+  unprocessed: number;
+  viewed: number;
+}
+
+export interface BuyerQuestionView {
+  id: string;
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  text: string;
+  status: string;
+  sku: string | null;
+  productName: string | null;
+  productUrl: string | null;
+  questionLink: string | null;
+  publishedAt: string | null;
+  answersCount: number;
+}
+
+export interface StoreQuestionsView {
+  status: StoreOperationsStatus;
+  counts: QuestionCountView | null;
+  latest: BuyerQuestionView[];
+}
+
+export interface StoreOperationsStoreView {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  balance: StoreBalanceView;
+  questions: StoreQuestionsView;
+}
+
+export interface StoreOperationsSnapshot {
+  generatedAt: string;
+  stores: StoreOperationsStoreView[];
+}
+
 export type DashboardEventType = "posting.created" | "posting.updated" | "sync.status";
 
 export interface DashboardEvent<T = unknown> {

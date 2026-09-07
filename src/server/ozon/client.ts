@@ -17,6 +17,10 @@ import {
   stockUpdateResponseSchema,
   rolesResponseSchema,
   sellerInfoResponseSchema,
+  financeBalanceResponseSchema,
+  questionCountResponseSchema,
+  questionInfoResponseSchema,
+  questionListResponseSchema,
   warehouseListResponseSchema,
   type OzonPosting,
   type OzonDescriptionCategoryNode,
@@ -65,6 +69,44 @@ export interface OzonProductInfoLimit {
 export interface OzonSellerInfo {
   currency: string | null;
   country: string | null;
+}
+
+export interface OzonFinanceAmount {
+  currencyCode: string | null;
+  value: string | null;
+}
+
+export interface OzonFinanceBalance {
+  openingBalance: OzonFinanceAmount | null;
+  closingBalance: OzonFinanceAmount | null;
+  accrued: OzonFinanceAmount | null;
+  payments: OzonFinanceAmount[];
+}
+
+export interface OzonQuestion {
+  id: string;
+  text: string;
+  status: string;
+  sku: string | null;
+  productName: string | null;
+  productUrl: string | null;
+  questionLink: string | null;
+  publishedAt: string | null;
+  answersCount: number;
+}
+
+export interface OzonQuestionCount {
+  all: number;
+  new: number;
+  processed: number;
+  unprocessed: number;
+  viewed: number;
+}
+
+export interface OzonQuestionList {
+  questions: OzonQuestion[];
+  lastId: string | null;
+  hasNext: boolean;
 }
 
 export interface OzonCategoryAttribute {
@@ -127,6 +169,47 @@ function retryDelay(response: Response, attempt: number): number {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function normalizeFinanceAmount(value: { currency_code?: string | null | undefined; value?: string | null | undefined } | null | undefined): OzonFinanceAmount | null {
+  if (!value || value.value === null || value.value === undefined) {
+    return null;
+  }
+  const currencyCode = value.currency_code?.trim().toUpperCase() || null;
+  return { currencyCode, value: String(value.value) };
+}
+
+function formatFinanceDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function normalizeQuestion(value: {
+  id?: string | null | undefined;
+  question_id?: string | null | undefined;
+  answers_count?: number | undefined;
+  product_url?: string | null | undefined;
+  question_link?: string | null | undefined;
+  published_at?: string | null | undefined;
+  sku?: string | null | undefined;
+  status?: string | null | undefined;
+  text?: string | undefined;
+  product_name?: string | null | undefined;
+}): OzonQuestion {
+  const id = value.id ?? value.question_id;
+  if (!id) {
+    throw new Error("Ozon question response is missing the question id");
+  }
+  return {
+    id,
+    text: value.text ?? "",
+    status: value.status ?? "UNKNOWN",
+    sku: value.sku ?? null,
+    productName: value.product_name ?? null,
+    productUrl: value.product_url ?? null,
+    questionLink: value.question_link ?? null,
+    publishedAt: value.published_at ?? null,
+    answersCount: value.answers_count ?? 0,
+  };
 }
 
 function positiveNumber(value: unknown): number | null {
@@ -210,6 +293,48 @@ export class OzonClient {
     const currency = response.company?.currency?.trim().toUpperCase() || null;
     const country = response.company?.country?.trim().toUpperCase() || null;
     return { currency, country };
+  }
+
+  /** Reads the Ozon balance report for the most recent 30-day reporting window. */
+  public async getFinanceBalance(dateFrom: Date, dateTo: Date): Promise<OzonFinanceBalance> {
+    const response = await this.request("/v1/finance/balance", {
+      date_from: formatFinanceDate(dateFrom),
+      date_to: formatFinanceDate(dateTo),
+    }, financeBalanceResponseSchema);
+    const total = response.total;
+    return {
+      openingBalance: normalizeFinanceAmount(total?.opening_balance),
+      closingBalance: normalizeFinanceAmount(total?.closing_balance),
+      accrued: normalizeFinanceAmount(total?.accrued),
+      payments: (total?.payments ?? []).map((payment) => normalizeFinanceAmount(payment)).filter((payment): payment is OzonFinanceAmount => payment !== null),
+    };
+  }
+
+  /** Returns status counts for product questions, when the seller plan grants access. */
+  public async getQuestionCount(): Promise<OzonQuestionCount> {
+    const response = await this.request("/v1/question/count", {}, questionCountResponseSchema);
+    return response;
+  }
+
+  /** Returns the most recent product questions in descending publication order. */
+  public async getQuestionList(limit = 5): Promise<OzonQuestionList> {
+    const response = await this.request("/v1/question/list", {
+      filter: { status: "ALL" },
+      limit,
+      last_id: "",
+      sort_dir: "DESC",
+    }, questionListResponseSchema);
+    return {
+      questions: response.questions.map(normalizeQuestion),
+      lastId: response.last_id ?? null,
+      hasNext: response.has_next,
+    };
+  }
+
+  /** Returns one product question for the read-only dashboard detail drawer. */
+  public async getQuestionInfo(questionId: string): Promise<OzonQuestion> {
+    const response = await this.request("/v1/question/info", { question_id: questionId }, questionInfoResponseSchema);
+    return normalizeQuestion(response);
   }
 
   /** Returns product card metadata for at most 1000 seller SKUs. */

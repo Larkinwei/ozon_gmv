@@ -4,13 +4,14 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { useSearchParams } from "react-router-dom";
 
 import type { DashboardRange, RecentOrder } from "../../shared/contracts";
-import { fetchDashboard, fetchStores } from "../api";
+import { fetchDashboard, fetchStoreOperations, fetchStores } from "../api";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { KpiGrid } from "../components/KpiGrid";
 import { LiveOrders } from "../components/LiveOrders";
 import { OrderDetailDrawer } from "../components/OrderDetailDrawer";
 import { StoreRanking } from "../components/StoreRanking";
 import { SyncStrip } from "../components/SyncStrip";
+import { StoreOperationsPanel } from "../components/StoreOperationsPanel";
 import { TrendPanel } from "../components/TrendPanel";
 import { useDashboardStream } from "../hooks/use-dashboard-stream";
 import { soundPlayer } from "../sound-player";
@@ -107,6 +108,13 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
     refetchInterval: streamStatus === "reconnecting" ? 30_000 : false,
     placeholderData: (previous) => previous,
   });
+  const operationsQuery = useQuery({
+    queryKey: ["store-operations", storeId],
+    queryFn: () => fetchStoreOperations(storeId),
+    enabled: !wallboard,
+    refetchInterval: 5 * 60_000,
+    placeholderData: (previous) => previous,
+  });
 
   useEffect(() => {
     if (!feedPaused && dashboardQuery.data) {
@@ -148,6 +156,14 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
       ) : dashboardQuery.data ? (
         <main className="dashboard-main" id="dashboard-main">
           <KpiGrid kpis={dashboardQuery.data.kpis} />
+          {!wallboard && (
+            <StoreOperationsPanel
+              snapshot={operationsQuery.data}
+              isLoading={operationsQuery.isLoading}
+              error={operationsQuery.error}
+              onRetry={() => void operationsQuery.refetch()}
+            />
+          )}
           <div className="dashboard-content-grid">
             <div className="dashboard-left-column">
               <TrendPanel points={dashboardQuery.data.timeSeries} />

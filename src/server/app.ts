@@ -26,6 +26,7 @@ import { registerSelectionCategoryRoutes } from "./routes/selection-categories";
 import { registerSelectionDiscoveryRoutes } from "./routes/selection-discovery";
 import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
+import { registerStoreOperationsRoutes } from "./routes/store-operations";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
 import { wallboardAuthorization } from "./security/wallboard-session";
 import { SelectionModule } from "./selection/selection-module";
@@ -34,6 +35,7 @@ import { OrderNotificationService } from "./services/order-notification-service"
 import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { UpdateService } from "./services/update-service";
+import { StoreOperationsService, type StoreOperationsReader } from "./services/store-operations-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
 import { DiscoveryModule } from "./selection/discovery-module";
 import { MyDataModule } from "./selection/my-data-module";
@@ -57,6 +59,7 @@ export interface AppDependencies {
   imageStorage?: OssImageStorageService;
   resellImages?: ResellImageService;
   publishDrafts?: PublishDraftsModule;
+  storeOperations?: StoreOperationsReader;
 }
 
 interface SqliteError extends Error {
@@ -166,11 +169,13 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
     fetchImplementation: proxySettings.createFetch(),
   });
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
+  const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
   resell.start();
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
   registerStoreRoutes(app, config, stores, syncService);
+  registerStoreOperationsRoutes(app, storeOperations);
   registerDashboardRoutes(app, new DashboardRepository(database), events);
   registerSelectionRoutes(app, selection, myData, resell, resellImages, publishDrafts);
   registerSelectionCategoryRoutes(app, categories);

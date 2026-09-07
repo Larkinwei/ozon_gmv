@@ -7,9 +7,11 @@ import type {
   DashboardSnapshot,
   OrderDetail,
   RecentOrder,
+  StoreOperationsSnapshot,
   StoreBreakdown,
   StoreView,
   TimeSeriesPoint,
+  BuyerQuestionView,
 } from "../shared/contracts";
 
 export const demoStores: StoreView[] = [
@@ -188,6 +190,77 @@ export function createDemoSnapshot(range: DashboardRange, selectedStoreId: strin
     recentOrders: makeRecentOrders().filter((order) => selectedStoreId === "all" || storeIds.has(order.storeId)),
     sync: demoStores.filter((store) => selectedStoreId === "all" || store.id === selectedStoreId),
   };
+}
+
+/** Provides safe, deterministic finance and question data for the dashboard demo. */
+export function createDemoStoreOperations(selectedStoreId: string): StoreOperationsSnapshot {
+  const generatedAt = new Date().toISOString();
+  const stores = demoStores
+    .filter((store) => selectedStoreId === "all" || store.id === selectedStoreId)
+    .map((store, index) => {
+      const closing = 126_480 - index * 18_750;
+      const questions: BuyerQuestionView[] = [
+        {
+          id: `demo-question-${store.id}-1`,
+          storeId: store.id,
+          storeName: store.name,
+          storeColor: store.color,
+          text: index % 2 === 0 ? "这个收纳包可以放 15 寸的笔记本电脑吗？" : "请问这款商品什么时候可以发货？",
+          status: "UNPROCESSED",
+          sku: `646399${170 + index}`,
+          productName: "轻量防水旅行收纳包",
+          productUrl: "https://www.ozon.ru/",
+          questionLink: "https://www.ozon.ru/",
+          publishedAt: new Date(Date.now() - (index + 1) * 18 * 60_000).toISOString(),
+          answersCount: 0,
+        },
+        {
+          id: `demo-question-${store.id}-2`,
+          storeId: store.id,
+          storeName: store.name,
+          storeColor: store.color,
+          text: "商品的实际尺寸和页面描述一致吗？",
+          status: "VIEWED",
+          sku: `646399${270 + index}`,
+          productName: "便携行李整理袋",
+          productUrl: "https://www.ozon.ru/",
+          questionLink: "https://www.ozon.ru/",
+          publishedAt: new Date(Date.now() - (index + 1) * 42 * 60_000).toISOString(),
+          answersCount: 1,
+        },
+      ];
+      return {
+        storeId: store.id,
+        storeName: store.name,
+        storeColor: store.color,
+        balance: {
+          status: { state: "ok" as const, message: null, updatedAt: generatedAt },
+          primary: { amount: closing.toFixed(2), currency: "RUB" },
+          primaryLabel: "期末余额" as const,
+          openingBalance: { amount: (closing - 8_640).toFixed(2), currency: "RUB" },
+          closingBalance: { amount: closing.toFixed(2), currency: "RUB" },
+          accrued: { amount: "24860.00", currency: "RUB" },
+          payments: [{ amount: "16220.00", currency: "RUB" }],
+        },
+        questions: {
+          status: { state: "ok" as const, message: null, updatedAt: generatedAt },
+          counts: { all: 18 + index * 3, new: 4, processed: 10, unprocessed: 3 + index, viewed: 1 },
+          latest: questions,
+        },
+      };
+    });
+  return { generatedAt, stores };
+}
+
+/** Returns one non-PII demo question for the read-only question detail drawer. */
+export function createDemoQuestionDetail(storeId: string, questionId: string): BuyerQuestionView {
+  const question = createDemoStoreOperations(storeId).stores
+    .flatMap((store) => store.questions.latest)
+    .find((candidate) => candidate.id === questionId);
+  if (!question) {
+    throw new Error("演示问题不存在");
+  }
+  return question;
 }
 
 /** Builds one non-PII demo order using the same contract as the SQLite detail endpoint. */

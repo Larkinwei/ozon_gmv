@@ -47,7 +47,81 @@ export const sellerInfoResponseSchema = z.object({
     currency: z.string().nullish(),
     country: z.string().nullish(),
   }).passthrough().nullish().default({}),
+  }).passthrough();
+
+function unwrapResult(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  return record.result && typeof record.result === "object" ? record.result : value;
+}
+
+const financeAmountSchema = z.object({
+  currency_code: z.union([z.string(), z.number()]).transform(String).nullish(),
+  value: z.union([z.string(), z.number()]).transform(String).nullish(),
 }).passthrough();
+
+const financeCashflowSchema = z.object({
+  amount: financeAmountSchema.nullish(),
+  fee: financeAmountSchema.nullish(),
+  amount_details: z.object({
+    revenue: financeAmountSchema.nullish(),
+  }).passthrough().nullish(),
+}).passthrough();
+
+const financeBalancePayloadSchema = z.object({
+  cashflows: z.object({
+    returns: financeCashflowSchema.nullish(),
+    sales: financeCashflowSchema.nullish(),
+    services: z.array(z.object({
+      amount: financeAmountSchema.nullish(),
+      name: z.string().nullish(),
+    }).passthrough()).default([]),
+  }).passthrough().nullish(),
+  total: z.object({
+    accrued: financeAmountSchema.nullish(),
+    closing_balance: financeAmountSchema.nullish(),
+    opening_balance: financeAmountSchema.nullish(),
+    payments: z.array(financeAmountSchema).default([]),
+  }).passthrough().nullish(),
+}).passthrough();
+
+export const financeBalanceResponseSchema = z.preprocess(unwrapResult, financeBalancePayloadSchema);
+
+const questionItemSchema = z.object({
+  id: z.union([z.string(), z.number()]).transform(String).nullish(),
+  question_id: z.union([z.string(), z.number()]).transform(String).nullish(),
+  answers_count: z.coerce.number().int().nonnegative().default(0),
+  product_url: z.string().nullish(),
+  question_link: z.string().nullish(),
+  published_at: z.string().nullish(),
+  sku: z.union([z.string(), z.number()]).transform(String).nullish(),
+  status: z.string().nullish(),
+  text: z.string().default(""),
+  product_name: z.string().nullish(),
+  is_answered: z.boolean().nullish(),
+  urgency_level: z.string().nullish(),
+  category_name: z.string().nullish(),
+}).passthrough();
+
+const questionListPayloadSchema = z.object({
+  questions: z.array(questionItemSchema).default([]),
+  last_id: z.union([z.string(), z.number()]).transform(String).nullish(),
+  has_next: z.boolean().default(false),
+}).passthrough();
+
+export const questionListResponseSchema = z.preprocess(unwrapResult, questionListPayloadSchema);
+
+export const questionCountResponseSchema = z.preprocess(unwrapResult, z.object({
+  all: z.coerce.number().int().nonnegative().default(0),
+  new: z.coerce.number().int().nonnegative().default(0),
+  processed: z.coerce.number().int().nonnegative().default(0),
+  unprocessed: z.coerce.number().int().nonnegative().default(0),
+  viewed: z.coerce.number().int().nonnegative().default(0),
+}).passthrough());
+
+export const questionInfoResponseSchema = z.preprocess(unwrapResult, questionItemSchema);
 
 const productInfoSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String).nullish(),

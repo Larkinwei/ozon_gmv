@@ -1,6 +1,7 @@
 import type {
   DashboardRange,
   DashboardSnapshot,
+  BuyerQuestionView,
   NetworkSettingsView,
   MyDataImportPreview,
   MyDataImportResult,
@@ -58,13 +59,14 @@ import type {
   SessionView,
   StoreCreateInput,
   StoreCreateResult,
+  StoreOperationsSnapshot,
   StoreView,
   UpdateView,
   WallboardPairingView,
   WordstatJobView,
   WordstatSettingsView,
 } from "../shared/contracts";
-import { createDemoOrderDetail, createDemoSnapshot, demoStores } from "./demo-data";
+import { createDemoOrderDetail, createDemoQuestionDetail, createDemoSnapshot, createDemoStoreOperations, demoStores } from "./demo-data";
 
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 let runtimeRole: RuntimeView["role"] = "admin";
@@ -186,6 +188,27 @@ export function dashboardStreamUrl(): string {
 
 export async function fetchStores(): Promise<StoreView[]> {
   return DEMO_MODE ? demoStores : apiFetch("/api/stores");
+}
+
+/** Loads the selected stores' finance balance and buyer-question summaries. */
+export async function fetchStoreOperations(storeId: string): Promise<StoreOperationsSnapshot> {
+  if (DEMO_MODE) {
+    return createDemoStoreOperations(storeId);
+  }
+  const params = new URLSearchParams();
+  if (storeId !== "all") {
+    params.set("storeIds", storeId);
+  }
+  const query = params.toString();
+  return apiFetch(`/api/store-operations/overview${query ? `?${query}` : ""}`);
+}
+
+/** Loads one read-only buyer-question detail for the authenticated admin dashboard. */
+export async function fetchQuestionDetail(storeId: string, questionId: string): Promise<BuyerQuestionView> {
+  if (DEMO_MODE) {
+    return createDemoQuestionDetail(storeId, questionId);
+  }
+  return apiFetch(`/api/store-operations/questions/${encodeURIComponent(storeId)}/${encodeURIComponent(questionId)}`);
 }
 
 export async function createStore(input: StoreCreateInput): Promise<StoreCreateResult> {
