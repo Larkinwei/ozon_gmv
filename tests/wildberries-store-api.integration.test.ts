@@ -48,6 +48,9 @@ describe("Wildberries store API", () => {
       proxySettings,
       updates: new UpdateService(context.config, proxySettings),
     });
+    const proxyFactory = vi.spyOn(proxySettings, "createFetch").mockImplementation(() => {
+      throw new Error("Wildberries requests must not use the Ozon proxy");
+    });
     try {
       const setup = await app.inject({
         method: "POST",
@@ -67,6 +70,7 @@ describe("Wildberries store API", () => {
       expect(context.database.prepare("SELECT credential_type FROM store_credentials").get()).toEqual({ credential_type: "wildberries_api_token" });
       expect(context.database.prepare("SELECT password_hash FROM administrators").get()).toBeTruthy();
     } finally {
+      proxyFactory.mockRestore();
       vi.unstubAllGlobals();
       await app.close();
       context.cleanup();

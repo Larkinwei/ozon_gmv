@@ -10,6 +10,8 @@ import {
   type WildberriesReportRow,
 } from "./schemas";
 
+const MAX_AUTOMATIC_RETRY_DELAY_MS = 10_000;
+
 export const WILDBERRIES_API_BASE_URLS = {
   statistics: "https://statistics-api.wildberries.ru",
   finance: "https://finance-api.wildberries.ru",
@@ -29,6 +31,7 @@ export class WildberriesApiError extends Error {
     message: string,
     public readonly status: number,
     public readonly retryable: boolean,
+    public readonly retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.name = "WildberriesApiError";
@@ -132,12 +135,20 @@ export class WildberriesClient {
         return schema.parse(await response.json());
       }
       const retryable = response.status === 429 || response.status >= 500;
-      if (retryable && attempt + 1 < this.maxAttempts) {
-        await wait(retryDelay(response, attempt));
+      const delayMs = retryDelay(response, attempt);
+      if (retryable && attempt + 1 < this.maxAttempts && delayMs <= MAX_AUTOMATIC_RETRY_DELAY_MS) {
+        await wait(delayMs);
         continue;
       }
       const responseText = (await response.text()).slice(0, 500);
-      throw new WildberriesApiError(`Wildberries API ${response.status}: ${responseText || response.statusText}`, response.status, retryable);
+      const retryAfterSeconds = response.status === 429 ? Math.ceil(delayMs / 1000) : null;
+      const retryHint = retryAfterSeconds !== null ? `；建议约 ${retryAfterSeconds} 秒后重试` : "";
+      throw new WildberriesApiError(
+        `Wildberries API ${response.status}: ${responseText || response.statusText}${retryHint}`,
+        response.status,
+        retryable,
+        retryAfterSeconds,
+      );
     }
     throw new WildberriesApiError("Wildberries API retry budget exhausted", 0, true);
   }

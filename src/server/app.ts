@@ -43,6 +43,7 @@ import { ResellModule } from "./selection/resell-module";
 import { ResellImageService } from "./selection/resell-image-service";
 import { PublishDraftsModule } from "./selection/publish-drafts";
 import { OssImageStorageService } from "./services/oss-image-storage-service";
+import { WildberriesApiError } from "./wildberries/client";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -128,6 +129,14 @@ function registerErrorHandler(app: FastifyInstance): void {
     }
     if (error.code?.startsWith("SQLITE_CONSTRAINT")) {
       return reply.code(409).send({ error: "CONFLICT", message: "数据已存在或不符合唯一性约束" });
+    }
+    if (error instanceof WildberriesApiError) {
+      const statusCode = error.status >= 400 && error.status < 600 ? error.status : 502;
+      return reply.code(statusCode).send({
+        error: "WILDBERRIES_API_ERROR",
+        message: error.message,
+        retryAfterSeconds: error.retryAfterSeconds,
+      });
     }
     app.log.error(error);
     return reply.code(500).send({ error: "INTERNAL_ERROR", message: "服务暂时不可用" });

@@ -96,6 +96,9 @@ function operationErrorMessage(label: string, error: unknown): string {
   if (isPermissionError(error)) {
     return `${label}无权限或未开通，请检查平台 API 凭证权限和店铺套餐`;
   }
+  if ((error instanceof OzonApiError || error instanceof WildberriesApiError) && error.status === 429) {
+    return `${label}触发平台限流，请稍后重试`;
+  }
   if ((error instanceof OzonApiError || error instanceof WildberriesApiError) && error.status > 0) {
     return `${label}请求失败（HTTP ${error.status}），稍后会自动重试`;
   }
@@ -168,8 +171,7 @@ export class StoreOperationsService implements StoreOperationsReader {
       if (store.platform === "wildberries") {
         return new WildberriesClient({
           apiToken: secret,
-          fetchImplementation: this.proxySettings.createFetch(),
-          directFetchImplementation: fetch,
+          fetchImplementation: fetch,
         });
       }
       return new OzonClient({

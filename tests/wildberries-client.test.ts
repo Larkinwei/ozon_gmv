@@ -46,6 +46,18 @@ describe("Wildberries API client", () => {
     await expect(denied.getBalance()).rejects.toMatchObject({ status: 403, retryable: false });
   });
 
+  it("does not hold a request open for a long Wildberries rate-limit window", async () => {
+    let attempts = 0;
+    const fetchImplementation = (async () => {
+      attempts += 1;
+      return new Response("rate limited", { status: 429, headers: { "X-Ratelimit-Retry": "27391" } });
+    }) as typeof fetch;
+    const client = new WildberriesClient({ apiToken: "wb-token", fetchImplementation, maxAttempts: 4 });
+
+    await expect(client.getBalance()).rejects.toMatchObject({ status: 429, retryAfterSeconds: 27391 });
+    expect(attempts).toBe(1);
+  });
+
   it("falls back to a direct request when the configured proxy cannot reach WB", async () => {
     const proxyFetch = vi.fn(async () => { throw new TypeError("fetch failed"); }) as typeof fetch;
     const directFetch = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {

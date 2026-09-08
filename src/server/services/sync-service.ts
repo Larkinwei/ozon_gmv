@@ -227,11 +227,11 @@ export class SyncService {
     });
   }
 
+  /** Creates a Wildberries client with direct network access, independent of Ozon proxy settings. */
   private createWildberriesAdapter(apiToken: string): WildberriesAdapter {
     return new WildberriesAdapter(new WildberriesClient({
       apiToken,
-      fetchImplementation: this.proxySettings.createFetch(),
-      directFetchImplementation: fetch,
+      fetchImplementation: fetch,
     }));
   }
 

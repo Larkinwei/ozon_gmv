@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { OzonApiError } from "../src/server/ozon/client";
 import { SettingsRepository } from "../src/server/db/settings-repository";
 import { StoresRepository } from "../src/server/db/stores-repository";
+import { encryptSecret } from "../src/server/security/encryption";
 import { ProxySettingsService } from "../src/server/services/proxy-settings-service";
 import { StoreOperationsService } from "../src/server/services/store-operations-service";
 import { createTestDatabase } from "./test-context";
@@ -141,22 +142,27 @@ describe("StoreOperationsService", () => {
       name: "WB 店铺",
       platform: "wildberries",
       clientId: "",
-      apiKeyCiphertext: "cipher-wb",
+      apiKeyCiphertext: encryptSecret("wb-token", context.config.ENCRYPTION_KEY),
       color: "#F59E0B",
       fulfillmentModes: [],
       apiKeyExpiresAt: null,
     });
     const settings = new SettingsRepository(context.database);
     settings.set("network.proxy_mode", "direct");
+    vi.stubGlobal("fetch", (async (input: URL | RequestInfo) => {
+      if (String(input).includes("account/balance")) {
+        return new Response(JSON.stringify({ currency: "RUB", current: "500.00", for_withdraw: "300.00" }), { status: 200 });
+      }
+      throw new Error(`Unexpected Wildberries request: ${String(input)}`);
+    }) as typeof fetch);
+    const proxySettings = new ProxySettingsService(context.config, settings);
+    const proxyFactory = vi.spyOn(proxySettings, "createFetch").mockImplementation(() => {
+      throw new Error("Wildberries requests must not use the Ozon proxy");
+    });
     const service = new StoreOperationsService(
       context.config,
       stores,
-      new ProxySettingsService(context.config, settings),
-      {
-        clientFactory: () => ({
-          getBalance: vi.fn(async () => ({ currency: "RUB", current: "500.00", for_withdraw: "300.00" })),
-        }),
-      },
+      proxySettings,
     );
 
     try {
@@ -167,6 +173,8 @@ describe("StoreOperationsService", () => {
         questions: { status: { state: "unsupported" }, counts: null, latest: [] },
       });
     } finally {
+      proxyFactory.mockRestore();
+      vi.unstubAllGlobals();
       context.cleanup();
     }
   });
