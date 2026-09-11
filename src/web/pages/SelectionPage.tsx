@@ -7,7 +7,6 @@ import {
   CircleAlert,
   CircleDollarSign,
   ChartScatter,
-  ClipboardList,
   Clock3,
   CloudDownload,
   Database,
@@ -25,7 +24,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 
 import type {
   SelectionCandidate,
@@ -59,7 +58,6 @@ import {
   updateSelectionCandidate,
   updateWordstatSettings,
 } from "../api";
-import { AppNav } from "../components/AppNav";
 import { SelectionCandidateDialog } from "../components/SelectionCandidateDialog";
 import { SelectionCategoryPanel, SelectionCategorySourceCard } from "../components/SelectionCategoryPanel";
 import {
@@ -71,10 +69,9 @@ import { SelectionImportDialog } from "../components/SelectionImportDialog";
 import { SelectionKeywordDrawer } from "../components/SelectionKeywordDrawer";
 import { SelectionMarketProductDrawer } from "../components/SelectionMarketProductDrawer";
 import { MyDataPanel } from "../components/MyDataPanel";
-import { ResellTasksPanel } from "../components/ResellTasksPanel";
 import { formatCompactNumber, formatMoney } from "../format";
 
-type SelectionTab = "queries" | "products" | "categories" | "candidates" | "sources" | "my-data" | "resell-tasks";
+type SelectionTab = "queries" | "products" | "categories" | "candidates" | "sources" | "my-data";
 
 interface Notice {
   tone: "success" | "error";
@@ -88,7 +85,6 @@ const tabOptions: Array<{ value: SelectionTab; label: string; icon: typeof Light
   { value: "candidates", label: "候选池", icon: ListChecks },
   { value: "sources", label: "数据源", icon: Database },
   { value: "my-data", label: "MY 数据", icon: FileSpreadsheet },
-  { value: "resell-tasks", label: "跟卖任务", icon: ClipboardList },
 ];
 
 const sortOptions: Array<{ value: SelectionKeywordSort; label: string }> = [
@@ -387,12 +383,7 @@ export default function SelectionPage(): React.JSX.Element {
   const dialogError = createCandidateMutation.error?.message ?? updateCandidateMutation.error?.message ?? null;
 
   return (
-    <div className="admin-page selection-page">
-      <a className="skip-link" href="#selection-main">跳到主要内容</a>
-      <header className="admin-header">
-        <Link className="brand-lockup" to="/dashboard"><div className="brand-mark" aria-hidden="true">O</div><div><p className="eyebrow">OZON MULTI-STORE</p><h1>GMV 指挥中心</h1></div></Link>
-        <AppNav />
-      </header>
+    <>
       <main className="admin-main selection-main" id="selection-main">
         <div className="page-title-row">
           <div><p className="eyebrow">PRODUCT DISCOVERY</p><h2>选品分析</h2><p>结合 Ozon 关键词、热销商品与类目快照，形成可追踪的候选决策。</p></div>
@@ -506,7 +497,6 @@ export default function SelectionPage(): React.JSX.Element {
             />
           )}
           {tab === "my-data" && <MyDataPanel onNotice={setNotice} />}
-          {tab === "resell-tasks" && <ResellTasksPanel />}
         </div>
       </main>
       {showImport && <SelectionImportDialog onClose={() => setShowImport(false)} onImported={(result) => void importCompleted(result)} />}
@@ -525,7 +515,7 @@ export default function SelectionPage(): React.JSX.Element {
           onUpdate={(id, input) => updateCandidateMutation.mutate({ id, input })}
         />
       )}
-    </div>
+    </>
   );
 }
 

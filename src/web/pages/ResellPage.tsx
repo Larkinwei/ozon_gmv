@@ -1,12 +1,11 @@
 import { ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, CircleAlert, ClipboardCheck, ExternalLink, FileJson, ImagePlus, PackagePlus, RefreshCw, Rocket, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import type { FulfillmentMode, PublishSourceType, ResellImageView, ResellMode, ResellPackageDimensions, ResellPreflightInput, ResellPreflightView, ResellSourceView, ResellStatus } from "../../shared/contracts";
 import { ApiRequestError, createPublishTask, createPublishDraft, enrichPublishSource, fetchResellSource, fetchResellTask, fetchStores, preflightPublish, previewPublishPackage, retryResellTask, setResellTaskStock, updatePublishDraft, uploadResellImage } from "../api";
 import { hasPublishAttributeValue } from "../../shared/publish-attributes";
-import { AppNav } from "../components/AppNav";
 import { formatMoney } from "../format";
 import { mergeSellerSource } from "../../shared/publish-source";
 
@@ -1061,7 +1060,8 @@ export default function ResellPage(): React.JSX.Element {
   }
 
   if (sourceQuery.isLoading || storesQuery.isLoading) return <div className="app-loading"><div className="brand-mark">O</div><div className="loading-line" /></div>;
-  if (sku && (sourceQuery.error || !sourceQuery.data)) return <main className="admin-page"><AppNav /><section className="page-error resell-error"><h1>无法读取跟卖来源</h1><p>{sourceQuery.error?.message ?? "MY 数据中不存在该 SKU"}</p><Link className="secondary-button" to="/selection?tab=my-data">返回 MY 数据</Link></section></main>;
+  const returnPath = sku ? "/operations/selection?tab=my-data" : "/operations/selection";
+  if (sku && (sourceQuery.error || !sourceQuery.data)) return <section className="page-error resell-error"><h1>无法读取跟卖来源</h1><p>{sourceQuery.error?.message ?? "MY 数据中不存在该 SKU"}</p><button className="secondary-button" type="button" onClick={() => navigate(returnPath)}>返回 MY 数据</button></section>;
 
   const task = taskQuery.data;
   const productUrl = safeProductUrl(source.productUrl);
@@ -1069,10 +1069,9 @@ export default function ResellPage(): React.JSX.Element {
     ? source.currentPrice
     : { amount: defaultPrice(source.currentPrice.amount, source.monthlySales.amount, source.monthlyUnits), currency: source.monthlySales.currency };
   return (
-    <div className="admin-page resell-page">
-      <AppNav />
+    <>
       <main className="resell-content">
-        <div className="resell-breadcrumb"><button className="icon-button" type="button" onClick={() => navigate("/selection?tab=my-data")} aria-label="返回选品分析"><ArrowLeft size={19} /></button><span>选品分析</span><span>/</span><strong>商品发布</strong></div>
+        <div className="resell-breadcrumb"><button className="icon-button" type="button" onClick={() => navigate(returnPath)} aria-label={sku ? "返回 MY 数据" : "返回选品分析"}><ArrowLeft size={19} /></button><span>运营中心</span><span>/</span><strong>商品发布</strong></div>
         <header className="resell-heading"><div><p className="eyebrow">OZON PRODUCT WORKBENCH</p><h1>商品发布工作台</h1><p>从 MY、JSON 文件夹或 Seller 补全创建商品草稿，统一编辑、预检并发布到目标店铺。</p><div className="publish-source-chips"><span className="publish-source-chip publish-source-chip--active">{sourceLabel(sourceType)}</span><span className="publish-completeness">已完成 {completeness.completed}/{completeness.total} 项</span>{completeness.missing.length > 0 && <span className="publish-completeness publish-completeness--warning">待补充 {completeness.missing.length} 项</span>}</div></div><ShieldCheck size={34} aria-hidden="true" /></header>
         <section className="publish-source-toolbar" aria-label="商品来源"><div><strong>选择来源</strong><span>跟卖入口会自动带入 MY SKU；普通商品可从标准商品包开始。</span></div><input ref={packageInputRef} className="visually-hidden" type="file" multiple accept="application/json,image/jpeg,image/png,image/webp" onChange={(event) => void handlePackageFiles(event)} {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)} /><button className="secondary-button" type="button" onClick={() => packageInputRef.current?.click()}><FileJson size={16} />从文件夹导入</button><button className="secondary-button" type="button" onClick={() => void requestSellerEnrichment()} disabled={!source.sku || ["reading", "merging", "resolving", "checking"].includes(sellerSyncPhase)}><RefreshCw size={16} className={sellerSyncPhase === "reading" || sellerSyncPhase === "merging" || sellerSyncPhase === "resolving" || sellerSyncPhase === "checking" ? "is-spinning" : undefined} />{sellerSyncPhaseLabel(sellerSyncPhase)}</button>{sellerSyncPhase !== "idle" && <div className={`seller-sync-status seller-sync-status--${sellerSyncPhase === "success" ? "success" : sellerSyncPhase === "error" ? "error" : "active"}`} role="status" aria-live="polite">{sellerSyncPhase === "success" ? <CheckCircle2 size={15} /> : sellerSyncPhase === "error" ? <CircleAlert size={15} /> : <RefreshCw size={15} className="is-spinning" />}{sellerSyncMessage}</div>}</section>
         <section className="resell-source-card resell-source-card--top" aria-label="来源商品摘要">
@@ -1141,7 +1140,7 @@ export default function ResellPage(): React.JSX.Element {
         {task && <TaskStatus task={task} onRetry={() => retryMutation.mutate()} retrying={retryMutation.isPending} onSetStock={() => stockMutation.mutate()} settingStock={stockMutation.isPending} />}
       </main>
       {confirmOpen && <div className="dialog-backdrop" role="presentation"><section className="dialog resell-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="resell-confirm-title"><div className="dialog-heading"><div><p className="eyebrow">ACTION CONFIRMATION</p><h2 id="resell-confirm-title">确认提交发布？</h2></div><button className="icon-button" type="button" onClick={() => setConfirmOpen(false)} aria-label="取消"><CircleAlert size={19} /></button></div><p>服务将使用目标店铺的 Seller API 创建商品、上传图片、设置价格并写入库存。Ozon 仍可能要求审核或补充资料。</p><dl className="resell-confirm-list"><div><dt>来源类型</dt><dd>{sourceLabel(sourceType)}</dd></div><div><dt>目标店铺</dt><dd>{selectedStore?.name ?? "—"}</dd></div><div><dt>SKU / Offer ID</dt><dd>{source.sku || "普通商品"} / {offerId}</dd></div><div><dt>图片</dt><dd>{images.length} 张（已上传 {images.filter((image) => image.source === "uploaded").length} 张）</dd></div><div><dt>价格 / 库存</dt><dd>{price} {currency} / {stock} 件</dd></div><div><dt>VAT</dt><dd>{vat}（请确认与目标店铺国家税率一致）</dd></div><div><dt>履约 / 仓库</dt><dd>{fulfillmentMode} / {preflight?.warehouses.find((item) => item.id === warehouseId)?.name ?? warehouseId}</dd></div></dl><div className="resell-confirm-thumbs">{images.slice(0, 6).map((image, index) => <img key={`${image.id}-${index}`} src={image.url} alt={`${index === 0 ? "主图" : "副图"}预览`} />)}</div>{preflight?.warnings.map((warning) => <p className="resell-warning" key={warning}><CircleAlert size={16} />{warning}</p>)}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setConfirmOpen(false)}>返回修改</button><button className="primary-button" type="button" onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>{createMutation.isPending ? "提交中…" : "确认发布"}</button></div></section></div>}
-    </div>
+    </>
   );
 }
 

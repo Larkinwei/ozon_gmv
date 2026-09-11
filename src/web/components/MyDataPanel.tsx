@@ -203,7 +203,7 @@ export function MyDataPanel(props: MyDataPanelProps): React.JSX.Element {
     if (!productsQuery.data || productsQuery.data.items.length === 0) {
       return <div className="my-data-empty-filter">没有匹配商品。<button className="secondary-button compact-button" type="button" onClick={clearFilters}>清除筛选</button></div>;
     }
-    return <MyDataTable items={productsQuery.data.items} onResell={(sku) => navigate(`/selection/resell/${encodeURIComponent(sku)}`)} />;
+    return <MyDataTable items={productsQuery.data.items} onResell={(sku) => navigate(`/operations/publish/resell/${encodeURIComponent(sku)}`)} />;
   }
 
   const totalPages = Math.max(1, Math.ceil((productsQuery.data?.total ?? 0) / pageSize));

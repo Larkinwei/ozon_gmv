@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 
 import { fetchRuntime, fetchSession } from "./api";
 
@@ -8,6 +8,8 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const SelectionPage = lazy(() => import("./pages/SelectionPage"));
+const OperationsCenterLayout = lazy(() => import("./components/OperationsCenterLayout"));
+const PublishTasksPage = lazy(() => import("./pages/PublishTasksPage"));
 const ResellPage = lazy(() => import("./pages/ResellPage"));
 const SetupPage = lazy(() => import("./pages/SetupPage"));
 const StoresPage = lazy(() => import("./pages/StoresPage"));
@@ -29,6 +31,29 @@ function PairingRequired(): React.JSX.Element {
       <p>请在安装电脑的“本机设置”中生成一次性局域网配对链接，再用本设备打开。</p>
     </main>
   );
+}
+
+/** Redirects a legacy route while keeping the user's filters and tab state. */
+function LegacyRouteRedirect(props: { to: string }): React.JSX.Element {
+  const location = useLocation();
+  return <Navigate to={`${props.to}${location.search}`} replace />;
+}
+
+/** Moves the former selection task tab to its new publish-task destination. */
+function LegacySelectionRedirect(): React.JSX.Element {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const taskTab = searchParams.get("tab") === "resell-tasks";
+  const target = taskTab ? "/operations/publish/tasks" : "/operations/selection";
+  return <Navigate to={`${target}${location.search}`} replace />;
+}
+
+/** Redirects legacy SKU links without losing the encoded product identifier. */
+function LegacyResellRedirect(): React.JSX.Element {
+  const { sku } = useParams<{ sku: string }>();
+  const location = useLocation();
+  const encodedSku = encodeURIComponent(sku ?? "");
+  return <Navigate to={`/operations/publish/resell/${encodedSku}${location.search}`} replace />;
 }
 
 export function App(): React.JSX.Element {
@@ -88,9 +113,16 @@ export function App(): React.JSX.Element {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/wallboard" element={<DashboardPage wallboard />} />
         <Route path="/stores" element={<StoresPage />} />
-        <Route path="/selection" element={<SelectionPage />} />
-        <Route path="/selection/publish" element={<ResellPage />} />
-        <Route path="/selection/resell/:sku" element={<ResellPage />} />
+        <Route path="/operations" element={<OperationsCenterLayout />}>
+          <Route index element={<Navigate to="selection" replace />} />
+          <Route path="selection" element={<SelectionPage />} />
+          <Route path="publish" element={<ResellPage />} />
+          <Route path="publish/tasks" element={<PublishTasksPage />} />
+          <Route path="publish/resell/:sku" element={<ResellPage />} />
+        </Route>
+        <Route path="/selection" element={<LegacySelectionRedirect />} />
+        <Route path="/selection/publish" element={<LegacyRouteRedirect to="/operations/publish" />} />
+        <Route path="/selection/resell/:sku" element={<LegacyResellRedirect />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

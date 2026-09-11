@@ -1,4 +1,4 @@
-import { BarChart3, Lightbulb, LogOut, Maximize2, Menu, Minimize2, Settings, Store, X } from "lucide-react";
+import { BarChart3, LogOut, Maximize2, Menu, Minimize2, Package, Settings, Store, X } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -23,6 +23,10 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
     refetchInterval: 60_000,
   });
   const updateAvailable = updateQuery.data?.state === "available";
+  const dashboardActive = location.pathname === "/dashboard";
+  const operationsActive = location.pathname.startsWith("/operations") || location.pathname.startsWith("/selection");
+  const storesActive = location.pathname === "/stores";
+  const settingsActive = location.pathname === "/settings";
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: async () => {
@@ -45,16 +49,16 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
     <nav className={compact ? "app-nav app-nav--compact" : "app-nav"} aria-label="主导航">
       {!compact && (
         <>
-          <Link className={location.pathname === "/dashboard" ? "nav-link is-active" : "nav-link"} to="/dashboard">
-            <BarChart3 size={18} aria-hidden="true" /> 运营总览
+          <Link className={dashboardActive ? "nav-link is-active" : "nav-link"} aria-current={dashboardActive ? "page" : undefined} to="/dashboard">
+            <BarChart3 size={18} aria-hidden="true" /> 经营总览
           </Link>
-          <Link className={location.pathname === "/stores" ? "nav-link is-active" : "nav-link"} to="/stores">
+          <Link className={operationsActive ? "nav-link is-active" : "nav-link"} aria-current={operationsActive ? "page" : undefined} to="/operations">
+            <Package size={18} aria-hidden="true" /> 运营中心
+          </Link>
+          <Link className={storesActive ? "nav-link is-active" : "nav-link"} aria-current={storesActive ? "page" : undefined} to="/stores">
             <Store size={18} aria-hidden="true" /> 店铺管理
           </Link>
-          <Link className={location.pathname === "/selection" ? "nav-link is-active" : "nav-link"} to="/selection">
-            <Lightbulb size={18} aria-hidden="true" /> 选品分析
-          </Link>
-          <Link className={location.pathname === "/settings" ? "nav-link is-active" : "nav-link"} to="/settings">
+          <Link className={settingsActive ? "nav-link is-active" : "nav-link"} aria-current={settingsActive ? "page" : undefined} to="/settings">
             <Settings size={18} aria-hidden="true" /> 本机设置
             {updateAvailable && <span className="nav-update-badge"><span aria-hidden="true" />有更新</span>}
           </Link>
@@ -73,10 +77,10 @@ export function AppNav({ compact = false }: AppNavProps): React.JSX.Element {
           </button>
           {menuOpen && (
             <div className="mobile-nav-drawer" id="mobile-navigation">
-              <Link className={location.pathname === "/dashboard" ? "is-active" : ""} to="/dashboard" onClick={() => setMenuOpen(false)}><BarChart3 size={18} />运营总览</Link>
-              <Link className={location.pathname === "/stores" ? "is-active" : ""} to="/stores" onClick={() => setMenuOpen(false)}><Store size={18} />店铺管理</Link>
-              <Link className={location.pathname === "/selection" ? "is-active" : ""} to="/selection" onClick={() => setMenuOpen(false)}><Lightbulb size={18} />选品分析</Link>
-              <Link className={location.pathname === "/settings" ? "is-active" : ""} to="/settings" onClick={() => setMenuOpen(false)}><Settings size={18} />本机设置{updateAvailable && <span className="nav-update-badge"><span aria-hidden="true" />有更新</span>}</Link>
+              <Link className={dashboardActive ? "is-active" : ""} aria-current={dashboardActive ? "page" : undefined} to="/dashboard" onClick={() => setMenuOpen(false)}><BarChart3 size={18} />经营总览</Link>
+              <Link className={operationsActive ? "is-active" : ""} aria-current={operationsActive ? "page" : undefined} to="/operations" onClick={() => setMenuOpen(false)}><Package size={18} />运营中心</Link>
+              <Link className={storesActive ? "is-active" : ""} aria-current={storesActive ? "page" : undefined} to="/stores" onClick={() => setMenuOpen(false)}><Store size={18} />店铺管理</Link>
+              <Link className={settingsActive ? "is-active" : ""} aria-current={settingsActive ? "page" : undefined} to="/settings" onClick={() => setMenuOpen(false)}><Settings size={18} />本机设置{updateAvailable && <span className="nav-update-badge"><span aria-hidden="true" />有更新</span>}</Link>
               <button type="button" onClick={() => logoutMutation.mutate()}><LogOut size={18} />退出登录</button>
             </div>
           )}
