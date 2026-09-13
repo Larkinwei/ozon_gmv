@@ -4760,6 +4760,7 @@ td {
 .notification-toggle input:focus-visible { outline: 3px solid rgb(56 189 248 / 65%); outline-offset: 3px; }
 
 .sound-toggle.is-active { color: var(--primary); }
+.privacy-toggle.is-active { color: var(--primary); }
 .sound-note {
   display: flex;
   align-items: baseline;

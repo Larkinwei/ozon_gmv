@@ -4,11 +4,13 @@ import { PackageOpen, RefreshCw, X } from "lucide-react";
 
 import type { OrderDetailItem } from "../../shared/contracts";
 import { fetchOrderDetail } from "../api";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatBeijingTime, formatMoney } from "../format";
 
 interface OrderDetailDrawerProps {
   orderId: string;
   onClose: () => void;
+  privacyHidden?: boolean;
 }
 
 interface ProductImageProps {
@@ -57,7 +59,7 @@ function DrawerSkeleton(): React.JSX.Element {
   );
 }
 
-export function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawerProps): React.JSX.Element {
+export function OrderDetailDrawer({ orderId, onClose, privacyHidden = false }: OrderDetailDrawerProps): React.JSX.Element {
   const drawerRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null);
@@ -138,7 +140,7 @@ export function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawerProps):
               <div className="order-detail-store">
                 <span className="store-chip" style={{ "--store-color": order.storeColor } as React.CSSProperties}>
                   <span className="store-dot" aria-hidden="true" />
-                  {order.storeName}
+                  {privacyHidden ? HIDDEN_PLACEHOLDER : order.storeName}
                 </span>
                 {order.cancelled && <span className="danger-label">已取消</span>}
               </div>

@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 
 import type { DashboardRange, RecentOrder, StorePlatform } from "../../shared/contracts";
 import { fetchDashboard, fetchStoreOperations, fetchStores } from "../api";
+import { dashboardPrivacy, useDashboardPrivacy } from "../dashboard-privacy";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { KpiGrid } from "../components/KpiGrid";
 import { LiveOrders } from "../components/LiveOrders";
@@ -43,13 +44,14 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   const [searchParams, setSearchParams] = useSearchParams();
   const orderIdFromUrl = searchParams.get("order");
   const [storeId, setStoreId] = useState("all");
-  const [platform, setPlatform] = useState<StorePlatform | "all">("all");
+  const [platform, setPlatform] = useState<StorePlatform | "all">("ozon");
   const [range, setRange] = useState<DashboardRange>("today");
   const [customFrom, setCustomFrom] = useState(() => defaultCustomTime(-24));
   const [customTo, setCustomTo] = useState(() => defaultCustomTime(0));
   const [feedPaused, setFeedPaused] = useState(false);
   const [feedOrders, setFeedOrders] = useState<RecentOrder[]>([]);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(() => orderIdFromUrl);
+  const privacyHidden = useDashboardPrivacy();
 
   useEffect(() => {
     setSelectedOrderId(orderIdFromUrl);
@@ -144,6 +146,8 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
         onRangeChange={setRange}
         onCustomFromChange={setCustomFrom}
         onCustomToChange={setCustomTo}
+        privacyHidden={privacyHidden}
+        onPrivacyToggle={() => dashboardPrivacy.setHidden(!privacyHidden)}
       />
 
       {!customRangeValid && <div className="inline-error" role="alert">结束时间必须晚于开始时间</div>}
@@ -160,31 +164,33 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
       ) : dashboardQuery.data ? (
         <main className="dashboard-main" id="dashboard-main">
           <KpiGrid kpis={dashboardQuery.data.kpis} />
-          {!wallboard && (
-            <StoreOperationsPanel
-              snapshot={operationsQuery.data}
-              isLoading={operationsQuery.isLoading}
-              error={operationsQuery.error}
-              onRetry={() => void operationsQuery.refetch()}
-            />
-          )}
           <div className="dashboard-content-grid">
             <div className="dashboard-left-column">
-              <TrendPanel points={dashboardQuery.data.timeSeries} />
-              <StoreRanking stores={dashboardQuery.data.stores} />
+              <TrendPanel points={dashboardQuery.data.timeSeries} privacyHidden={privacyHidden} />
+              <StoreRanking stores={dashboardQuery.data.stores} privacyHidden={privacyHidden} />
             </div>
             <LiveOrders
               orders={feedOrders}
               paused={feedPaused}
               onPausedChange={setFeedPaused}
               onOrderSelect={selectOrder}
+              privacyHidden={privacyHidden}
             />
           </div>
-          <SyncStrip stores={dashboardQuery.data.sync} />
+          <SyncStrip stores={dashboardQuery.data.sync} privacyHidden={privacyHidden} />
+          {!wallboard && (
+            <StoreOperationsPanel
+              snapshot={operationsQuery.data}
+              isLoading={operationsQuery.isLoading}
+              error={operationsQuery.error}
+              onRetry={() => void operationsQuery.refetch()}
+              privacyHidden={privacyHidden}
+            />
+          )}
         </main>
       ) : null}
       {selectedOrderId && (
-        <OrderDetailDrawer orderId={selectedOrderId} onClose={closeOrder} />
+        <OrderDetailDrawer orderId={selectedOrderId} onClose={closeOrder} privacyHidden={privacyHidden} />
       )}
     </div>
   );

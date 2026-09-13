@@ -1,6 +1,7 @@
 import { CirclePause, CirclePlay, PackageOpen } from "lucide-react";
 
 import type { RecentOrder } from "../../shared/contracts";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatBeijingTime, formatMoney } from "../format";
 
 interface LiveOrdersProps {
@@ -8,9 +9,10 @@ interface LiveOrdersProps {
   paused: boolean;
   onPausedChange: (paused: boolean) => void;
   onOrderSelect: (id: string) => void;
+  privacyHidden?: boolean;
 }
 
-export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect }: LiveOrdersProps): React.JSX.Element {
+export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect, privacyHidden = false }: LiveOrdersProps): React.JSX.Element {
   return (
     <section className="panel live-panel" aria-labelledby="live-title">
       <div className="panel-heading">
@@ -45,7 +47,7 @@ export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect }: Li
                 <div className="order-row__top">
                   <span className="store-chip" style={{ "--store-color": order.storeColor } as React.CSSProperties}>
                     <span className="store-dot" aria-hidden="true" />
-                    {order.storeName}
+                    {privacyHidden ? HIDDEN_PLACEHOLDER : order.storeName}
                   </span>
                   <strong>{formatMoney(order.amount)}</strong>
                 </div>

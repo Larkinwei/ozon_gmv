@@ -7,6 +7,7 @@ import type {
   StoreOperationsStatus,
   StoreOperationsStoreView,
 } from "../../shared/contracts";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatBeijingTime, formatMoney } from "../format";
 
 interface StoreOperationsPanelProps {
@@ -14,6 +15,7 @@ interface StoreOperationsPanelProps {
   isLoading: boolean;
   error: Error | null;
   onRetry: () => void;
+  privacyHidden?: boolean;
 }
 
 function statusLabel(state: StoreOperationsState): string {
@@ -71,37 +73,37 @@ function StatusMessage({ status }: { status: StoreOperationsStatus }): React.JSX
   );
 }
 
-function formatBalanceMetric(value: StoreBalanceView["openingBalance"]): string {
-  return value ? formatMoney(value) : "—";
+function formatBalanceMetric(value: StoreBalanceView["openingBalance"], privacyHidden: boolean): string {
+  return privacyHidden ? HIDDEN_PLACEHOLDER : value ? formatMoney(value) : "—";
 }
 
-function BalanceMetrics({ balance }: { balance: StoreBalanceView }): React.JSX.Element {
+function BalanceMetrics({ balance, privacyHidden }: { balance: StoreBalanceView; privacyHidden: boolean }): React.JSX.Element {
   return (
     <dl className="operations-balance-metrics">
-      <div><dt>周期开始余额</dt><dd>{formatBalanceMetric(balance.openingBalance)}</dd></div>
-      <div><dt>周期入账</dt><dd>{formatBalanceMetric(balance.accrued)}</dd></div>
+      <div><dt>周期开始余额</dt><dd>{formatBalanceMetric(balance.openingBalance, privacyHidden)}</dd></div>
+      <div><dt>周期入账</dt><dd>{formatBalanceMetric(balance.accrued, privacyHidden)}</dd></div>
     </dl>
   );
 }
 
-function BalanceStoreRow({ store, showMetrics }: { store: StoreOperationsStoreView; showMetrics: boolean }): React.JSX.Element {
+function BalanceStoreRow({ store, showMetrics, privacyHidden }: { store: StoreOperationsStoreView; showMetrics: boolean; privacyHidden: boolean }): React.JSX.Element {
   const { balance } = store;
   return (
     <article className={`operations-store-row${showMetrics ? "" : " operations-store-row--compact"}`}>
       <div className="operations-store-row__header">
-        <span className="store-chip" style={{ "--store-color": store.storeColor } as React.CSSProperties}>
+          <span className="store-chip" style={{ "--store-color": store.storeColor } as React.CSSProperties}>
           <span className="store-dot" aria-hidden="true" />
-          {store.storeName}
+          {privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}
         </span>
         <StatusBadge status={balance.status} />
       </div>
       {balance.primary ? (
         <>
           <div className="operations-balance-primary">
-            <strong>{formatMoney(balance.primary)}</strong>
+            <strong>{privacyHidden ? HIDDEN_PLACEHOLDER : formatMoney(balance.primary)}</strong>
             <span>当前余额</span>
           </div>
-          {showMetrics && store.platform === "ozon" && <BalanceMetrics balance={balance} />}
+          {showMetrics && store.platform === "ozon" && <BalanceMetrics balance={balance} privacyHidden={privacyHidden} />}
         </>
       ) : (
         <div className="operations-empty-row operations-empty-row--balance">
@@ -125,7 +127,7 @@ function OperationsSkeleton(): React.JSX.Element {
   );
 }
 
-export function StoreOperationsPanel({ snapshot, isLoading, error, onRetry }: StoreOperationsPanelProps): React.JSX.Element {
+export function StoreOperationsPanel({ snapshot, isLoading, error, onRetry, privacyHidden = false }: StoreOperationsPanelProps): React.JSX.Element {
   if (isLoading && !snapshot) {
     return <OperationsSkeleton />;
   }
@@ -159,7 +161,7 @@ export function StoreOperationsPanel({ snapshot, isLoading, error, onRetry }: St
         </div>
         <div className={`operations-store-list${snapshot.stores.length === 1 ? " operations-store-list--single" : ""}`}>
           {snapshot.stores.map((store) => (
-          <BalanceStoreRow key={store.storeId} store={store} showMetrics={snapshot.stores.length === 1} />
+          <BalanceStoreRow key={store.storeId} store={store} showMetrics={snapshot.stores.length === 1} privacyHidden={privacyHidden} />
           ))}
         </div>
       </section>

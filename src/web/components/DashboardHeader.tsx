@@ -1,7 +1,8 @@
-import { CalendarDays, ChevronDown } from "lucide-react";
+import { CalendarDays, ChevronDown, Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { DashboardRange, StorePlatform, StoreView } from "../../shared/contracts";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatBeijingTime } from "../format";
 import type { StreamStatus } from "../hooks/use-dashboard-stream";
 import { AppNav } from "./AppNav";
@@ -30,6 +31,8 @@ interface DashboardHeaderProps {
   onRangeChange: (range: DashboardRange) => void;
   onCustomFromChange: (value: string) => void;
   onCustomToChange: (value: string) => void;
+  privacyHidden: boolean;
+  onPrivacyToggle: () => void;
 }
 
 export function DashboardHeader(props: DashboardHeaderProps): React.JSX.Element {
@@ -67,7 +70,7 @@ export function DashboardHeader(props: DashboardHeaderProps): React.JSX.Element 
             <option value="all">全部店铺</option>
             {props.stores.filter((store) => props.platform === "all" || store.platform === props.platform).map((store) => (
               <option key={store.id} value={store.id}>
-                {store.name}
+                {props.privacyHidden ? HIDDEN_PLACEHOLDER : store.name}
               </option>
             ))}
           </select>
@@ -106,6 +109,16 @@ export function DashboardHeader(props: DashboardHeaderProps): React.JSX.Element 
 
       <div className="header-status">
         <StatusPill status={props.streamStatus} />
+        <button
+          className={props.privacyHidden ? "icon-button privacy-toggle" : "icon-button privacy-toggle is-active"}
+          type="button"
+          onClick={props.onPrivacyToggle}
+          aria-pressed={props.privacyHidden}
+          title={props.privacyHidden ? "当前已隐藏店铺名称和余额，点击显示" : "当前已显示店铺名称和余额，点击隐藏"}
+          aria-label={props.privacyHidden ? "显示店铺名称和余额" : "隐藏店铺名称和余额"}
+        >
+          {props.privacyHidden ? <EyeOff size={19} aria-hidden="true" /> : <Eye size={19} aria-hidden="true" />}
+        </button>
         <SoundToggle />
         <div className="beijing-clock" aria-label={`北京时间 ${formatBeijingTime(now)}`}>
           <strong>{formatBeijingTime(now)}</strong>

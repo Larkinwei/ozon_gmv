@@ -5,6 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { StoreOperationsSnapshot } from "../../shared/contracts";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { StoreOperationsPanel } from "./StoreOperationsPanel";
 
 const snapshot: StoreOperationsSnapshot = {
@@ -88,5 +89,13 @@ describe("StoreOperationsPanel", () => {
     expect(screen.queryByText("余额明细")).not.toBeInTheDocument();
     expect(screen.queryByText("付款金额")).not.toBeInTheDocument();
     expect(screen.queryByText("周期开始余额")).not.toBeInTheDocument();
+  });
+
+  it("hides store names and every balance value in privacy mode", () => {
+    render(<StoreOperationsPanel snapshot={snapshot} isLoading={false} error={null} onRetry={() => undefined} privacyHidden />);
+
+    expect(screen.queryByText("店铺 A")).not.toBeInTheDocument();
+    expect(screen.getAllByText(HIDDEN_PLACEHOLDER)).toHaveLength(4);
+    expect(screen.queryByText("1\u00a0450,75\u00a0₽")).not.toBeInTheDocument();
   });
 });

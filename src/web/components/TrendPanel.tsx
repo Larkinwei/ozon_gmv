@@ -16,6 +16,7 @@ import {
 import type { BarShapeProps } from "recharts";
 
 import type { StoreTimeSeriesValue, TimeSeriesPoint } from "../../shared/contracts";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatCompactNumber, formatMoney, formatMoneyList } from "../format";
 
 interface StoreDescriptor {
@@ -67,6 +68,7 @@ interface UnifiedTrendDetailProps {
   currency: string;
   placement: "left" | "right";
   announce: boolean;
+  privacyHidden: boolean;
 }
 
 const LINE_COLLAPSE_THRESHOLD = 6;
@@ -253,6 +255,7 @@ function UnifiedTrendDetail({
   currency,
   placement,
   announce,
+  privacyHidden,
 }: UnifiedTrendDetailProps): React.JSX.Element {
   const rows = buildUnifiedStoreRows(datum);
   return (
@@ -284,9 +287,9 @@ function UnifiedTrendDetail({
           <ul className="chart-tooltip__list" aria-label="当前时间段店铺明细">
             {rows.map((row) => (
               <li data-other-store-count={row.storeCount > 1 ? row.storeCount : undefined} key={row.id}>
-                <span className="chart-tooltip__store" title={row.name}>
+                <span className="chart-tooltip__store" title={privacyHidden ? HIDDEN_PLACEHOLDER : row.name}>
                   <span className="chart-color-dot" style={{ backgroundColor: row.color }} aria-hidden="true" />
-                  <span>{row.name}</span>
+                  <span>{privacyHidden ? HIDDEN_PLACEHOLDER : row.name}</span>
                 </span>
                 <strong>{formatMoney({ amount: String(row.gmv), currency })}</strong>
                 <span>{row.orders} 单</span>
@@ -301,7 +304,7 @@ function UnifiedTrendDetail({
   );
 }
 
-export function TrendPanel({ points }: { points: TimeSeriesPoint[] }): React.JSX.Element {
+export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeriesPoint[]; privacyHidden?: boolean }): React.JSX.Element {
   const orderStackClipPrefix = useId().replaceAll(":", "");
   const [showTable, setShowTable] = useState(false);
   const [lineVisibility, setLineVisibility] = useState<LineVisibilitySelection | null>(null);
@@ -458,7 +461,7 @@ export function TrendPanel({ points }: { points: TimeSeriesPoint[] }): React.JSX
               return (
                 <span className="chart-legend__single" key={store.id}>
                   <span className="chart-color-dot" style={{ backgroundColor: store.color }} aria-hidden="true" />
-                  {store.name}
+                  {privacyHidden ? HIDDEN_PLACEHOLDER : store.name}
                 </span>
               );
             }
@@ -479,7 +482,7 @@ export function TrendPanel({ points }: { points: TimeSeriesPoint[] }): React.JSX
                 }}
               >
                 <span className="chart-color-dot" style={{ backgroundColor: store.color }} aria-hidden="true" />
-                {store.name}
+                {privacyHidden ? HIDDEN_PLACEHOLDER : store.name}
               </button>
             );
           })}
@@ -510,7 +513,7 @@ export function TrendPanel({ points }: { points: TimeSeriesPoint[] }): React.JSX
                   <td>
                     <span className="chart-table-store">
                       <span className="chart-color-dot" style={{ backgroundColor: store.color }} aria-hidden="true" />
-                      {store.storeName}
+                      {privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}
                     </span>
                   </td>
                   <td>{store.orders}</td>
@@ -542,6 +545,7 @@ export function TrendPanel({ points }: { points: TimeSeriesPoint[] }): React.JSX
               currency={currency}
               placement={detailPlacement}
               announce={activeBucket?.mode === "keyboard"}
+              privacyHidden={privacyHidden}
             />
           )}
           <div className="gmv-chart" aria-label={`${currency} GMV 趋势`}>
@@ -587,7 +591,7 @@ export function TrendPanel({ points }: { points: TimeSeriesPoint[] }): React.JSX
                   <Line
                     type="linear"
                     dataKey={`storeGmv.${store.id}`}
-                    name={store.name}
+                    name={privacyHidden ? HIDDEN_PLACEHOLDER : store.name}
                     stroke={store.color}
                     strokeOpacity={emphasizedStoreId ? (emphasizedStoreId === store.id ? 1 : 0.2) : 0.82}
                     strokeWidth={emphasizedStoreId === store.id ? 2.5 : 1.5}

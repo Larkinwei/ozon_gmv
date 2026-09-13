@@ -1,9 +1,10 @@
 import { Store } from "lucide-react";
 
 import type { StoreBreakdown } from "../../shared/contracts";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatMoneyList } from "../format";
 
-export function StoreRanking({ stores }: { stores: StoreBreakdown[] }): React.JSX.Element {
+export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreBreakdown[]; privacyHidden?: boolean }): React.JSX.Element {
   const currencies = new Set(stores.flatMap((store) => store.gmv.map((value) => value.currency)));
   const mixedCurrencies = currencies.size > 1;
   const valueForBar = (store: StoreBreakdown): number => (
@@ -32,7 +33,7 @@ export function StoreRanking({ stores }: { stores: StoreBreakdown[] }): React.JS
                 <span className="rank-number">{String(index + 1).padStart(2, "0")}</span>
                 <div className="ranking-content">
                   <div className="ranking-label">
-                    <strong>{store.storeName}</strong>
+                    <strong>{privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}</strong>
                     <span>{store.orders} 单</span>
                     <b>{formatMoneyList(store.gmv)}</b>
                   </div>

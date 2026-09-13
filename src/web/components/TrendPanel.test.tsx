@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { TimeSeriesPoint } from "../../shared/contracts";
+import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { TrendPanel } from "./TrendPanel";
 
 afterEach(cleanup);
@@ -163,6 +164,23 @@ describe("TrendPanel", () => {
     expect(within(table).getAllByText("店铺 A")).toHaveLength(2);
     expect(within(table).getByText(/120,50/)).toBeInTheDocument();
     expect(within(table).getByText(/250,25/)).toBeInTheDocument();
+  });
+
+  it("masks store names in the legend, table, and keyboard detail", () => {
+    render(<TrendPanel points={points} privacyHidden />);
+
+    expect(screen.queryByText("店铺 A")).not.toBeInTheDocument();
+    expect(screen.getAllByText(HIDDEN_PLACEHOLDER).length).toBeGreaterThan(0);
+
+    const charts = screen.getByRole("group", { name: /左右方向键/ });
+    fireEvent.focus(charts);
+    fireEvent.keyDown(charts, { key: "ArrowLeft" });
+    expect(within(charts).getByTestId("trend-detail")).toHaveTextContent(HIDDEN_PLACEHOLDER);
+
+    fireEvent.click(screen.getByRole("button", { name: /数据表/ }));
+    const table = screen.getByRole("table", { name: /按时间和店铺拆分/ });
+    expect(within(table).getAllByText(HIDDEN_PLACEHOLDER)).toHaveLength(4);
+    expect(within(table).queryByText("店铺 A")).not.toBeInTheDocument();
   });
 
   it("exposes exact bucket details to keyboard users", () => {
