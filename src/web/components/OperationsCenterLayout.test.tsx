@@ -38,6 +38,7 @@ describe("OperationsCenterLayout", () => {
     expect(screen.getByRole("link", { name: "选品分析" })).toHaveAttribute("href", "/operations/selection");
     expect(screen.getByRole("link", { name: "商品上架" })).toHaveAttribute("href", "/operations/publish");
     expect(screen.getByRole("link", { name: "发布任务" })).toHaveAttribute("href", "/operations/publish/tasks");
+    expect(screen.getByRole("link", { name: "AI 助手" })).toHaveAttribute("href", "/operations/ai");
   });
 
   it("marks the task page active and keeps the mobile menu keyboard-operable", () => {

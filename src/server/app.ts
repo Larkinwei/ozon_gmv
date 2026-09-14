@@ -9,6 +9,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 
 import type { AppConfig } from "./config";
+import { AiConversationModule } from "./ai/conversation-module";
+import { HttpAiGatewayClient, type AiGatewayClient } from "./ai/gateway-client";
 import { AdminRepository } from "./db/admin-repository";
 import { DashboardRepository } from "./db/dashboard-repository";
 import { ProductImagesRepository } from "./db/product-images-repository";
@@ -18,6 +20,7 @@ import { StoresRepository } from "./db/stores-repository";
 import { WallboardPairingsRepository } from "./db/wallboard-pairings-repository";
 import type { DashboardEventBus } from "./realtime/event-bus";
 import { registerAuthRoutes } from "./routes/auth";
+import { registerAiRoutes } from "./routes/ai";
 import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerNotificationRoutes } from "./routes/notifications";
 import { registerSettingsRoutes } from "./routes/settings";
@@ -44,6 +47,7 @@ import { ResellImageService } from "./selection/resell-image-service";
 import { PublishDraftsModule } from "./selection/publish-drafts";
 import { OssImageStorageService } from "./services/oss-image-storage-service";
 import { WildberriesApiError } from "./wildberries/client";
+import type { AiProductContext, AiProductSourceView } from "../shared/contracts";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -61,6 +65,8 @@ export interface AppDependencies {
   resellImages?: ResellImageService;
   publishDrafts?: PublishDraftsModule;
   storeOperations?: StoreOperationsReader;
+  aiGateway?: AiGatewayClient;
+  aiConversations?: AiConversationModule;
 }
 
 interface SqliteError extends Error {
@@ -179,10 +185,21 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   });
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
+  const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config);
+  const aiConversations = dependencies.aiConversations ?? new AiConversationModule(database, aiGateway);
+  const listAiSources = (): AiProductSourceView[] => [
+    ...publishDrafts.list().map((draft) => {
+      const source = draft.sourceSnapshot;
+      const productContext: AiProductContext = { name: source.productName, category: source.category ?? "", attributes: source.attributes ?? {}, material: "", color: "", targetMarket: "俄罗斯", imagePurpose: "场景图", style: "真实电商摄影", aspectRatio: "1:1" };
+      return { id: draft.id, kind: "draft" as const, name: source.productName || draft.title || draft.sourceSku, sku: draft.sourceSku, category: productContext.category, productContext };
+    }),
+    ...myData.listProducts({ page: 1, pageSize: 100, sort: "monthlyUnits" }).items.map((product) => ({ id: product.id, kind: "product" as const, name: product.productName, sku: product.sku, category: product.category, productContext: { name: product.productName, category: product.category, attributes: {}, material: "", color: "", targetMarket: "俄罗斯", imagePurpose: "场景图", style: "真实电商摄影", aspectRatio: "1:1" } })),
+  ];
   resell.start();
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
+  registerAiRoutes(app, aiConversations, () => aiGateway.checkHealth(), config.AI_RELAY_MODEL_ALIAS, listAiSources);
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
   registerDashboardRoutes(app, new DashboardRepository(database), events);

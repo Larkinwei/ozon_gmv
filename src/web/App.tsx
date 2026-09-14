@@ -10,6 +10,7 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const SelectionPage = lazy(() => import("./pages/SelectionPage"));
 const OperationsCenterLayout = lazy(() => import("./components/OperationsCenterLayout"));
 const PublishTasksPage = lazy(() => import("./pages/PublishTasksPage"));
+const AiPage = lazy(() => import("./pages/AiPage"));
 const ResellPage = lazy(() => import("./pages/ResellPage"));
 const SetupPage = lazy(() => import("./pages/SetupPage"));
 const StoresPage = lazy(() => import("./pages/StoresPage"));
@@ -119,6 +120,7 @@ export function App(): React.JSX.Element {
           <Route path="publish" element={<ResellPage />} />
           <Route path="publish/tasks" element={<PublishTasksPage />} />
           <Route path="publish/resell/:sku" element={<ResellPage />} />
+          <Route path="ai" element={<AiPage />} />
         </Route>
         <Route path="/selection" element={<LegacySelectionRedirect />} />
         <Route path="/selection/publish" element={<LegacyRouteRedirect to="/operations/publish" />} />

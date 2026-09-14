@@ -41,6 +41,10 @@ const environmentSchema = z.object({
   CATEGORY_CLOUD_BASE_URL: z.string().url().default(
     "https://ozon-canapshots-zswncgotoh.cn-beijing.fcapp.run",
   ),
+  AI_RELAY_BASE_URL: z.string().url().default("http://127.0.0.1:4000"),
+  AI_RELAY_API_KEY: z.string().default(""),
+  AI_RELAY_MODEL_ALIAS: z.string().min(1).default("text.quality"),
+  AI_RELAY_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 

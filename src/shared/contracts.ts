@@ -1269,3 +1269,82 @@ export interface SelectionMarketQueryPage {
 export interface SelectionMarketQueryDetail extends SelectionMarketQueryListItem {
   wordstat: SelectionWordstatView | null;
 }
+
+export type AiApplicationStatus = "enabled" | "coming_soon";
+
+export interface AiApplicationView {
+  id: string;
+  name: string;
+  description: string;
+  status: AiApplicationStatus;
+}
+
+export interface AiProductContext {
+  name: string;
+  category: string;
+  attributes: Record<string, unknown>;
+  material: string;
+  color: string;
+  targetMarket: string;
+  imagePurpose: string;
+  style: string;
+  aspectRatio: string;
+}
+
+export interface AiProductSourceView {
+  id: string;
+  kind: "draft" | "product";
+  name: string;
+  sku: string;
+  category: string;
+  productContext: AiProductContext;
+}
+
+export interface AiPromptCandidate {
+  prompt: string;
+  negativePrompt: string;
+  subjectProtection: string[];
+  composition: string;
+  lighting: string;
+  background: string;
+  style: string;
+  aspectRatio: string;
+  intendedUse: string;
+  warnings: string[];
+}
+
+export interface AiMessageView {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  content: { text: string } | { candidates: AiPromptCandidate[] };
+  runId: string | null;
+  createdAtMs: number;
+}
+
+export type AiConversationRunStatus = "idle" | "submitted" | "streaming" | "completed" | "error" | "aborted";
+
+export type AiConversationStreamEvent =
+  | { type: "run_started"; data: { runId: string } }
+  | { type: "user_message"; data: { message: AiMessageView } }
+  | { type: "status"; data: { status: "thinking"; label: string } }
+  | { type: "delta"; data: { text: string } }
+  | { type: "completed"; data: { conversation: AiConversationView } }
+  | { type: "aborted"; data: { conversation: AiConversationView } }
+  | { type: "error"; data: { code: string; message: string } };
+
+export interface AiConversationView {
+  id: string;
+  applicationId: string;
+  title: string;
+  productContext: AiProductContext;
+  createdBy: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  messages: AiMessageView[];
+}
+
+export interface AiRelayStatusView {
+  available: boolean;
+  modelAlias: string;
+}

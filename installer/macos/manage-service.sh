@@ -117,6 +117,8 @@ function render_plist() {
     -e "s|__SERVICE_PATH__|$(escape_sed_replacement "$service_path")|g" \
     -e "s|__STDOUT_PATH__|$(escape_sed_replacement "$LOG_DIR/launchd.stdout.log")|g" \
     -e "s|__STDERR_PATH__|$(escape_sed_replacement "$LOG_DIR/launchd.stderr.log")|g" \
+    -e "s|__AI_RELAY_BASE_URL__|$(escape_sed_replacement "${AI_RELAY_BASE_URL:-http://127.0.0.1:4000}")|g" \
+    -e "s|__AI_RELAY_API_KEY__|$(escape_sed_replacement "${AI_RELAY_API_KEY:-}")|g" \
     "$PLIST_TEMPLATE" > "$temporary_plist"
   plutil -lint "$temporary_plist" >/dev/null
   chmod 600 "$temporary_plist"
