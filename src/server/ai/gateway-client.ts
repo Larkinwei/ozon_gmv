@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config";
+import type { AiRelaySettingsService } from "../services/ai-relay-settings-service";
 
 export interface AiStructuredRequest {
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
@@ -39,11 +40,16 @@ export class AiGatewayError extends Error {
 
 /** Small HTTP seam around the local OpenAI-compatible relay. */
 export class HttpAiGatewayClient implements AiGatewayClient {
-  public constructor(private readonly config: AppConfig, private readonly fetchImplementation: typeof fetch = fetch) {}
+  public constructor(
+    private readonly config: AppConfig,
+    private readonly fetchImplementation: typeof fetch = fetch,
+    private readonly relaySettings?: AiRelaySettingsService,
+  ) {}
 
   public async checkHealth(): Promise<boolean> {
+    const relay = this.runtimeConfig();
     try {
-      const response = await this.fetchWithTimeout(`${this.config.AI_RELAY_BASE_URL}/health`, { method: "GET" });
+      const response = await this.fetchWithTimeout(`${relay.baseUrl}/health`, { method: "GET" }, undefined, relay.timeoutMs);
       return response.ok;
     } catch {
       return false;
@@ -51,16 +57,17 @@ export class HttpAiGatewayClient implements AiGatewayClient {
   }
 
   public async generateStructured(request: AiStructuredRequest, signal?: AbortSignal): Promise<AiStructuredResponse> {
+    const relay = this.runtimeConfig();
     let response: Response;
     try {
-      response = await this.fetchWithTimeout(`${this.config.AI_RELAY_BASE_URL}/v1/chat/completions`, {
+      response = await this.fetchWithTimeout(`${relay.baseUrl}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(this.config.AI_RELAY_API_KEY ? { Authorization: `Bearer ${this.config.AI_RELAY_API_KEY}` } : {}),
+          ...(relay.apiKey ? { Authorization: `Bearer ${relay.apiKey}` } : {}),
         },
         body: JSON.stringify({
-          model: this.config.AI_RELAY_MODEL_ALIAS,
+          model: relay.modelAlias,
           messages: [
             { role: "system", content: `Return only valid JSON matching this schema: ${JSON.stringify(request.schema)}` },
             ...request.messages,
@@ -68,7 +75,7 @@ export class HttpAiGatewayClient implements AiGatewayClient {
           temperature: 0.7,
           response_format: { type: "json_object" },
         }),
-      }, signal);
+      }, signal, relay.timeoutMs);
     } catch {
       if (signal?.aborted) throw new DOMException("The request was aborted", "AbortError");
       throw new AiGatewayError("UNAVAILABLE", "AI Relay 不可用，请确认本机服务已启动");
@@ -102,23 +109,24 @@ export class HttpAiGatewayClient implements AiGatewayClient {
   }
 
   public async *streamText(request: AiTextRequest, signal?: AbortSignal): AsyncIterable<AiTextStreamChunk> {
+    const relay = this.runtimeConfig();
     let response: Response;
     try {
-      response = await this.fetchWithTimeout(`${this.config.AI_RELAY_BASE_URL}/v1/chat/completions`, {
+      response = await this.fetchWithTimeout(`${relay.baseUrl}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Accept": "text/event-stream",
           "Content-Type": "application/json",
-          ...(this.config.AI_RELAY_API_KEY ? { Authorization: `Bearer ${this.config.AI_RELAY_API_KEY}` } : {}),
+          ...(relay.apiKey ? { Authorization: `Bearer ${relay.apiKey}` } : {}),
         },
         body: JSON.stringify({
-          model: this.config.AI_RELAY_MODEL_ALIAS,
+          model: relay.modelAlias,
           messages: request.messages,
           temperature: 0.7,
           stream: true,
           stream_options: { include_usage: true },
         }),
-      }, signal);
+      }, signal, relay.timeoutMs);
     } catch {
       if (signal?.aborted) throw new DOMException("The request was aborted", "AbortError");
       throw new AiGatewayError("UNAVAILABLE", "AI Relay 不可用，请确认本机服务已启动");
@@ -163,8 +171,17 @@ export class HttpAiGatewayClient implements AiGatewayClient {
     }
   }
 
-  private async fetchWithTimeout(input: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
-    const timeoutSignal = AbortSignal.timeout(this.config.AI_RELAY_TIMEOUT_MS);
+  private runtimeConfig(): { baseUrl: string; apiKey: string; modelAlias: string; timeoutMs: number } {
+    return this.relaySettings?.runtime() ?? {
+      baseUrl: this.config.AI_RELAY_BASE_URL,
+      apiKey: this.config.AI_RELAY_API_KEY,
+      modelAlias: this.config.AI_RELAY_MODEL_ALIAS,
+      timeoutMs: this.config.AI_RELAY_TIMEOUT_MS,
+    };
+  }
+
+  private async fetchWithTimeout(input: string, init: RequestInit, signal: AbortSignal | undefined, timeoutMs: number): Promise<Response> {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     return this.fetchImplementation(input, { ...init, signal: requestSignal });
   }

@@ -1,4 +1,4 @@
-import { BellRing, Check, Clipboard, CloudUpload, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Unplug, Volume2 } from "lucide-react";
+import { BellRing, Check, Clipboard, CloudUpload, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Sparkles, Unplug, Volume2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -7,6 +7,7 @@ import type { ProxyMode } from "../../shared/contracts";
 import {
   checkSoftwareUpdate,
   createWallboardPairing,
+  fetchAiRelaySettings,
   fetchNetworkSettings,
   fetchImageStorageSettings,
   fetchOrderNotificationSettings,
@@ -15,9 +16,11 @@ import {
   revokeWallboardSessions,
   testNetworkSettings,
   testImageStorageSettings,
+  testAiRelaySettings,
   testOrderNotification,
   updateNetworkSettings,
   updateImageStorageSettings,
+  updateAiRelaySettings,
   updateOrderNotificationSettings,
 } from "../api";
 import { AppNav } from "../components/AppNav";
@@ -27,6 +30,7 @@ import { soundPlayer, useSoundEnabled } from "../sound-player";
 export default function SettingsPage(): React.JSX.Element {
   const queryClient = useQueryClient();
   const settingsQuery = useQuery({ queryKey: ["network-settings"], queryFn: fetchNetworkSettings });
+  const aiRelaySettingsQuery = useQuery({ queryKey: ["ai-relay-settings"], queryFn: fetchAiRelaySettings });
   const imageStorageQuery = useQuery({ queryKey: ["image-storage-settings"], queryFn: fetchImageStorageSettings });
   const notificationQuery = useQuery({
     queryKey: ["order-notifications"],
@@ -40,6 +44,10 @@ export default function SettingsPage(): React.JSX.Element {
   });
   const [mode, setMode] = useState<ProxyMode>("auto");
   const [manualProxy, setManualProxy] = useState("");
+  const [aiRelayBaseUrl, setAiRelayBaseUrl] = useState("");
+  const [aiRelayApiKey, setAiRelayApiKey] = useState("");
+  const [aiRelayModelAlias, setAiRelayModelAlias] = useState("");
+  const [aiRelayTimeoutMs, setAiRelayTimeoutMs] = useState("45000");
   const [accessKeyId, setAccessKeyId] = useState("");
   const [accessKeySecret, setAccessKeySecret] = useState("");
   const [imageStorageTestResult, setImageStorageTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -52,6 +60,14 @@ export default function SettingsPage(): React.JSX.Element {
     }
   }, [settingsQuery.data]);
 
+  useEffect(() => {
+    if (aiRelaySettingsQuery.data) {
+      setAiRelayBaseUrl(aiRelaySettingsQuery.data.baseUrl);
+      setAiRelayModelAlias(aiRelaySettingsQuery.data.modelAlias);
+      setAiRelayTimeoutMs(String(aiRelaySettingsQuery.data.timeoutMs));
+    }
+  }, [aiRelaySettingsQuery.data]);
+
   const saveMutation = useMutation({
     mutationFn: () => updateNetworkSettings(mode, manualProxy.trim() || undefined),
     onSuccess: async () => {
@@ -61,6 +77,21 @@ export default function SettingsPage(): React.JSX.Element {
     },
   });
   const testMutation = useMutation({ mutationFn: testNetworkSettings });
+  const aiRelayMutation = useMutation({
+    mutationFn: () => updateAiRelaySettings({
+      baseUrl: aiRelayBaseUrl.trim(),
+      ...(aiRelayApiKey.trim() ? { apiKey: aiRelayApiKey.trim() } : {}),
+      modelAlias: aiRelayModelAlias.trim(),
+      timeoutMs: Number(aiRelayTimeoutMs),
+    }),
+    onSuccess: async () => {
+      setAiRelayApiKey("");
+      setNotice("AI Relay 配置已保存。后续 AI 请求会立即使用新配置。");
+      await queryClient.invalidateQueries({ queryKey: ["ai-relay-settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["ai-relay-status"] });
+    },
+  });
+  const aiRelayTestMutation = useMutation({ mutationFn: testAiRelaySettings });
   const imageStorageMutation = useMutation({
     mutationFn: () => updateImageStorageSettings(accessKeyId, accessKeySecret),
     onSuccess: async () => {
@@ -163,7 +194,9 @@ export default function SettingsPage(): React.JSX.Element {
     ?? installUpdateMutation.error
     ?? notificationMutation.error
     ?? notificationTestMutation.error
-    ?? imageStorageMutation.error;
+    ?? imageStorageMutation.error
+    ?? aiRelayMutation.error
+    ?? aiRelayTestMutation.error;
   const update = updateQuery.data;
   const updateBusy = update?.state === "checking" || update?.state === "downloading" || update?.state === "installing";
   const progress = update?.totalBytes ? Math.min(100, Math.round((update.downloadedBytes / update.totalBytes) * 100)) : 0;
@@ -184,6 +217,23 @@ export default function SettingsPage(): React.JSX.Element {
         </div>
         {notice && <div className="notice notice--success" role="status"><Check size={17} />{notice}</div>}
         {error && <div className="field-error" role="alert">{error.message}</div>}
+
+        <section className="settings-card" aria-labelledby="ai-relay-heading">
+          <div className="settings-card__heading"><div className="settings-icon"><Sparkles size={21} /></div><div><p className="eyebrow">AI RELAY</p><h3 id="ai-relay-heading">AI 中转服务</h3><p>填写局域网中 Relay 电脑的地址，AI 请求会由本机后台转发，不会把上游模型 Key 暴露给浏览器。</p></div></div>
+          <form onSubmit={(event) => { event.preventDefault(); aiRelayMutation.mutate(); }}>
+            <div className="resell-form-grid">
+              <label className="field"><span>Relay 地址 *</span><input type="url" value={aiRelayBaseUrl} onChange={(event) => setAiRelayBaseUrl(event.target.value)} placeholder="http://192.168.1.50:4000" required /></label>
+              <label className="field"><span>访问 Key</span><input type="password" autoComplete="new-password" value={aiRelayApiKey} onChange={(event) => setAiRelayApiKey(event.target.value)} placeholder={aiRelaySettingsQuery.data?.apiKeyConfigured ? `已配置：${aiRelaySettingsQuery.data.apiKeyMasked ?? "已隐藏"}；留空保持现有 Key` : "输入 Relay 访问 Key"} required={!aiRelaySettingsQuery.data?.apiKeyConfigured} /><small>Key 只加密保存在本机，Relay 的 OpenAI / DeepSeek Key 不会保存到 GMV。</small></label>
+              <label className="field"><span>模型别名 *</span><input value={aiRelayModelAlias} onChange={(event) => setAiRelayModelAlias(event.target.value)} placeholder="例如 deepseek.deepseek-chat" required /></label>
+              <label className="field"><span>请求超时（毫秒）</span><input type="number" min="5000" max="300000" step="1000" value={aiRelayTimeoutMs} onChange={(event) => setAiRelayTimeoutMs(event.target.value)} required /><small>建议 45000；局域网或模型响应较慢时可适当调高。</small></label>
+            </div>
+            <div className="settings-actions">
+              <button className="primary-button" type="submit" disabled={aiRelayMutation.isPending}>{aiRelayMutation.isPending ? "正在保存…" : "保存 AI Relay 配置"}</button>
+              <button className="secondary-button" type="button" onClick={() => aiRelayTestMutation.mutate()} disabled={aiRelayTestMutation.isPending || !aiRelaySettingsQuery.data?.apiKeyConfigured}>{aiRelayTestMutation.isPending ? "正在测试…" : "测试 AI Relay 连接"}</button>
+            </div>
+            {aiRelayTestMutation.data && <div className="connection-result" role="status"><Check size={17} /><strong>{aiRelayTestMutation.data.message}</strong></div>}
+          </form>
+        </section>
 
         <section className="settings-card" aria-labelledby="update-heading">
           <div className="settings-card__heading"><div className="settings-icon"><Download size={21} /></div><div><p className="eyebrow">SOFTWARE UPDATE</p><h3 id="update-heading">软件更新</h3><p>Windows 安装版会自动检查稳定版更新，只有管理员确认后才会安装。</p></div></div>

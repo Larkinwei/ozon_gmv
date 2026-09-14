@@ -71,6 +71,8 @@ import type {
   AiConversationView,
   AiProductContext,
   AiRelayStatusView,
+  AiRelaySettingsView,
+  AiRelayTestResult,
   AiProductSourceView,
 } from "../shared/contracts";
 import { createDemoOrderDetail, createDemoQuestionDetail, createDemoSnapshot, createDemoStoreOperations, demoStores } from "./demo-data";
@@ -295,6 +297,18 @@ export async function updateNetworkSettings(mode: ProxyMode, manualProxy?: strin
 
 export async function testNetworkSettings(): Promise<ProxyTestResult> {
   return apiFetch("/api/settings/network/test", { method: "POST" });
+}
+
+export async function fetchAiRelaySettings(): Promise<AiRelaySettingsView> {
+  return apiFetch("/api/settings/ai-relay");
+}
+
+export async function updateAiRelaySettings(input: { baseUrl: string; apiKey?: string; modelAlias: string; timeoutMs: number }): Promise<AiRelaySettingsView> {
+  return apiFetch("/api/settings/ai-relay", { method: "PUT", body: JSON.stringify(input) });
+}
+
+export async function testAiRelaySettings(): Promise<AiRelayTestResult> {
+  return apiFetch("/api/settings/ai-relay/test", { method: "POST" });
 }
 
 export async function fetchOrderNotificationSettings(): Promise<OrderNotificationSettings> {

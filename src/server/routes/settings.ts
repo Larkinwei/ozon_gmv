@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { ProxySettingsService } from "../services/proxy-settings-service";
 import type { UpdateService } from "../services/update-service";
 import type { OssImageStorageService } from "../services/oss-image-storage-service";
+import type { AiRelaySettingsService } from "../services/ai-relay-settings-service";
 import { requireSession } from "../security/session";
 
 const proxySettingsSchema = z.object({
@@ -17,6 +18,7 @@ export function registerSettingsRoutes(
   proxySettings: ProxySettingsService,
   updates: UpdateService,
   imageStorage: OssImageStorageService,
+  aiRelaySettings: AiRelaySettingsService,
 ): void {
   app.get("/api/settings/network", { preHandler: requireSession }, async () => proxySettings.view());
 
@@ -40,6 +42,30 @@ export function registerSettingsRoutes(
         error: "OZON_CONNECTION_FAILED",
         message: error instanceof Error ? error.message : "无法连接 Ozon",
       });
+    }
+  });
+
+  app.get("/api/settings/ai-relay", { preHandler: requireSession }, async () => aiRelaySettings.view());
+
+  app.put("/api/settings/ai-relay", { preHandler: requireSession }, async (request, reply) => {
+    const input = z.object({
+      baseUrl: z.string().trim().min(1).max(500),
+      apiKey: z.string().trim().max(500).optional(),
+      modelAlias: z.string().trim().min(1).max(200),
+      timeoutMs: z.coerce.number().int().min(5_000).max(300_000),
+    }).parse(request.body);
+    try {
+      return aiRelaySettings.update(input);
+    } catch (error) {
+      return reply.code(400).send({ error: "INVALID_AI_RELAY_SETTINGS", message: error instanceof Error ? error.message : "AI Relay 配置不正确" });
+    }
+  });
+
+  app.post("/api/settings/ai-relay/test", { preHandler: requireSession }, async (_request, reply) => {
+    try {
+      return await aiRelaySettings.test();
+    } catch (error) {
+      return reply.code(502).send({ error: "AI_RELAY_CONNECTION_FAILED", message: error instanceof Error ? error.message : "AI Relay 连接失败" });
     }
   });
 

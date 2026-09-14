@@ -20,9 +20,9 @@ function sessionUsername(request: Parameters<typeof readSession>[0]): string {
 }
 
 /** Registers the authenticated AI workbench API; no provider API key reaches the browser. */
-export function registerAiRoutes(app: FastifyInstance, conversations: AiConversationModule, checkRelay: () => Promise<boolean>, modelAlias: string, listSources: () => AiProductSourceView[]): void {
+export function registerAiRoutes(app: FastifyInstance, conversations: AiConversationModule, checkRelay: () => Promise<boolean>, modelAlias: string | (() => string), listSources: () => AiProductSourceView[]): void {
   app.get("/api/ai/apps", { preHandler: requireSession }, async () => ({ applications: listAiApplications() }));
-  app.get("/api/ai/status", { preHandler: requireSession }, async (): Promise<AiRelayStatusView> => ({ available: await checkRelay(), modelAlias }));
+  app.get("/api/ai/status", { preHandler: requireSession }, async (): Promise<AiRelayStatusView> => ({ available: await checkRelay(), modelAlias: typeof modelAlias === "function" ? modelAlias() : modelAlias }));
   app.get("/api/ai/sources", { preHandler: requireSession }, async () => ({ sources: listSources() }));
 
   app.post("/api/ai/conversations", { preHandler: requireSession }, async (request, reply) => {

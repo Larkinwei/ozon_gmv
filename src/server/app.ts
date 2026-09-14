@@ -46,6 +46,7 @@ import { ResellModule } from "./selection/resell-module";
 import { ResellImageService } from "./selection/resell-image-service";
 import { PublishDraftsModule } from "./selection/publish-drafts";
 import { OssImageStorageService } from "./services/oss-image-storage-service";
+import { AiRelaySettingsService } from "./services/ai-relay-settings-service";
 import { WildberriesApiError } from "./wildberries/client";
 import type { AiProductContext, AiProductSourceView } from "../shared/contracts";
 
@@ -158,6 +159,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const stores = new StoresRepository(database);
   const settings = new SettingsRepository(database);
   const imageStorage = dependencies.imageStorage ?? new OssImageStorageService(config, database, proxySettings.createFetch());
+  const aiRelaySettings = new AiRelaySettingsService(config, database);
   const resellImages = dependencies.resellImages ?? new ResellImageService(database, imageStorage);
   const pairings = new WallboardPairingsRepository(database);
   const notifications = new OrderNotificationService(
@@ -185,7 +187,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   });
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
-  const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config);
+  const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config, fetch, aiRelaySettings);
   const aiConversations = dependencies.aiConversations ?? new AiConversationModule(database, aiGateway);
   const listAiSources = (): AiProductSourceView[] => [
     ...publishDrafts.list().map((draft) => {
@@ -199,14 +201,14 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
-  registerAiRoutes(app, aiConversations, () => aiGateway.checkHealth(), config.AI_RELAY_MODEL_ALIAS, listAiSources);
+  registerAiRoutes(app, aiConversations, () => aiGateway.checkHealth(), () => aiRelaySettings.view().modelAlias, listAiSources);
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
   registerDashboardRoutes(app, new DashboardRepository(database), events);
   registerSelectionRoutes(app, selection, myData, resell, resellImages, publishDrafts);
   registerSelectionCategoryRoutes(app, categories);
   registerSelectionDiscoveryRoutes(app, discovery);
-  registerSettingsRoutes(app, proxySettings, updates, imageStorage);
+  registerSettingsRoutes(app, proxySettings, updates, imageStorage, aiRelaySettings);
   registerNotificationRoutes(app, notifications);
   registerWallboardManagementRoutes(app, config, pairings);
   app.get("/api/runtime", async () => ({ role: "admin" as const }));

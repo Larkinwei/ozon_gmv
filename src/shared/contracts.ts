@@ -229,6 +229,19 @@ export interface NetworkSettingsView {
   hasManualCredentials: boolean;
 }
 
+export interface AiRelaySettingsView {
+  baseUrl: string;
+  apiKeyConfigured: boolean;
+  apiKeyMasked: string | null;
+  modelAlias: string;
+  timeoutMs: number;
+}
+
+export interface AiRelayTestResult {
+  ok: boolean;
+  message: string;
+}
+
 export interface ProxyTestResult {
   ok: boolean;
   mode: ProxyMode;
