@@ -152,6 +152,98 @@ describe("Ozon finance reconciliation", () => {
     }
   });
 
+  it("matches finance lines by order number when posting number has a suffix", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await stores.create({ id: STORE_ID, name: "Finance store", clientId: "client", apiKeyCiphertext: "cipher", color: "#3B82F6", fulfillmentModes: ["FBS"], apiKeyExpiresAt: null });
+      const postings = new PostingsRepository(context.database);
+      await postings.upsert(STORE_ID, posting());
+      const financeRepository = new FinanceRepository(context.database);
+      financeRepository.replaceDayLines(STORE_ID, "2026-05-12", [line("order-number-revenue", "2026-05-12", "revenue", "1000.00", { unitNumber: "order-april-1", postingNumber: "order-april-1" })]);
+      const service = new FinanceAnalysisService(context.config, stores, financeRepository, postings, new ProxySettingsService(context.config, new SettingsRepository(context.database)), { now: () => new Date("2026-06-20T00:00:00.000Z") });
+
+      const order = (await service.getOrders({ month: "2026-04", storeIds: [], page: 1, pageSize: 20 })).items[0];
+
+      expect(order).toMatchObject({ status: "direct_receivable", cancelled: false, breakdown: { sales: { amount: "1000.00" } } });
+      expect(await service.getExceptions({ month: "2026-04", storeIds: [] })).toEqual([]);
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("keeps cancelled orders traceable without counting them as unsettled", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await stores.create({ id: STORE_ID, name: "Finance store", clientId: "client", apiKeyCiphertext: "cipher", color: "#3B82F6", fulfillmentModes: ["FBS"], apiKeyExpiresAt: null });
+      const postings = new PostingsRepository(context.database);
+      await postings.upsert(STORE_ID, { ...posting(), status: "posting_canceled", cancelledAt: new Date("2026-04-06T08:00:00.000Z") });
+      const service = new FinanceAnalysisService(context.config, stores, new FinanceRepository(context.database), postings, new ProxySettingsService(context.config, new SettingsRepository(context.database)), { now: () => new Date("2026-06-20T00:00:00.000Z") });
+
+      const overview = await service.getOverview("2026-04", []);
+      const order = (await service.getOrders({ month: "2026-04", storeIds: [], page: 1, pageSize: 20 })).items[0];
+
+      expect(order).toMatchObject({ cancelled: true, cancellationState: "no_revenue" });
+      expect(overview.stores[0]).toMatchObject({ orderCount: 1, cancelledOrderCount: 1, cancelledNoRevenueOrderCount: 1, cancelledWithRevenueOrderCount: 0, awaitingRevenueOrderCount: 0, pendingOrderCount: 0, reviewOrderCount: 0 });
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("keeps cancelled orders with revenue distinct from cancelled orders without revenue", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await stores.create({ id: STORE_ID, name: "Finance store", clientId: "client", apiKeyCiphertext: "cipher", color: "#3B82F6", fulfillmentModes: ["FBS"], apiKeyExpiresAt: null });
+      const postings = new PostingsRepository(context.database);
+      await postings.upsert(STORE_ID, { ...posting(), status: "posting_canceled", cancelledAt: new Date("2026-04-06T08:00:00.000Z") });
+      const financeRepository = new FinanceRepository(context.database);
+      financeRepository.replaceDayLines(STORE_ID, "2026-04-05", [line("cancelled-revenue", "2026-04-05", "revenue", "1000.00")]);
+      const service = new FinanceAnalysisService(context.config, stores, financeRepository, postings, new ProxySettingsService(context.config, new SettingsRepository(context.database)), { now: () => new Date("2026-06-20T00:00:00.000Z") });
+
+      const overview = await service.getOverview("2026-04", []);
+      const order = (await service.getOrders({ month: "2026-04", storeIds: [], page: 1, pageSize: 20 })).items[0];
+
+      expect(order).toMatchObject({ cancelled: true, cancellationState: "with_revenue", status: "direct_receivable" });
+      expect(overview.stores[0]).toMatchObject({ cancelledOrderCount: 1, cancelledNoRevenueOrderCount: 0, cancelledWithRevenueOrderCount: 1, reviewOrderCount: 0 });
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("keeps unknown fees out of orders while reporting them as unassigned fees", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await stores.create({ id: STORE_ID, name: "Finance store", clientId: "client", apiKeyCiphertext: "cipher", color: "#3B82F6", fulfillmentModes: ["FBS"], apiKeyExpiresAt: null });
+      const postings = new PostingsRepository(context.database);
+      await postings.upsert(STORE_ID, posting());
+      const financeRepository = new FinanceRepository(context.database);
+      financeRepository.replaceDayLines(STORE_ID, "2026-04-05", [
+        line("known-revenue", "2026-04-05", "revenue", "1000.00"),
+        line("unknown-membership", "2026-04-20", "unknown", "-25.00", { currency: "CNY", typeId: "74", typeName: "StarsMembership" }),
+      ]);
+      const service = new FinanceAnalysisService(context.config, stores, financeRepository, postings, new ProxySettingsService(context.config, new SettingsRepository(context.database)), { now: () => new Date("2026-06-20T00:00:00.000Z") });
+
+      const overview = await service.getOverview("2026-04", []);
+      const order = (await service.getOrders({ month: "2026-04", storeIds: [], page: 1, pageSize: 20 })).items[0];
+      const detail = await service.getOrderDetail(order!.postingId);
+      const exceptions = await service.getExceptions({ month: "2026-04", storeIds: [] });
+
+      expect(order).toMatchObject({ status: "direct_receivable", settlementCurrency: "RUB", exceptionReasons: [], breakdown: { directReceivable: { amount: "1000.00", currency: "RUB" }, unknown: { amount: "0.00" }, unknownAmount: { amount: "0.00" } } });
+      expect(detail?.lines).toHaveLength(1);
+      expect(detail?.lines[0]).toMatchObject({ category: "revenue", amount: { amount: "1000.00", currency: "RUB" } });
+      expect(exceptions).toEqual([]);
+      expect(overview.stores[0]).toMatchObject({ reviewOrderCount: 0, directReceivableOrderCount: 1 });
+      expect(overview.totalsByCurrency).toHaveLength(1);
+      expect(overview.totalsByCurrency[0]?.sales.currency).toBe("RUB");
+      expect(overview.unassignedFees).toEqual([{ storeId: STORE_ID, storeName: "Finance store", storeColor: "#3B82F6", currency: "CNY", amount: { amount: "-25.00", currency: "CNY" }, lineCount: 1, typeId: "74", typeName: "StarsMembership", sourceDateFrom: "2026-04-20", sourceDateTo: "2026-04-20" }]);
+    } finally {
+      context.cleanup();
+    }
+  });
+
   it("counts SKU orders distinctly while summing every sold unit", async () => {
     const context = createTestDatabase();
     try {
@@ -263,6 +355,25 @@ describe("Ozon finance reconciliation", () => {
       expect(repository.hasCompleteFinanceCoverage(STORE_ID, "2026-04-01", "2026-04-03")).toBe(true);
       repository.saveDayCheckpoint(STORE_ID, "2026-04-02", null, "failed", "temporary failure");
       expect(repository.hasCompleteFinanceCoverage(STORE_ID, "2026-04-01", "2026-04-03")).toBe(false);
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("reports the selected month coverage through today", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await stores.create({ id: STORE_ID, name: "Finance store", clientId: "client", apiKeyCiphertext: "cipher", color: "#3B82F6", fulfillmentModes: ["FBS"], apiKeyExpiresAt: null });
+      const repository = new FinanceRepository(context.database);
+      repository.saveDayCheckpoint(STORE_ID, "2026-04-01", null, "completed");
+      repository.saveDayCheckpoint(STORE_ID, "2026-04-02", null, "failed", "temporary failure");
+      const service = new FinanceAnalysisService(context.config, stores, repository, new PostingsRepository(context.database), new ProxySettingsService(context.config, new SettingsRepository(context.database)), { now: () => new Date("2026-04-03T00:00:00.000Z") });
+
+      const coverage = await service.getCoverage("2026-04", []);
+
+      expect(coverage).toMatchObject({ from: "2026-04-01", to: "2026-04-03", totalDays: 3, completedDays: 1, failedDays: 1, complete: false });
+      expect(coverage.missingDates).toEqual(["2026-04-02", "2026-04-03"]);
     } finally {
       context.cleanup();
     }

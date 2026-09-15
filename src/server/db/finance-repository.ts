@@ -48,6 +48,8 @@ export interface FinanceSyncRunRecord {
   error: string | null;
   startedAtMs: number | null;
   finishedAtMs: number | null;
+  storeIds: string[];
+  mode: "ensure" | "rebuild";
 }
 
 interface PostingRow extends Record<string, unknown> {
@@ -95,6 +97,13 @@ function toFinanceLine(row: Record<string, unknown>): FinanceLineRecord {
 }
 
 function toRun(row: Record<string, unknown>): FinanceSyncRunRecord {
+  let storeIds: string[] = [];
+  try {
+    const parsed = JSON.parse(String(row.store_ids_json ?? "[]"));
+    if (Array.isArray(parsed)) storeIds = parsed.map(String).sort();
+  } catch {
+    storeIds = [];
+  }
   return {
     id: String(row.id),
     fromDate: String(row.from_date),
@@ -106,6 +115,8 @@ function toRun(row: Record<string, unknown>): FinanceSyncRunRecord {
     error: row.error === null ? null : String(row.error),
     startedAtMs: row.started_at_ms === null ? null : Number(row.started_at_ms),
     finishedAtMs: row.finished_at_ms === null ? null : Number(row.finished_at_ms),
+    storeIds,
+    mode: row.sync_mode === "ensure" ? "ensure" : "rebuild",
   };
 }
 
@@ -273,14 +284,22 @@ export class FinanceRepository {
     return rows.map(toFinanceLine);
   }
 
-  public createRun(fromDate: string, toDate: string, totalDays: number): FinanceSyncRunRecord {
+  public createRun(fromDate: string, toDate: string, totalDays: number, storeIds: string[], mode: "ensure" | "rebuild"): FinanceSyncRunRecord {
     const id = randomUUID();
     const now = Date.now();
     this.database.prepare(
-      `INSERT INTO finance_sync_runs (id, from_date, to_date, state, total_days, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?)`,
-    ).run(id, fromDate, toDate, totalDays, now, now);
+      `INSERT INTO finance_sync_runs (id, from_date, to_date, state, total_days, store_ids_json, sync_mode, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
+    ).run(id, fromDate, toDate, totalDays, JSON.stringify([...storeIds].sort()), mode, now, now);
     return this.getRun(id) as FinanceSyncRunRecord;
+  }
+
+  public findActiveRun(fromDate: string, toDate: string, storeIds: string[]): FinanceSyncRunRecord | null {
+    const rows = this.database.prepare(
+      "SELECT * FROM finance_sync_runs WHERE from_date = ? AND to_date = ? AND state IN ('queued', 'running') ORDER BY created_at_ms DESC",
+    ).all(fromDate, toDate) as Array<Record<string, unknown>>;
+    const expected = JSON.stringify([...storeIds].sort());
+    return rows.map(toRun).find((run) => JSON.stringify(run.storeIds) === expected) ?? null;
   }
 
   public getRun(id: string): FinanceSyncRunRecord | null {
@@ -291,6 +310,14 @@ export class FinanceRepository {
   public latestRun(): FinanceSyncRunRecord | null {
     const row = this.database.prepare("SELECT * FROM finance_sync_runs ORDER BY created_at_ms DESC LIMIT 1").get() as Record<string, unknown> | undefined;
     return row ? toRun(row) : null;
+  }
+
+  public latestRunForScope(fromDate: string, toDate: string, storeIds: string[]): FinanceSyncRunRecord | null {
+    const rows = this.database.prepare(
+      "SELECT * FROM finance_sync_runs WHERE from_date = ? AND to_date = ? ORDER BY created_at_ms DESC",
+    ).all(fromDate, toDate) as Array<Record<string, unknown>>;
+    const expected = JSON.stringify([...storeIds].sort());
+    return rows.map(toRun).find((run) => JSON.stringify(run.storeIds) === expected) ?? null;
   }
 
   public updateRun(id: string, patch: Partial<Pick<FinanceSyncRunRecord, "state" | "completedDays" | "failedDays" | "error" | "startedAtMs" | "finishedAtMs">>): void {
@@ -333,5 +360,25 @@ export class FinanceRepository {
        WHERE store_id = ? AND accrual_date >= ? AND accrual_date <= ? AND state = 'completed'`,
     ).get(storeId, fromDate, toDate) as { completed_days: number };
     return Number(row.completed_days) === expectedDays;
+  }
+
+  public getFinanceCoverage(storeIds: string[], fromDate: string, toDate: string): Map<string, { completedDates: string[]; failedDates: string[]; lastSyncedAtMs: number | null }> {
+    if (storeIds.length === 0) return new Map();
+    const rows = this.database.prepare(
+      `SELECT store_id, accrual_date, state, updated_at_ms
+       FROM finance_sync_days
+       WHERE store_id IN (${placeholders(storeIds)}) AND accrual_date >= ? AND accrual_date <= ?
+       ORDER BY store_id ASC, accrual_date ASC`,
+    ).all(...storeIds, fromDate, toDate) as Array<{ store_id: string; accrual_date: string; state: string; updated_at_ms: number }>;
+    const result = new Map<string, { completedDates: string[]; failedDates: string[]; lastSyncedAtMs: number | null }>();
+    for (const storeId of storeIds) result.set(storeId, { completedDates: [], failedDates: [], lastSyncedAtMs: null });
+    for (const row of rows) {
+      const current = result.get(row.store_id);
+      if (!current) continue;
+      if (row.state === "completed") current.completedDates.push(row.accrual_date);
+      if (row.state === "failed") current.failedDates.push(row.accrual_date);
+      current.lastSyncedAtMs = Math.max(current.lastSyncedAtMs ?? 0, Number(row.updated_at_ms));
+    }
+    return result;
   }
 }

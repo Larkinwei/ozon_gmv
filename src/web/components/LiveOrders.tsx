@@ -12,7 +12,11 @@ interface LiveOrdersProps {
   privacyHidden?: boolean;
 }
 
-export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect, privacyHidden = false }: LiveOrdersProps): React.JSX.Element {
+export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect, privacyHidden = false }: LiveOrdersProps): React.JSX.Element | null {
+  if (privacyHidden) {
+    return null;
+  }
+
   return (
     <section className="panel live-panel" aria-labelledby="live-title">
       <div className="panel-heading">

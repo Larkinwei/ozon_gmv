@@ -21,6 +21,7 @@ const emptyOverview: FinanceOverview = {
   stores: [],
   skuSummaries: [],
   totalsByCurrency: [],
+  unassignedFees: [],
   sync: { id: null, state: "idle", from: null, to: null, totalDays: 0, completedDays: 0, failedDays: 0, error: null, startedAt: null, finishedAt: null },
 };
 
@@ -35,6 +36,7 @@ describe("finance admin API", () => {
     const syncService = new SyncService(context.config, stores, new PostingsRepository(context.database), new SyncCheckpointsRepository(context.database), events, proxySettings, new ProductImageService(new ProductImagesRepository(context.database)));
     const finance: FinanceReader = {
       getOverview: vi.fn(async () => emptyOverview),
+      getCoverage: vi.fn(async () => ({ month: "2026-09", from: "2026-09-01", to: "2026-09-15", totalDays: 0, completedDays: 0, failedDays: 0, missingDates: [], complete: true, future: false, stores: [] })),
       getOrders: vi.fn(async () => ({ items: [], page: 1, pageSize: 20, total: 0 })),
       getOrderDetail: vi.fn(async () => null),
       getExceptions: vi.fn(async () => []),
@@ -54,6 +56,9 @@ describe("finance admin API", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual(emptyOverview);
       expect(finance.getOverview).toHaveBeenCalledWith("2026-09", []);
+      const coverageResponse = await adminApp.inject({ method: "GET", url: "/api/finance/coverage?month=2026-04&storeIds=00000000-0000-4000-8000-000000000001", cookies: { ozon_session: cookie } });
+      expect(coverageResponse.statusCode).toBe(200);
+      expect(finance.getCoverage).toHaveBeenCalledWith("2026-04", ["00000000-0000-4000-8000-000000000001"]);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/finance/overview?month=2026-09" })).statusCode).toBe(404);
     } finally {
       await Promise.all([adminApp.close(), wallboardApp.close()]);

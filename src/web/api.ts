@@ -75,6 +75,7 @@ import type {
   AiRelayTestResult,
   AiProductSourceView,
   FinanceExceptionView,
+  FinanceCoverageView,
   FinanceOrderDetail,
   FinanceOrderStatus,
   FinanceOrderSummary,
@@ -253,6 +254,16 @@ export async function fetchFinanceOverview(month: string, storeId = "all"): Prom
   return apiFetch(`/api/finance/overview?${params.toString()}`);
 }
 
+/** Loads the selected month's finance accrual coverage through today. */
+export async function fetchFinanceCoverage(month: string, storeId = "all"): Promise<FinanceCoverageView> {
+  if (DEMO_MODE) {
+    return { month, from: `${month}-01`, to: new Date().toISOString().slice(0, 10), totalDays: 0, completedDays: 0, failedDays: 0, missingDates: [], complete: true, future: false, stores: [] };
+  }
+  const params = new URLSearchParams({ month });
+  if (storeId !== "all") params.set("storeIds", storeId);
+  return apiFetch(`/api/finance/coverage?${params.toString()}`);
+}
+
 export interface FinanceOrderFilters {
   month: string;
   storeId: string;
@@ -280,7 +291,7 @@ export async function fetchFinanceOrderDetail(postingId: string, month?: string)
   return apiFetch(`/api/finance/orders/${encodeURIComponent(postingId)}`);
 }
 
-/** Loads unmatched, unknown, and shipment-date exceptions for the selected month. */
+/** Loads shipment-date and reconciliation exceptions for the selected month. */
 export async function fetchFinanceExceptions(month: string, storeId = "all"): Promise<FinanceExceptionView[]> {
   if (DEMO_MODE) return createDemoFinanceExceptions(month, storeId);
   const params = new URLSearchParams({ month });
@@ -289,11 +300,11 @@ export async function fetchFinanceExceptions(month: string, storeId = "all"): Pr
 }
 
 /** Starts a non-blocking monthly finance reconciliation run. */
-export async function startFinanceSync(month: string, storeId = "all"): Promise<FinanceSyncView> {
+export async function startFinanceSync(month: string, storeId = "all", mode: "ensure" | "rebuild" = "rebuild"): Promise<FinanceSyncView> {
   if (DEMO_MODE) return createDemoFinanceSync(month);
   return apiFetch("/api/finance/sync", {
     method: "POST",
-    body: JSON.stringify({ month, ...(storeId !== "all" ? { storeIds: storeId } : {}) }),
+    body: JSON.stringify({ month, mode, ...(storeId !== "all" ? { storeIds: storeId } : {}) }),
   });
 }
 

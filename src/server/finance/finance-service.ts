@@ -2,6 +2,8 @@ import Decimal from "decimal.js";
 
 import type {
   FinanceExceptionView,
+  FinanceCoverageStoreView,
+  FinanceCoverageView,
   FinanceCategory,
   FinanceLineView,
   FinanceMoneyBreakdown,
@@ -12,6 +14,7 @@ import type {
   FinanceSkuSummary,
   FinanceStoreSummary,
   FinanceSyncView,
+  FinanceUnassignedFeeView,
   Money,
 } from "../../shared/contracts";
 import type { AppConfig } from "../config";
@@ -53,10 +56,12 @@ export interface FinanceSyncInput {
   storeIds: string[];
   from: string;
   to: string;
+  mode: "ensure" | "rebuild";
 }
 
 export interface FinanceReader {
   getOverview(month: string, storeIds: string[]): Promise<FinanceOverview>;
+  getCoverage(month: string, storeIds: string[]): Promise<FinanceCoverageView>;
   getOrders(query: FinanceOrderQuery): Promise<FinanceOrderPage>;
   getOrderDetail(postingId: string): Promise<FinanceOrderDetail | null>;
   getExceptions(query: FinanceExceptionQuery): Promise<FinanceExceptionView[]>;
@@ -80,6 +85,7 @@ interface MonthData {
 
 interface FinanceLineIndex {
   byPosting: Map<string, FinanceLineRecord[]>;
+  byOrderNumber: Map<string, FinanceLineRecord[]>;
   byStoreSku: Map<string, FinanceLineRecord[]>;
 }
 
@@ -102,6 +108,13 @@ function monthBounds(month: string): { fromDate: string; toDate: string; fromMs:
     fromMs: from.getTime(),
     toMs: to.getTime(),
   };
+}
+
+export function financeMonthSyncRange(month: string, now = new Date()): { from: string; to: string } | null {
+  const bounds = monthBounds(month);
+  const today = dateString(now);
+  if (bounds.fromDate > today) return null;
+  return { from: bounds.fromDate, to: today };
 }
 
 function dateString(date: Date): string {
@@ -187,6 +200,10 @@ function addLineToBreakdown(target: FinanceMoneyBreakdown, line: FinanceLineReco
   }
 }
 
+function confirmedFinanceLines(lines: FinanceLineRecord[]): FinanceLineRecord[] {
+  return lines.filter((line) => line.category !== "unknown");
+}
+
 function lineCurrencies(lines: FinanceLineRecord[]): string[] {
   return [...new Set(lines.map((line) => line.currency).filter(Boolean))];
 }
@@ -217,6 +234,10 @@ function statusForPosting(posting: FinancePostingRecord, lines: FinanceLineRecor
   return ageDays >= FINANCE_STABILITY_DAYS ? "stable" : "pending_adjustments";
 }
 
+function isCancelledPosting(posting: FinancePostingRecord): boolean {
+  return posting.status.toLowerCase().includes("cancel");
+}
+
 function toOrderItems(posting: FinancePostingRecord): FinanceOrderSummary["items"] {
   return posting.items.map((item) => ({ sku: item.sku, offerId: item.offerId, name: item.name, quantity: item.quantity, currency: item.currency }));
 }
@@ -225,7 +246,6 @@ function orderExceptionReasons(posting: FinancePostingRecord, lines: FinanceLine
   const reasons: string[] = [];
   const currencies = lineCurrencies(lines);
   if (!posting.shipmentAtMs) reasons.push("缺少发运时间");
-  if (lines.some((line) => line.category === "unknown")) reasons.push("存在待确认费用类型");
   if (currencies.length > 1) reasons.push("订单包含多种财务币种，无法合计");
   if (posting.items.length > 1 && lines.some((line) => line.postingNumber === posting.postingNumber && !line.sku && line.category !== "shared")) {
     reasons.push("部分费用无法匹配到 SKU");
@@ -236,6 +256,7 @@ function orderExceptionReasons(posting: FinancePostingRecord, lines: FinanceLine
 /** Matches direct posting lines first, then SKU-only lines without weakening store isolation. */
 function indexFinanceLines(lines: FinanceLineRecord[]): FinanceLineIndex {
   const byPosting = new Map<string, FinanceLineRecord[]>();
+  const byOrderNumber = new Map<string, FinanceLineRecord[]>();
   const byStoreSku = new Map<string, FinanceLineRecord[]>();
   for (const line of lines) {
     if (line.postingNumber) {
@@ -243,28 +264,42 @@ function indexFinanceLines(lines: FinanceLineRecord[]): FinanceLineIndex {
       postingLines.push(line);
       byPosting.set(`${line.storeId}:${line.postingNumber}`, postingLines);
     }
+    if (line.unitNumber) {
+      const orderLines = byOrderNumber.get(`${line.storeId}:${line.unitNumber}`) ?? [];
+      orderLines.push(line);
+      byOrderNumber.set(`${line.storeId}:${line.unitNumber}`, orderLines);
+    }
     if (line.sku) {
       const skuLines = byStoreSku.get(`${line.storeId}:${line.sku}`) ?? [];
       skuLines.push(line);
       byStoreSku.set(`${line.storeId}:${line.sku}`, skuLines);
     }
   }
-  return { byPosting, byStoreSku };
+  return { byPosting, byOrderNumber, byStoreSku };
 }
 
-function linesForPosting(posting: Pick<FinancePostingRecord, "storeId" | "postingNumber" | "items">, lines: FinanceLineRecord[], index = indexFinanceLines(lines)): FinanceLineRecord[] {
+function linesForPosting(posting: Pick<FinancePostingRecord, "storeId" | "postingNumber" | "orderNumber" | "items">, lines: FinanceLineRecord[], index = indexFinanceLines(lines)): FinanceLineRecord[] {
   const direct = index.byPosting.get(`${posting.storeId}:${posting.postingNumber}`) ?? [];
   if (direct.length > 0) return direct;
+  const orderNumberLines = index.byOrderNumber.get(`${posting.storeId}:${posting.orderNumber}`) ?? [];
+  if (orderNumberLines.length > 0) return orderNumberLines;
   const skus = new Set(posting.items.map((item) => item.sku));
   return [...skus].flatMap((sku) => (index.byStoreSku.get(`${posting.storeId}:${sku}`) ?? []).filter((line) => !line.postingNumber));
 }
 
 function toOrderSummary(posting: FinancePostingRecord, lines: FinanceLineRecord[], now: Date): FinanceOrderSummary {
-  const resolvedSettlementCurrency = settlementCurrency(lines);
+  const confirmedLines = confirmedFinanceLines(lines);
+  const resolvedSettlementCurrency = settlementCurrency(confirmedLines);
   const breakdown = zeroBreakdown(resolvedSettlementCurrency ?? posting.currency);
-  for (const line of usableBreakdownLines(lines)) addLineToBreakdown(breakdown, line);
-  const exceptionReasons = orderExceptionReasons(posting, lines);
-  const lastAccrualAt = lines.reduce((latest, line) => line.accrualDate > latest ? line.accrualDate : latest, "") || null;
+  for (const line of usableBreakdownLines(confirmedLines)) addLineToBreakdown(breakdown, line);
+  const exceptionReasons = orderExceptionReasons(posting, confirmedLines);
+  const lastAccrualAt = confirmedLines.reduce((latest, line) => line.accrualDate > latest ? line.accrualDate : latest, "") || null;
+  const cancelled = isCancelledPosting(posting);
+  const cancellationState = !cancelled
+    ? "none"
+    : confirmedLines.some((line) => line.category === "revenue")
+      ? "with_revenue"
+      : "no_revenue";
   return {
     postingId: posting.id,
     storeId: posting.storeId,
@@ -279,7 +314,9 @@ function toOrderSummary(posting: FinancePostingRecord, lines: FinanceLineRecord[
     settlementCurrency: resolvedSettlementCurrency,
     items: toOrderItems(posting),
     breakdown,
-    status: statusForPosting(posting, lines, now, exceptionReasons),
+    status: statusForPosting(posting, confirmedLines, now, exceptionReasons),
+    cancelled,
+    cancellationState,
     exceptionReasons,
     lastAccrualAt,
   };
@@ -323,8 +360,43 @@ function createStoreSummary(order: FinanceOrderSummary): FinanceStoreSummary {
     pendingOrderCount: 0,
     stableOrderCount: 0,
     reviewOrderCount: 0,
+    cancelledOrderCount: 0,
+    cancelledNoRevenueOrderCount: 0,
+    cancelledWithRevenueOrderCount: 0,
     lastAccrualAt: null,
   };
+}
+
+function unassignedFeesForMonth(lines: FinanceLineRecord[], stores: StoreRecord[], bounds: ReturnType<typeof monthBounds>): FinanceUnassignedFeeView[] {
+  const storeMap = new Map(stores.map((store) => [store.id, store]));
+  const groups = new Map<string, FinanceUnassignedFeeView>();
+  for (const line of lines) {
+    if (line.category !== "unknown" || line.sourceDate < bounds.fromDate || line.sourceDate > bounds.toDate) continue;
+    const store = storeMap.get(line.storeId);
+    if (!store) continue;
+    const key = `${line.storeId}:${line.currency}:${line.typeId ?? ""}:${line.typeName ?? ""}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.amount.amount = addAmount(existing.amount.amount, line.amount);
+      existing.lineCount += 1;
+      if (line.sourceDate < existing.sourceDateFrom) existing.sourceDateFrom = line.sourceDate;
+      if (line.sourceDate > existing.sourceDateTo) existing.sourceDateTo = line.sourceDate;
+      continue;
+    }
+    groups.set(key, {
+      storeId: store.id,
+      storeName: store.name,
+      storeColor: store.color,
+      currency: line.currency,
+      amount: { amount: line.amount, currency: line.currency },
+      lineCount: 1,
+      typeId: line.typeId,
+      typeName: line.typeName,
+      sourceDateFrom: line.sourceDate,
+      sourceDateTo: line.sourceDate,
+    });
+  }
+  return [...groups.values()].sort((left, right) => left.storeName.localeCompare(right.storeName) || left.currency.localeCompare(right.currency) || (left.typeName ?? left.typeId ?? "").localeCompare(right.typeName ?? right.typeId ?? ""));
 }
 
 function mergeOrderCurrency(current: string | null, next: string, hasPrevious: boolean): string | null {
@@ -375,7 +447,9 @@ export class FinanceAnalysisService implements FinanceReader {
     const days = dateRange(new Date(`${input.from}T00:00:00.000Z`), new Date(`${input.to}T00:00:00.000Z`));
     const activeStoreCount = (await this.stores.listActive()).filter((store) => store.platform === "ozon" && (input.storeIds.length === 0 || input.storeIds.includes(store.id))).length;
     const totalDays = days.length * activeStoreCount;
-    const run = this.repository.createRun(input.from, input.to, totalDays);
+    const existing = this.repository.findActiveRun(input.from, input.to, input.storeIds);
+    if (existing) return toSyncView(existing);
+    const run = this.repository.createRun(input.from, input.to, totalDays, input.storeIds, input.mode);
     void this.processRun(run.id, input).catch(() => undefined);
     return toSyncView(run);
   }
@@ -395,10 +469,15 @@ export class FinanceAnalysisService implements FinanceReader {
       current.orderCount += 1;
       current.salesQuantity += order.items.reduce((sum, item) => sum + item.quantity, 0);
       addBreakdown(current.breakdown, order.breakdown);
-      addStoreStatusCount(current, order.status);
+      if (order.cancelled) {
+        current.cancelledOrderCount += 1;
+        if (order.cancellationState === "no_revenue") current.cancelledNoRevenueOrderCount += 1;
+        if (order.cancellationState === "with_revenue") current.cancelledWithRevenueOrderCount += 1;
+      }
+      else addStoreStatusCount(current, order.status);
       if (order.lastAccrualAt && (!current.lastAccrualAt || order.lastAccrualAt > current.lastAccrualAt)) current.lastAccrualAt = order.lastAccrualAt;
       storeSummaries.set(key, current);
-      const postingLines = usableBreakdownLines(linesForPosting(order, data.lines, data.lineIndex));
+      const postingLines = usableBreakdownLines(confirmedFinanceLines(linesForPosting(order, data.lines, data.lineIndex)));
       for (const [skuCode, quantity] of itemQuantitiesBySku(order.items)) {
         const skuKey = `${order.storeId}:${skuCode}:${order.settlementCurrency ?? "unsettled"}`;
         const sku = skuSummaries.get(skuKey) ?? {
@@ -418,7 +497,7 @@ export class FinanceAnalysisService implements FinanceReader {
         sku.orderCurrency = mergeOrderCurrency(sku.orderCurrency, order.orderCurrency, sku.orderCount > 1);
         const itemLines = postingLines.filter((line) => line.sku === skuCode || (!line.sku && order.items.length === 1));
         for (const line of itemLines) addLineToBreakdown(sku.breakdown, line);
-        sku.statusCounts[order.status] += 1;
+        if (!order.cancelled) sku.statusCounts[order.status] += 1;
         skuSummaries.set(skuKey, sku);
       }
     }
@@ -449,6 +528,9 @@ export class FinanceAnalysisService implements FinanceReader {
           directReceivableOrderCount: 0,
           stableOrderCount: 0,
           reviewOrderCount: 0,
+          cancelledOrderCount: 0,
+          cancelledNoRevenueOrderCount: 0,
+          cancelledWithRevenueOrderCount: 0,
           lastAccrualAt: null,
         };
         storeSummaries.set(key, store);
@@ -468,7 +550,59 @@ export class FinanceAnalysisService implements FinanceReader {
       stores: [...storeSummaries.values()],
       skuSummaries: [...skuSummaries.values()],
       totalsByCurrency: [...totals.values()],
-      sync: toSyncView(this.repository.latestRun()),
+      unassignedFees: unassignedFeesForMonth(data.lines, data.activeStores, bounds),
+      sync: (() => {
+        const range = financeMonthSyncRange(month, this.now());
+        return range ? toSyncView(this.repository.latestRunForScope(range.from, range.to, storeIds)) : toSyncView(null);
+      })(),
+    };
+  }
+
+  public async getCoverage(month: string, storeIds: string[]): Promise<FinanceCoverageView> {
+    const range = financeMonthSyncRange(month, this.now());
+    const activeStores = (await this.stores.listActive()).filter((store) => store.platform === "ozon" && (storeIds.length === 0 || storeIds.includes(store.id)));
+    if (!range) {
+      return {
+        month,
+        from: null,
+        to: null,
+        totalDays: 0,
+        completedDays: 0,
+        failedDays: 0,
+        missingDates: [],
+        complete: true,
+        future: true,
+        stores: activeStores.map((store) => ({ storeId: store.id, totalDays: 0, completedDays: 0, failedDays: 0, missingDates: [], lastSyncedAt: null, complete: true })),
+      };
+    }
+    const expectedDates = dateRange(new Date(`${range.from}T00:00:00.000Z`), new Date(`${range.to}T00:00:00.000Z`));
+    const rawCoverage = this.repository.getFinanceCoverage(activeStores.map((store) => store.id), range.from, range.to);
+    const stores: FinanceCoverageStoreView[] = activeStores.map((store) => {
+      const current = rawCoverage.get(store.id) ?? { completedDates: [], failedDates: [], lastSyncedAtMs: null };
+      const completed = new Set(current.completedDates);
+      const missingDates = expectedDates.filter((date) => !completed.has(date));
+      return {
+        storeId: store.id,
+        totalDays: expectedDates.length,
+        completedDays: current.completedDates.length,
+        failedDays: current.failedDates.length,
+        missingDates,
+        lastSyncedAt: current.lastSyncedAtMs ? new Date(current.lastSyncedAtMs).toISOString() : null,
+        complete: missingDates.length === 0,
+      };
+    });
+    const missingDates = [...new Set(stores.flatMap((store) => store.missingDates))].sort();
+    return {
+      month,
+      from: range.from,
+      to: range.to,
+      totalDays: expectedDates.length * activeStores.length,
+      completedDays: stores.reduce((sum, store) => sum + store.completedDays, 0),
+      failedDays: stores.reduce((sum, store) => sum + store.failedDays, 0),
+      missingDates,
+      complete: stores.every((store) => store.complete),
+      future: false,
+      stores,
     };
   }
 
@@ -487,7 +621,7 @@ export class FinanceAnalysisService implements FinanceReader {
     if (!posting) return null;
     const lines = this.repository.listLines([posting.storeId]);
     const lineIndex = indexFinanceLines(lines);
-    const postingLines = linesForPosting(posting, lines, lineIndex);
+    const postingLines = confirmedFinanceLines(linesForPosting(posting, lines, lineIndex));
     const summary = toOrderSummary(posting, postingLines, this.now());
     return {
       ...summary,
@@ -523,7 +657,12 @@ export class FinanceAnalysisService implements FinanceReader {
     const bounds = monthBounds(query.month);
     const results: FinanceExceptionView[] = [];
     for (const line of data.lines) {
+      if (line.category === "unknown") continue;
       let posting = line.postingNumber ? postingMap.get(`${line.storeId}:${line.postingNumber}`) : undefined;
+      if (!posting && line.unitNumber) {
+        const orderMatches = allPostings.filter((candidate) => candidate.storeId === line.storeId && candidate.orderNumber === line.unitNumber);
+        posting = orderMatches.length === 1 ? orderMatches[0] : undefined;
+      }
       if (!posting && line.sku) {
         const skuMatches = postingsBySku.get(`${line.storeId}:${line.sku}`) ?? [];
         posting = skuMatches.length === 1 ? skuMatches[0] : undefined;
@@ -532,10 +671,9 @@ export class FinanceAnalysisService implements FinanceReader {
       const postingInMonth = Boolean(posting?.shipmentAtMs && posting.shipmentAtMs >= bounds.fromMs && posting.shipmentAtMs < bounds.toMs);
       const inScope = line.category === "shared" ? lineInMonth : Boolean(posting ? postingInMonth || lineInMonth : lineInMonth);
       if (!inScope) continue;
-      const postingLines = posting ? linesForPosting(posting, data.lines, data.lineIndex) : [];
+      const postingLines = posting ? confirmedFinanceLines(linesForPosting(posting, data.lines, data.lineIndex)) : [];
       let reason: string | null = null;
-      if (line.category === "unknown") reason = "存在待确认费用类型";
-      else if (!posting && line.category !== "shared") reason = "财务流水找不到本地订单";
+      if (!posting && line.category !== "shared") reason = "财务流水找不到本地订单";
       else if (posting && !posting.shipmentAtMs) reason = "订单缺少发运时间";
       else if (posting && posting.items.length > 1 && !line.sku && line.category !== "shared") reason = "费用无法匹配到 SKU";
       else if (posting && lineCurrencies(postingLines).length > 1) reason = "同一订单存在多种结算币种";
@@ -584,7 +722,7 @@ export class FinanceAnalysisService implements FinanceReader {
     let failedDays = 0;
     await Promise.all(activeStores.map(async (store) => {
       try {
-        await this.syncStore(store.id, new Date(`${input.from}T00:00:00.000Z`), new Date(`${input.to}T00:00:00.000Z`), true, () => {
+          await this.syncStore(store.id, new Date(`${input.from}T00:00:00.000Z`), new Date(`${input.to}T00:00:00.000Z`), input.mode === "rebuild", () => {
           completedDays += 1;
           this.repository.updateRun(runId, { completedDays });
         });

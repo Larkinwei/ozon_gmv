@@ -164,7 +164,7 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
       ) : dashboardQuery.data ? (
         <main className="dashboard-main" id="dashboard-main">
           <KpiGrid kpis={dashboardQuery.data.kpis} />
-          <div className="dashboard-content-grid">
+          <div className={privacyHidden ? "dashboard-content-grid is-privacy-hidden" : "dashboard-content-grid"}>
             <div className="dashboard-left-column">
               <TrendPanel points={dashboardQuery.data.timeSeries} privacyHidden={privacyHidden} />
               <StoreRanking stores={dashboardQuery.data.stores} privacyHidden={privacyHidden} />

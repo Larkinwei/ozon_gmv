@@ -226,6 +226,9 @@ export const financeOrderStatuses = [
 ] as const;
 export type FinanceOrderStatus = (typeof financeOrderStatuses)[number];
 
+export const financeCancellationStates = ["none", "no_revenue", "with_revenue"] as const;
+export type FinanceCancellationState = (typeof financeCancellationStates)[number];
+
 export interface FinanceMoneyBreakdown {
   sales: Money;
   commission: Money;
@@ -255,6 +258,9 @@ export interface FinanceStoreSummary {
   pendingOrderCount: number;
   stableOrderCount: number;
   reviewOrderCount: number;
+  cancelledOrderCount: number;
+  cancelledNoRevenueOrderCount: number;
+  cancelledWithRevenueOrderCount: number;
   lastAccrualAt: string | null;
 }
 
@@ -294,6 +300,8 @@ export interface FinanceOrderSummary {
   items: FinanceOrderItem[];
   breakdown: FinanceMoneyBreakdown;
   status: FinanceOrderStatus;
+  cancelled: boolean;
+  cancellationState: FinanceCancellationState;
   exceptionReasons: string[];
   lastAccrualAt: string | null;
 }
@@ -343,12 +351,49 @@ export interface FinanceSyncView {
   finishedAt: string | null;
 }
 
+export interface FinanceCoverageStoreView {
+  storeId: string;
+  totalDays: number;
+  completedDays: number;
+  failedDays: number;
+  missingDates: string[];
+  lastSyncedAt: string | null;
+  complete: boolean;
+}
+
+export interface FinanceCoverageView {
+  month: string;
+  from: string | null;
+  to: string | null;
+  totalDays: number;
+  completedDays: number;
+  failedDays: number;
+  missingDates: string[];
+  complete: boolean;
+  future: boolean;
+  stores: FinanceCoverageStoreView[];
+}
+
+export interface FinanceUnassignedFeeView {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  currency: string;
+  amount: Money;
+  lineCount: number;
+  typeId: string | null;
+  typeName: string | null;
+  sourceDateFrom: string;
+  sourceDateTo: string;
+}
+
 export interface FinanceOverview {
   generatedAt: string;
   month: string;
   stores: FinanceStoreSummary[];
   skuSummaries: FinanceSkuSummary[];
   totalsByCurrency: FinanceMoneyBreakdown[];
+  unassignedFees: FinanceUnassignedFeeView[];
   sync: FinanceSyncView;
 }
 

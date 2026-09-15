@@ -15,6 +15,7 @@ vi.mock("../api", async () => {
     ...actual,
     fetchStores: vi.fn(),
     fetchFinanceOverview: vi.fn(),
+    fetchFinanceCoverage: vi.fn(),
     fetchFinanceOrders: vi.fn(),
     fetchFinanceExceptions: vi.fn(),
     fetchFinanceOrderDetail: vi.fn(),
@@ -31,6 +32,7 @@ afterEach(() => {
 beforeEach(() => {
   vi.mocked(api.fetchStores).mockResolvedValue(demoStores);
   vi.mocked(api.fetchFinanceOverview).mockImplementation(async (month, storeId) => createDemoFinanceOverview(month, storeId));
+  vi.mocked(api.fetchFinanceCoverage).mockResolvedValue({ month: "2026-09", from: "2026-09-01", to: "2026-09-15", totalDays: 15, completedDays: 15, failedDays: 0, missingDates: [], complete: true, future: false, stores: [] });
   vi.mocked(api.fetchFinanceOrders).mockImplementation(async (filters) => createDemoFinanceOrderPage(filters.month, filters.storeId, filters.sku, filters.status, filters.page ?? 1, filters.pageSize ?? 20));
   vi.mocked(api.fetchFinanceExceptions).mockImplementation(async (month, storeId) => createDemoFinanceExceptions(month, storeId));
   vi.mocked(api.fetchFinanceOrderDetail).mockImplementation(async (postingId, month) => ({
@@ -57,6 +59,34 @@ describe("FinanceAnalysisPage", () => {
     expect(screen.getAllByText(/结算：/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/订单：/).length).toBeGreaterThan(0);
     expect(screen.queryByText("未产生结算流水")).not.toBeInTheDocument();
+  });
+
+  it("shows unknown fees separately and labels cancelled orders by revenue state", async () => {
+    const month = new Date().toISOString().slice(0, 7);
+    const overview = createDemoFinanceOverview(month);
+    overview.unassignedFees = [{
+      storeId: demoStores[0]!.id,
+      storeName: demoStores[0]!.name,
+      storeColor: demoStores[0]!.color,
+      currency: "RUB",
+      amount: { amount: "-25.00", currency: "RUB" },
+      lineCount: 2,
+      typeId: "74",
+      typeName: "StarsMembership",
+      sourceDateFrom: `${month}-01`,
+      sourceDateTo: `${month}-02`,
+    }];
+    const orderPage = createDemoFinanceOrderPage(month);
+    orderPage.items[0] = { ...orderPage.items[0]!, cancelled: true, cancellationState: "no_revenue" };
+    vi.mocked(api.fetchFinanceOverview).mockResolvedValue(overview);
+    vi.mocked(api.fetchFinanceOrders).mockResolvedValue(orderPage);
+
+    renderFinancePage();
+
+    expect(await screen.findByText("StarsMembership")).toBeInTheDocument();
+    expect(screen.getByText("待确认费用按发生日期统计，暂未归属订单。订单号和 SKU 仅作为原始线索，确认费用类型后可通过代码重新归类。")).toBeInTheDocument();
+    expect(screen.getByText("已取消（无回款）")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "待确认费用" })).not.toBeInTheDocument();
   });
 
   it("reuses fresh results when switching back to a previously visited store", async () => {
@@ -88,5 +118,15 @@ describe("FinanceAnalysisPage", () => {
     await waitFor(() => expect(api.fetchFinanceOverview).toHaveBeenCalledTimes(2));
     expect(api.fetchFinanceOrders).toHaveBeenCalledTimes(2);
     expect(api.fetchFinanceExceptions).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts one ensure sync when the selected month has missing coverage", async () => {
+    const month = new Date().toISOString().slice(0, 7);
+    vi.mocked(api.fetchFinanceCoverage).mockResolvedValue({ month, from: `${month}-01`, to: new Date().toISOString().slice(0, 10), totalDays: 15, completedDays: 14, failedDays: 0, missingDates: [`${month}-15`], complete: false, future: false, stores: [] });
+
+    renderFinancePage();
+
+    await waitFor(() => expect(api.startFinanceSync).toHaveBeenCalledWith(month, "all", "ensure"));
+    expect(api.startFinanceSync).toHaveBeenCalledTimes(1);
   });
 });

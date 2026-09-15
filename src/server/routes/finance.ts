@@ -2,12 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { financeOrderStatuses } from "../../shared/contracts";
-import type { FinanceReader } from "../finance/finance-service";
+import { financeMonthSyncRange, type FinanceReader } from "../finance/finance-service";
 import { requireSession } from "../security/session";
 
 const monthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "月份格式不正确");
 const dateSchema = z.string().date();
 const overviewQuerySchema = z.object({ month: monthSchema.optional(), storeIds: z.string().optional() });
+const coverageQuerySchema = z.object({ month: monthSchema.optional(), storeIds: z.string().optional() });
 const ordersQuerySchema = z.object({
   month: monthSchema.optional(),
   storeIds: z.string().optional(),
@@ -17,7 +18,7 @@ const ordersQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
 const exceptionsQuerySchema = z.object({ month: monthSchema.optional(), storeIds: z.string().optional() });
-const syncBodySchema = z.object({ month: monthSchema.optional(), from: dateSchema.optional(), to: dateSchema.optional(), storeIds: z.string().optional() }).refine(
+const syncBodySchema = z.object({ month: monthSchema.optional(), from: dateSchema.optional(), to: dateSchema.optional(), storeIds: z.string().optional(), mode: z.enum(["ensure", "rebuild"]).default("rebuild") }).refine(
   (value) => (!value.from && !value.to) || Boolean(value.from && value.to),
   { message: "同步日期必须同时提供开始和结束日期", path: ["to"] },
 ).refine((value) => !value.from || !value.to || value.from <= value.to, { message: "同步日期范围不正确", path: ["to"] });
@@ -25,13 +26,6 @@ const runParamsSchema = z.object({ id: z.string().uuid() });
 
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
-}
-
-function monthDateRange(month: string): { from: string; to: string } {
-  const [yearText, monthText] = month.split("-");
-  const from = new Date(Date.UTC(Number(yearText), Number(monthText) - 1, 1));
-  const to = new Date(Date.UTC(Number(yearText), Number(monthText), 0));
-  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
 }
 
 function parseStoreIds(value?: string): string[] {
@@ -44,6 +38,11 @@ export function registerFinanceRoutes(app: FastifyInstance, finance: FinanceRead
   app.get("/api/finance/overview", { preHandler: requireSession }, async (request) => {
     const query = overviewQuerySchema.parse(request.query);
     return finance.getOverview(query.month ?? currentMonth(), parseStoreIds(query.storeIds));
+  });
+
+  app.get("/api/finance/coverage", { preHandler: requireSession }, async (request) => {
+    const query = coverageQuerySchema.parse(request.query);
+    return finance.getCoverage(query.month ?? currentMonth(), parseStoreIds(query.storeIds));
   });
 
   app.get("/api/finance/orders", { preHandler: requireSession }, async (request) => {
@@ -72,8 +71,10 @@ export function registerFinanceRoutes(app: FastifyInstance, finance: FinanceRead
 
   app.post("/api/finance/sync", { preHandler: requireSession }, async (request, reply) => {
     const body = syncBodySchema.parse(request.body);
-    const range = body.from && body.to ? { from: body.from, to: body.to } : monthDateRange(body.month ?? currentMonth());
-    const run = await finance.beginSync({ from: range.from, to: range.to, storeIds: parseStoreIds(body.storeIds) });
+    const month = body.month ?? currentMonth();
+    const range = body.from && body.to ? { from: body.from, to: body.to } : financeMonthSyncRange(month);
+    if (!range) return reply.code(400).send({ error: "FUTURE_MONTH", message: "未来月份没有可同步的数据" });
+    const run = await finance.beginSync({ from: range.from, to: range.to, storeIds: parseStoreIds(body.storeIds), mode: body.mode });
     return reply.code(202).send(run);
   });
 

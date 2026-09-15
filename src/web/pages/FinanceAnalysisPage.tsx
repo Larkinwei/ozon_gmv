@@ -1,10 +1,12 @@
 import { AlertTriangle, CalendarDays, CircleDollarSign, RefreshCw, Search, WalletCards, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import Decimal from "decimal.js";
 
-import type { FinanceMoneyBreakdown, FinanceOrderDetail, FinanceOrderStatus, FinanceOrderSummary, FinanceOverview, FinanceSkuSummary, FinanceStoreSummary, FinanceSyncView, StoreView } from "../../shared/contracts";
+import type { FinanceMoneyBreakdown, FinanceOrderDetail, FinanceOrderStatus, FinanceOrderSummary, FinanceOverview, FinanceSkuSummary, FinanceStoreSummary, FinanceSyncView, FinanceUnassignedFeeView, StoreView } from "../../shared/contracts";
 import {
   fetchFinanceExceptions,
+  fetchFinanceCoverage,
   fetchFinanceOrderDetail,
   fetchFinanceOrders,
   fetchFinanceOverview,
@@ -22,7 +24,7 @@ const statusLabels: Record<FinanceOrderStatus, string> = {
   review: "需核对",
 };
 
-type FinanceFeeKey = "commission" | "logistics" | "promotion" | "returns" | "otherDirect" | "unknown";
+type FinanceFeeKey = "commission" | "logistics" | "promotion" | "returns" | "otherDirect";
 
 const financeFeeDefinitions: Array<{ key: FinanceFeeKey; label: string }> = [
   { key: "commission", label: "平台佣金" },
@@ -30,7 +32,6 @@ const financeFeeDefinitions: Array<{ key: FinanceFeeKey; label: string }> = [
   { key: "promotion", label: "活动费用" },
   { key: "returns", label: "退货/拒收" },
   { key: "otherDirect", label: "其他订单费用" },
-  { key: "unknown", label: "待确认费用" },
 ];
 
 const FINANCE_QUERY_STALE_TIME = 10 * 60_000;
@@ -73,7 +74,21 @@ function storeStatus(store: FinanceStoreSummary): { label: string; className: st
   if (store.pendingOrderCount > 0) return { label: `${store.pendingOrderCount} 条待调整`, className: "is-warning" };
   if (store.directReceivableOrderCount > 0) return { label: `${store.directReceivableOrderCount} 条已产生回款`, className: "is-success" };
   if (store.stableOrderCount > 0) return { label: "财务已稳定", className: "is-success" };
+  if (store.cancelledOrderCount > 0) return { label: `${store.cancelledOrderCount} 条已取消`, className: "is-muted" };
   return { label: "仅公共费用", className: "is-muted" };
+}
+
+function cancelledStatusSummary(store: FinanceStoreSummary): string {
+  const parts: string[] = [];
+  if (store.cancelledNoRevenueOrderCount > 0) parts.push(`无回款 ${store.cancelledNoRevenueOrderCount}`);
+  if (store.cancelledWithRevenueOrderCount > 0) parts.push(`有回款流水 ${store.cancelledWithRevenueOrderCount}`);
+  return parts.join(" · ");
+}
+
+function orderStatusLabel(order: FinanceOrderSummary): string {
+  if (order.cancellationState === "no_revenue") return "已取消（无回款）";
+  if (order.cancellationState === "with_revenue") return "已取消（有回款流水）";
+  return statusLabels[order.status];
 }
 
 function skuStatus(sku: FinanceSkuSummary): { label: string; className: string } {
@@ -123,7 +138,7 @@ function FinanceOrderDrawer({ detail, onClose }: { detail: FinanceOrderDetail; o
           <span>{detail.postingNumber}</span>
           <span>订单号 {detail.orderNumber}</span>
           <span>{currencyPair(detail)}</span>
-          <span className={`finance-status ${statusClass(detail.status)}`}>{statusLabels[detail.status]}</span>
+          <span className={`finance-status ${detail.cancelled ? "is-muted" : statusClass(detail.status)}`}>{orderStatusLabel(detail)}</span>
         </div>
         <div className="finance-drawer-highlight">
           <span>订单应回款</span>
@@ -161,8 +176,12 @@ function SummaryCards({ overview }: { overview: FinanceOverview }): React.JSX.El
   );
 }
 
+function UnassignedFeesTable({ fees }: { fees: FinanceUnassignedFeeView[] }): React.JSX.Element {
+  return <section className="panel finance-panel finance-unassigned-fees"><div className="finance-panel-heading"><div><p className="eyebrow">UNASSIGNED FEES</p><h2>待确认费用</h2></div><span>{fees.reduce((sum, fee) => sum + fee.lineCount, 0)} 笔流水</span></div><p className="finance-panel-note finance-unassigned-fee-note">待确认费用按发生日期统计，暂未归属订单。订单号和 SKU 仅作为原始线索，确认费用类型后可通过代码重新归类。</p>{fees.length === 0 ? <p className="finance-empty-state">当前月份没有待确认费用。</p> : <div className="finance-table-wrap"><table className="finance-table"><thead><tr><th>店铺</th><th>费用类型</th><th>发生日期</th><th>流水笔数</th><th>金额</th></tr></thead><tbody>{fees.map((fee) => <tr key={`${fee.storeId}:${fee.currency}:${fee.typeId ?? ""}:${fee.typeName ?? ""}`}><td><span className="finance-store-name"><i style={{ background: fee.storeColor }} />{fee.storeName}</span></td><td>{fee.typeName ?? fee.typeId ?? "未知费用类型"}</td><td>{fee.sourceDateFrom === fee.sourceDateTo ? fee.sourceDateFrom : `${fee.sourceDateFrom} 至 ${fee.sourceDateTo}`}</td><td>{fee.lineCount}</td><td className={fee.amount.amount.startsWith("-") ? "is-negative" : "is-positive"}>{formatFinanceMoney(fee.amount)}</td></tr>)}</tbody></table></div>}</section>;
+}
+
 function StoreSummaryTable({ overview }: { overview: FinanceOverview }): React.JSX.Element {
-  return <section className="panel finance-panel"><div className="finance-panel-heading"><div><p className="eyebrow">STORE SUMMARY</p><h2>店铺回款汇总</h2></div><span>{overview.stores.length} 个店铺 / 结算分组</span></div><div className="finance-table-wrap"><table className="finance-table finance-wide-table"><thead><tr><th>店铺</th><th>结算币种</th><th>发运订单</th><th>销售件数</th><th>SKU 数</th><th>成交收入</th>{financeFeeDefinitions.map((fee) => <th key={fee.key}>{fee.label}</th>)}<th>订单费用合计</th><th>订单应回款</th><th>店铺公共费用</th><th>状态</th></tr></thead><tbody>{overview.stores.map((store) => { const status = storeStatus(store); return <tr key={`${store.storeId}:${store.settlementCurrency ?? "unsettled"}`}><td><span className="finance-store-name"><i style={{ background: store.storeColor }} />{store.storeName}</span></td><td><span className="finance-currency-cell">{currencyLabel(store.settlementCurrency)}{store.orderCurrency && <small>订单：{formatFinanceCurrencyName(store.orderCurrency)}</small>}</span></td><td>{store.orderCount}</td><td>{store.salesQuantity}</td><td>{store.skuCount}</td><td>{settledAmount(store.breakdown, store.settlementCurrency, "sales")}</td>{financeFeeDefinitions.map((fee) => <td key={fee.key}>{settledAmount(store.breakdown, store.settlementCurrency, fee.key)}</td>)}<td>{settledAmount(store.breakdown, store.settlementCurrency, "directCosts")}</td><td className="is-emphasis">{settledAmount(store.breakdown, store.settlementCurrency, "directReceivable")}</td><td>{settledAmount(store.breakdown, store.settlementCurrency, "sharedCosts")}</td><td><span className={`finance-status ${status.className}`}>{status.label}</span></td></tr>; })}</tbody></table></div></section>;
+  return <section className="panel finance-panel"><div className="finance-panel-heading"><div><p className="eyebrow">STORE SUMMARY</p><h2>店铺回款汇总</h2></div><span>{overview.stores.length} 个店铺 / 结算分组</span></div><div className="finance-table-wrap"><table className="finance-table finance-wide-table"><thead><tr><th>店铺</th><th>结算币种</th><th>发运订单</th><th>销售件数</th><th>SKU 数</th><th>成交收入</th>{financeFeeDefinitions.map((fee) => <th key={fee.key}>{fee.label}</th>)}<th>订单费用合计</th><th>订单应回款</th><th>店铺公共费用</th><th>状态</th></tr></thead><tbody>{overview.stores.map((store) => { const status = storeStatus(store); return <tr key={`${store.storeId}:${store.settlementCurrency ?? "unsettled"}`}><td><span className="finance-store-name"><i style={{ background: store.storeColor }} />{store.storeName}</span></td><td><span className="finance-currency-cell">{currencyLabel(store.settlementCurrency)}{store.orderCurrency && <small>订单：{formatFinanceCurrencyName(store.orderCurrency)}</small>}</span></td><td>{store.orderCount}</td><td>{store.salesQuantity}</td><td>{store.skuCount}</td><td>{settledAmount(store.breakdown, store.settlementCurrency, "sales")}</td>{financeFeeDefinitions.map((fee) => <td key={fee.key}>{settledAmount(store.breakdown, store.settlementCurrency, fee.key)}</td>)}<td>{settledAmount(store.breakdown, store.settlementCurrency, "directCosts")}</td><td className="is-emphasis">{settledAmount(store.breakdown, store.settlementCurrency, "directReceivable")}</td><td>{settledAmount(store.breakdown, store.settlementCurrency, "sharedCosts")}</td><td><span className={`finance-status ${status.className}`}>{status.label}</span>{store.cancelledOrderCount > 0 && <small className="finance-status-reason">{cancelledStatusSummary(store)}</small>}</td></tr>; })}</tbody></table></div></section>;
 }
 
 function SkuSummaryTable({ overview }: { overview: FinanceOverview }): React.JSX.Element {
@@ -170,7 +189,7 @@ function SkuSummaryTable({ overview }: { overview: FinanceOverview }): React.JSX
 }
 
 function OrdersTable({ orders, onSelect }: { orders: FinanceOrderSummary[]; onSelect: (id: string) => void }): React.JSX.Element {
-  return <section className="panel finance-panel"><div className="finance-panel-heading"><div><p className="eyebrow">ORDER LEDGER</p><h2>订单明细</h2></div><span>{orders.length} 条订单</span></div><div className="finance-table-wrap"><table className="finance-table finance-wide-table finance-orders-table"><thead><tr><th>店铺 / 订单</th><th>币种</th><th>发运月份</th><th>SKU</th><th>成交收入</th>{financeFeeDefinitions.map((fee) => <th key={fee.key}>{fee.label}</th>)}<th>订单费用合计</th><th>应回款</th><th>最后发生</th><th>状态</th><th>操作</th></tr></thead><tbody>{orders.map((order) => <tr key={order.postingId}><td><strong>{order.storeName}</strong><small>{order.postingNumber}</small></td><td>{currencyPair(order)}</td><td>{order.shipmentMonth ?? "待确定"}</td><td>{order.items.map((item) => `${item.sku} × ${item.quantity}`).join("、") || "—"}</td><td>{settledAmount(order.breakdown, order.settlementCurrency, "sales")}</td>{financeFeeDefinitions.map((fee) => <td key={fee.key}>{settledAmount(order.breakdown, order.settlementCurrency, fee.key)}</td>)}<td>{settledAmount(order.breakdown, order.settlementCurrency, "directCosts")}</td><td className="is-emphasis">{settledAmount(order.breakdown, order.settlementCurrency, "directReceivable")}</td><td>{order.lastAccrualAt ?? "—"}</td><td><span className={`finance-status ${statusClass(order.status)}`}>{statusLabels[order.status]}</span>{order.exceptionReasons.length > 0 && <small className="finance-status-reason">{order.exceptionReasons.join("；")}</small>}</td><td><button className="finance-detail-button" type="button" onClick={() => onSelect(order.postingId)}>查看明细</button></td></tr>)}</tbody></table>{orders.length === 0 && <div className="finance-empty-state">没有符合筛选条件的订单。</div>}</div></section>;
+  return <section className="panel finance-panel"><div className="finance-panel-heading"><div><p className="eyebrow">ORDER LEDGER</p><h2>订单明细</h2></div><span>{orders.length} 条订单</span></div><div className="finance-table-wrap"><table className="finance-table finance-wide-table finance-orders-table"><thead><tr><th>店铺 / 订单</th><th>币种</th><th>发运月份</th><th>SKU</th><th>成交收入</th>{financeFeeDefinitions.map((fee) => <th key={fee.key}>{fee.label}</th>)}<th>订单费用合计</th><th>应回款</th><th>最后发生</th><th>状态</th><th>操作</th></tr></thead><tbody>{orders.map((order) => <tr key={order.postingId}><td><strong>{order.storeName}</strong><small>{order.postingNumber}</small></td><td>{currencyPair(order)}</td><td>{order.shipmentMonth ?? "待确定"}</td><td>{order.items.map((item) => `${item.sku} × ${item.quantity}`).join("、") || "—"}</td><td>{settledAmount(order.breakdown, order.settlementCurrency, "sales")}</td>{financeFeeDefinitions.map((fee) => <td key={fee.key}>{settledAmount(order.breakdown, order.settlementCurrency, fee.key)}</td>)}<td>{settledAmount(order.breakdown, order.settlementCurrency, "directCosts")}</td><td className="is-emphasis">{settledAmount(order.breakdown, order.settlementCurrency, "directReceivable")}</td><td>{order.lastAccrualAt ?? "—"}</td><td><span className={`finance-status ${order.cancelled ? "is-muted" : statusClass(order.status)}`}>{orderStatusLabel(order)}</span>{order.exceptionReasons.length > 0 && <small className="finance-status-reason">{order.exceptionReasons.join("；")}</small>}</td><td><button className="finance-detail-button" type="button" onClick={() => onSelect(order.postingId)}>查看明细</button></td></tr>)}</tbody></table>{orders.length === 0 && <div className="finance-empty-state">没有符合筛选条件的订单。</div>}</div></section>;
 }
 
 /** Presents Ozon's shipment-month financial reconciliation without exposing it to Wallboard. */
@@ -181,12 +200,14 @@ export default function FinanceAnalysisPage(): React.JSX.Element {
   const [sku, setSku] = useState("");
   const [selectedPostingId, setSelectedPostingId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const autoSyncKey = useRef<string | null>(null);
   const storesQuery = useQuery({ queryKey: ["stores"], queryFn: fetchStores });
   const overviewQuery = useQuery({ queryKey: ["finance-overview", month, storeId], queryFn: () => fetchFinanceOverview(month, storeId), staleTime: FINANCE_QUERY_STALE_TIME, gcTime: FINANCE_QUERY_GC_TIME, refetchOnWindowFocus: false });
+  const coverageQuery = useQuery({ queryKey: ["finance-coverage", month, storeId], queryFn: () => fetchFinanceCoverage(month, storeId), staleTime: 30_000, gcTime: FINANCE_QUERY_GC_TIME, refetchOnWindowFocus: false });
   const ordersQuery = useQuery({ queryKey: ["finance-orders", month, storeId, sku], queryFn: () => fetchFinanceOrders({ month, storeId, ...(sku ? { sku } : {}) }), staleTime: FINANCE_QUERY_STALE_TIME, gcTime: FINANCE_QUERY_GC_TIME, refetchOnWindowFocus: false });
   const exceptionsQuery = useQuery({ queryKey: ["finance-exceptions", month, storeId], queryFn: () => fetchFinanceExceptions(month, storeId), staleTime: FINANCE_QUERY_STALE_TIME, gcTime: FINANCE_QUERY_GC_TIME, refetchOnWindowFocus: false });
   const detailQuery = useQuery({ queryKey: ["finance-order-detail", selectedPostingId], queryFn: () => fetchFinanceOrderDetail(selectedPostingId as string), enabled: Boolean(selectedPostingId), staleTime: FINANCE_QUERY_STALE_TIME, gcTime: FINANCE_QUERY_GC_TIME, refetchOnWindowFocus: false });
-  const syncMutation = useMutation({ mutationFn: () => startFinanceSync(month, storeId), onSuccess: (run) => setRunId(run.id) });
+  const syncMutation = useMutation({ mutationFn: (mode: "ensure" | "rebuild") => startFinanceSync(month, storeId, mode), onSuccess: (run) => setRunId(run.id) });
   const syncQuery = useQuery({ queryKey: ["finance-sync", runId], queryFn: () => fetchFinanceSync(runId as string), enabled: Boolean(runId), refetchInterval: (query) => query.state.data?.state === "queued" || query.state.data?.state === "running" ? 1_000 : false });
   const sync = syncQuery.data ?? overviewQuery.data?.sync;
   const ozonStores = useMemo(() => (storesQuery.data ?? []).filter((store) => store.platform === "ozon"), [storesQuery.data]);
@@ -196,7 +217,17 @@ export default function FinanceAnalysisPage(): React.JSX.Element {
     void queryClient.invalidateQueries({ queryKey: ["finance-orders"] });
     void queryClient.invalidateQueries({ queryKey: ["finance-exceptions"] });
     void queryClient.invalidateQueries({ queryKey: ["finance-order-detail"] });
+    void queryClient.invalidateQueries({ queryKey: ["finance-coverage"] });
   }
+
+  useEffect(() => {
+    const coverage = coverageQuery.data;
+    if (!coverage || coverage.complete || coverage.future || !coverage.from || !coverage.to) return;
+    const key = `${month}:${storeId}:${coverage.from}:${coverage.to}`;
+    if (autoSyncKey.current === key || syncMutation.isPending || syncQuery.data?.state === "queued" || syncQuery.data?.state === "running") return;
+    autoSyncKey.current = key;
+    syncMutation.mutate("ensure");
+  }, [coverageQuery.data, month, storeId, syncMutation, syncQuery.data?.state]);
 
   useEffect(() => {
     if (syncQuery.data?.state === "completed" || syncQuery.data?.state === "failed") {
@@ -210,13 +241,19 @@ export default function FinanceAnalysisPage(): React.JSX.Element {
   const orderCount = overview?.stores.reduce((sum, store) => sum + store.orderCount, 0) ?? orders.length;
   const salesQuantity = overview?.stores.reduce((sum, store) => sum + store.salesQuantity, 0) ?? 0;
   const unsettledCount = overview?.stores.reduce((sum, store) => sum + store.awaitingRevenueOrderCount + store.pendingOrderCount + store.reviewOrderCount, 0) ?? 0;
-  const reviewAmount = overview?.totalsByCurrency.map((total) => formatFinanceMoney(total.unknownAmount)).join(" · ") || "—";
+  const reviewAmount = useMemo(() => {
+    const totals = new Map<string, Decimal>();
+    for (const fee of overview?.unassignedFees ?? []) {
+      totals.set(fee.currency, (totals.get(fee.currency) ?? new Decimal(0)).plus(fee.amount.amount));
+    }
+    return [...totals.entries()].map(([currency, total]) => formatFinanceMoney({ amount: total.toFixed(2), currency })).join(" · ") || "—";
+  }, [overview?.unassignedFees]);
 
   return (
     <main className="admin-main finance-analysis-main">
       <header className="finance-page-header">
         <div><p className="eyebrow">FINANCE ANALYSIS / OZON</p><h1>订单回款</h1><p>按发运月份重组 Ozon 订单收入与后续费用，快速定位应回款和对账异常。</p></div>
-        <div className="finance-page-actions"><button className="secondary-button" type="button" onClick={refreshFinanceQueries}><RefreshCw size={16} />刷新数据</button><button className="primary-button" type="button" disabled={syncMutation.isPending || sync?.state === "queued" || sync?.state === "running"} onClick={() => syncMutation.mutate()}><RefreshCw size={16} />{syncMutation.isPending ? "创建任务…" : "按月重算"}</button></div>
+        <div className="finance-page-actions"><button className="secondary-button" type="button" onClick={refreshFinanceQueries}><RefreshCw size={16} />刷新数据</button><button className="primary-button" type="button" disabled={syncMutation.isPending || sync?.state === "queued" || sync?.state === "running"} onClick={() => syncMutation.mutate("rebuild")}><RefreshCw size={16} />{syncMutation.isPending ? "创建任务…" : "按月重算"}</button></div>
       </header>
       <section className="panel finance-filter-panel" aria-label="订单回款筛选">
         <label className="finance-filter-field"><span><CalendarDays size={14} />发运月份</span><input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
@@ -226,9 +263,12 @@ export default function FinanceAnalysisPage(): React.JSX.Element {
       </section>
       {overviewQuery.isLoading && <div className="finance-loading" aria-busy="true">正在加载订单回款数据…</div>}
       {overviewQuery.error && <section className="panel finance-alert finance-alert--danger"><AlertTriangle size={18} /><span>{overviewQuery.error instanceof Error ? overviewQuery.error.message : "订单回款数据加载失败"}</span><button className="secondary-button" type="button" onClick={() => void overviewQuery.refetch()}>重试</button></section>}
+      {coverageQuery.error && <section className="panel finance-alert finance-alert--danger"><AlertTriangle size={18} /><span>{coverageQuery.error instanceof Error ? coverageQuery.error.message : "财务同步覆盖状态加载失败"}</span><button className="secondary-button" type="button" onClick={() => void coverageQuery.refetch()}>重试</button></section>}
+      {coverageQuery.data && !coverageQuery.data.future && <div className="finance-sync-coverage"><span>当前范围：{coverageQuery.data.from} 至 {coverageQuery.data.to}</span><strong>{coverageQuery.data.complete ? "数据已同步" : `正在补齐 ${coverageQuery.data.completedDays}/${coverageQuery.data.totalDays} 天`}</strong>{coverageQuery.data.missingDates.length > 0 && <small>缺失 {coverageQuery.data.missingDates.length} 天</small>}</div>}
       {overview && <>
-        <section className="finance-stat-strip"><div><span>发运订单数</span><strong>{orderCount}</strong></div><div><span>销售件数</span><strong>{salesQuantity}</strong></div><div><span>结算币种</span><strong>{overview.totalsByCurrency.length}</strong></div><div><span>财务未稳定订单</span><strong>{unsettledCount}</strong></div><div><span>待确认费用金额</span><strong className="finance-stat-multi-currency">{reviewAmount}</strong></div></section>
+        <section className="finance-stat-strip"><div><span>发运订单数</span><strong>{orderCount}</strong></div><div><span>销售件数</span><strong>{salesQuantity}</strong></div><div><span>结算币种</span><strong>{overview.totalsByCurrency.length}</strong></div><div><span>财务未稳定订单</span><strong>{unsettledCount}</strong></div><div><span>已取消订单</span><strong>{overview.stores.reduce((sum, store) => sum + store.cancelledOrderCount, 0)}</strong><small className="finance-cancelled-breakdown">无回款 {overview.stores.reduce((sum, store) => sum + store.cancelledNoRevenueOrderCount, 0)} · 有回款流水 {overview.stores.reduce((sum, store) => sum + store.cancelledWithRevenueOrderCount, 0)}</small></div><div><span>待确认费用金额</span><strong className="finance-stat-multi-currency">{reviewAmount}</strong></div></section>
         <SummaryCards overview={overview} />
+        <UnassignedFeesTable fees={overview.unassignedFees} />
         <StoreSummaryTable overview={overview} />
         <SkuSummaryTable overview={overview} />
         <OrdersTable orders={orders} onSelect={setSelectedPostingId} />

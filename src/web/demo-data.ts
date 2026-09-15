@@ -416,6 +416,8 @@ export function createDemoFinanceOrders(month: string, selectedStoreId = "all"):
           items: [{ sku: `SKU-${storeIndex + 1}01`, offerId: `OFFER-${storeIndex + 1}01`, name: "轻量防水旅行收纳包", quantity: 1, currency }],
           breakdown: demoFinanceBreakdown(currency, sales, directCosts, "0.00", "0.00", { commission, logistics, promotion, returns }),
           status,
+          cancelled: false,
+          cancellationState: "none",
           exceptionReasons: status === "review" ? ["缺少发运时间"] : [],
           lastAccrualAt: `${month}-${String(15 + orderIndex).padStart(2, "0")}`,
           lines,
@@ -435,7 +437,7 @@ export function createDemoFinanceOverview(month: string, selectedStoreId = "all"
       storeId: order.storeId, storeName: order.storeName, storeColor: order.storeColor,
       settlementCurrency: order.settlementCurrency, orderCurrency: order.orderCurrency,
       orderCount: 0, salesQuantity: 0, skuCount: 0, breakdown: demoFinanceBreakdown(order.breakdown.sales.currency, "0.00", "0.00"),
-      awaitingRevenueOrderCount: 0, directReceivableOrderCount: 0, pendingOrderCount: 0, stableOrderCount: 0, reviewOrderCount: 0,
+      awaitingRevenueOrderCount: 0, directReceivableOrderCount: 0, pendingOrderCount: 0, stableOrderCount: 0, reviewOrderCount: 0, cancelledOrderCount: 0, cancelledNoRevenueOrderCount: 0, cancelledWithRevenueOrderCount: 0,
       lastAccrualAt: null,
     };
     store.orderCount += 1;
@@ -483,6 +485,7 @@ export function createDemoFinanceOverview(month: string, selectedStoreId = "all"
     stores: [...stores.values()],
     skuSummaries: [...skus.values()],
     totalsByCurrency: [...totals.values()],
+    unassignedFees: [],
     sync: createDemoFinanceSync(month),
   };
 }
