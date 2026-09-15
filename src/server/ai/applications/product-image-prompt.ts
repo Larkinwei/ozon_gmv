@@ -11,6 +11,7 @@ export interface ProductImagePromptInput {
 /** Implements only the registered product-image-prompt workflow for R0. */
 export async function generateProductImagePrompts(client: AiGatewayClient, input: ProductImagePromptInput, signal?: AbortSignal): Promise<{ candidates: AiPromptCandidate[]; requestId: string | null; actualModel: string | null; usage: unknown }> {
   const response = await client.generateStructured({
+    applicationId: "product-image-prompt",
     schemaName: "product_image_prompt_candidates",
     schema: aiPromptOutputJsonSchema,
     messages: [
@@ -28,6 +29,17 @@ export async function generateProductImagePrompts(client: AiGatewayClient, input
         }),
       },
     ],
+    variables: {
+      "product.name": input.productContext.name,
+      "product.category": input.productContext.category,
+      "product.material": input.productContext.material,
+      "product.color": input.productContext.color,
+      "product.targetMarket": input.productContext.targetMarket,
+      "product.imagePurpose": input.productContext.imagePurpose,
+      "product.style": input.productContext.style,
+      "product.aspectRatio": input.productContext.aspectRatio,
+      "user.request": input.request,
+    },
   }, signal);
   const parsed = aiPromptOutputSchema.parse(response.value);
   return { ...parsed, requestId: response.requestId, actualModel: response.actualModel, usage: response.usage };

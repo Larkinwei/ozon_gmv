@@ -1,4 +1,4 @@
-import { BarChart3, Bot, ChevronDown, ClipboardList, Menu, PackagePlus } from "lucide-react";
+import { BarChart3, Bot, ChevronDown, CircleDollarSign, ClipboardList, Menu, PackagePlus } from "lucide-react";
 import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
@@ -21,6 +21,10 @@ const operationsNavGroups: Array<{ label: string; items: OperationsNavLink[] }> 
       { label: "商品上架", to: "/operations/publish", icon: PackagePlus },
       { label: "发布任务", to: "/operations/publish/tasks", icon: ClipboardList },
     ],
+  },
+  {
+    label: "财务分析",
+    items: [{ label: "订单回款", to: "/operations/finance", icon: CircleDollarSign }],
   },
   {
     label: "AI 助手",

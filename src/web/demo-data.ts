@@ -12,6 +12,17 @@ import type {
   StoreView,
   TimeSeriesPoint,
   BuyerQuestionView,
+  FinanceExceptionView,
+  FinanceLineView,
+  FinanceMoneyBreakdown,
+  FinanceOrderDetail,
+  FinanceOrderStatus,
+  FinanceOrderSummary,
+  FinanceOverview,
+  FinanceSkuSummary,
+  FinanceStoreSummary,
+  FinanceSyncView,
+  Money,
 } from "../shared/contracts";
 
 export const demoStores: StoreView[] = [
@@ -325,4 +336,182 @@ export function createDemoOrderDetail(id: string): OrderDetail {
       };
     }),
   };
+}
+
+function financeMoney(amount: string, currency: string): Money {
+  return { amount, currency };
+}
+
+type DemoFinanceFeeAmounts = Partial<Record<"commission" | "logistics" | "promotion" | "returns" | "otherDirect" | "unknown", string>>;
+
+function demoFinanceBreakdown(currency: string, sales: string, directCosts: string, sharedCosts = "0.00", unknownAmount = "0.00", fees: DemoFinanceFeeAmounts = {}): FinanceMoneyBreakdown {
+  const zero = "0.00";
+  return {
+    sales: financeMoney(sales, currency),
+    commission: financeMoney(fees.commission ?? zero, currency),
+    logistics: financeMoney(fees.logistics ?? zero, currency),
+    promotion: financeMoney(fees.promotion ?? zero, currency),
+    returns: financeMoney(fees.returns ?? zero, currency),
+    otherDirect: financeMoney(fees.otherDirect ?? zero, currency),
+    unknown: financeMoney(fees.unknown ?? unknownAmount, currency),
+    directCosts: financeMoney(directCosts, currency),
+    directReceivable: financeMoney(new Decimal(sales).plus(directCosts).toFixed(2), currency),
+    sharedCosts: financeMoney(sharedCosts, currency),
+    unknownAmount: financeMoney(unknownAmount, currency),
+  };
+}
+
+function addDemoBreakdown(target: FinanceMoneyBreakdown, source: FinanceMoneyBreakdown): void {
+  target.sales.amount = new Decimal(target.sales.amount).plus(source.sales.amount).toFixed(2);
+  target.commission.amount = new Decimal(target.commission.amount).plus(source.commission.amount).toFixed(2);
+  target.logistics.amount = new Decimal(target.logistics.amount).plus(source.logistics.amount).toFixed(2);
+  target.promotion.amount = new Decimal(target.promotion.amount).plus(source.promotion.amount).toFixed(2);
+  target.returns.amount = new Decimal(target.returns.amount).plus(source.returns.amount).toFixed(2);
+  target.otherDirect.amount = new Decimal(target.otherDirect.amount).plus(source.otherDirect.amount).toFixed(2);
+  target.unknown.amount = new Decimal(target.unknown.amount).plus(source.unknown.amount).toFixed(2);
+  target.directCosts.amount = new Decimal(target.directCosts.amount).plus(source.directCosts.amount).toFixed(2);
+  target.directReceivable.amount = new Decimal(target.directReceivable.amount).plus(source.directReceivable.amount).toFixed(2);
+  target.sharedCosts.amount = new Decimal(target.sharedCosts.amount).plus(source.sharedCosts.amount).toFixed(2);
+  target.unknownAmount.amount = new Decimal(target.unknownAmount.amount).plus(source.unknownAmount.amount).toFixed(2);
+}
+
+const demoFinanceStatuses: FinanceOrderStatus[] = ["stable", "direct_receivable", "pending_adjustments", "review"];
+
+/** Provides deterministic order-level finance records for reviewing the reconciliation UI. */
+export function createDemoFinanceOrders(month: string, selectedStoreId = "all"): FinanceOrderSummary[] {
+  return demoStores
+    .filter((store) => selectedStoreId === "all" || store.id === selectedStoreId)
+    .flatMap((store, storeIndex) => {
+      const currency = storeIndex === 2 ? "CNY" : "RUB";
+      return Array.from({ length: 4 }, (_, orderIndex) => {
+        const sales = new Decimal(8_900 + storeIndex * 1_350 + orderIndex * 1_180).toFixed(2);
+        const commission = new Decimal(sales).times(-0.15).toFixed(2);
+        const logistics = new Decimal(-420 - orderIndex * 38).toFixed(2);
+        const promotion = orderIndex === 2 ? "-180.00" : "0.00";
+        const returns = orderIndex === 3 ? "-890.00" : "0.00";
+        const directCosts = new Decimal(commission).plus(logistics).plus(promotion).plus(returns).toFixed(2);
+        const status = demoFinanceStatuses[orderIndex] ?? "stable";
+        const postingId = `demo-finance-${store.id}-${orderIndex}`;
+        const postingNumber = `FIN-${storeIndex + 1}${String(orderIndex + 1).padStart(3, "0")}`;
+        const shipmentAt = status === "review" ? null : `${month}-${String(5 + orderIndex * 5).padStart(2, "0")}T09:30:00.000Z`;
+        const lines: FinanceLineView[] = [
+          { id: `${postingId}-revenue`, accrualDate: `${month}-10`, category: "revenue", categoryLabel: "成交收入", typeId: "1", typeName: "Продажа", postingNumber, sku: `SKU-${storeIndex + 1}01`, amount: financeMoney(sales, currency), quantity: 1, sellerPrice: financeMoney(sales, currency) },
+          { id: `${postingId}-commission`, accrualDate: `${month}-10`, category: "commission", categoryLabel: "佣金", typeId: "2", typeName: "Комиссия за продажу", postingNumber, sku: `SKU-${storeIndex + 1}01`, amount: financeMoney(commission, currency), quantity: 1, sellerPrice: null },
+          { id: `${postingId}-logistics`, accrualDate: `${month}-${String(11 + orderIndex).padStart(2, "0")}`, category: "logistics", categoryLabel: "物流费用", typeId: "29", typeName: "Доставка", postingNumber, sku: `SKU-${storeIndex + 1}01`, amount: financeMoney(logistics, currency), quantity: 1, sellerPrice: null },
+          ...(promotion !== "0.00" ? [{ id: `${postingId}-promotion`, accrualDate: `${month}-12`, category: "promotion" as const, categoryLabel: "活动费用", typeId: "12", typeName: "Продвижение", postingNumber, sku: `SKU-${storeIndex + 1}01`, amount: financeMoney(promotion, currency), quantity: 1, sellerPrice: null }] : []),
+          ...(returns !== "0.00" ? [{ id: `${postingId}-returns`, accrualDate: `${month}-15`, category: "returns" as const, categoryLabel: "退货/拒收", typeId: "6", typeName: "Возврат", postingNumber, sku: `SKU-${storeIndex + 1}01`, amount: financeMoney(returns, currency), quantity: 1, sellerPrice: null }] : []),
+        ];
+        return {
+          postingId,
+          storeId: store.id,
+          storeName: store.name,
+          storeColor: store.color,
+          postingNumber,
+          orderNumber: `ORDER-${storeIndex + 1}${String(orderIndex + 1).padStart(3, "0")}`,
+          shipmentMonth: shipmentAt ? month : null,
+          shipmentAt,
+          shipmentTimeSource: status === "review" ? "missing" : "in_process_at",
+          orderCurrency: currency,
+          settlementCurrency: currency,
+          items: [{ sku: `SKU-${storeIndex + 1}01`, offerId: `OFFER-${storeIndex + 1}01`, name: "轻量防水旅行收纳包", quantity: 1, currency }],
+          breakdown: demoFinanceBreakdown(currency, sales, directCosts, "0.00", "0.00", { commission, logistics, promotion, returns }),
+          status,
+          exceptionReasons: status === "review" ? ["缺少发运时间"] : [],
+          lastAccrualAt: `${month}-${String(15 + orderIndex).padStart(2, "0")}`,
+          lines,
+        } as FinanceOrderSummary & { lines: FinanceLineView[] };
+      });
+    });
+}
+
+/** Creates the finance summary with currency-separated totals and SKU rollups. */
+export function createDemoFinanceOverview(month: string, selectedStoreId = "all"): FinanceOverview {
+  const orders = createDemoFinanceOrders(month, selectedStoreId) as Array<FinanceOrderSummary & { lines: FinanceLineView[] }>;
+  const stores = new Map<string, FinanceStoreSummary>();
+  const skus = new Map<string, FinanceSkuSummary>();
+  for (const order of orders) {
+    const storeKey = `${order.storeId}:${order.settlementCurrency ?? "unsettled"}`;
+    const store = stores.get(storeKey) ?? {
+      storeId: order.storeId, storeName: order.storeName, storeColor: order.storeColor,
+      settlementCurrency: order.settlementCurrency, orderCurrency: order.orderCurrency,
+      orderCount: 0, salesQuantity: 0, skuCount: 0, breakdown: demoFinanceBreakdown(order.breakdown.sales.currency, "0.00", "0.00"),
+      awaitingRevenueOrderCount: 0, directReceivableOrderCount: 0, pendingOrderCount: 0, stableOrderCount: 0, reviewOrderCount: 0,
+      lastAccrualAt: null,
+    };
+    store.orderCount += 1;
+    store.salesQuantity += order.items.reduce((sum, item) => sum + item.quantity, 0);
+    store.orderCurrency = store.orderCurrency === order.orderCurrency ? store.orderCurrency : null;
+    addDemoBreakdown(store.breakdown, order.breakdown);
+    if (order.status === "awaiting_revenue") store.awaitingRevenueOrderCount += 1;
+    if (order.status === "direct_receivable") store.directReceivableOrderCount += 1;
+    if (order.status === "pending_adjustments") store.pendingOrderCount += 1;
+    if (order.status === "stable") store.stableOrderCount += 1;
+    if (order.status === "review") store.reviewOrderCount += 1;
+    store.lastAccrualAt = store.lastAccrualAt && store.lastAccrualAt > (order.lastAccrualAt ?? "") ? store.lastAccrualAt : order.lastAccrualAt;
+    stores.set(storeKey, store);
+    for (const item of order.items) {
+      const skuKey = `${storeKey}:${item.sku}`;
+      const sku = skus.get(skuKey) ?? {
+        storeId: order.storeId, storeName: order.storeName, storeColor: order.storeColor, sku: item.sku,
+        settlementCurrency: order.settlementCurrency, orderCurrency: order.orderCurrency,
+        orderCount: 0, quantity: 0, breakdown: demoFinanceBreakdown(order.breakdown.sales.currency, "0.00", "0.00"),
+        statusCounts: { awaiting_revenue: 0, direct_receivable: 0, pending_adjustments: 0, stable: 0, review: 0 },
+      };
+      sku.orderCount += 1;
+      sku.quantity += item.quantity;
+      sku.orderCurrency = sku.orderCurrency === order.orderCurrency ? sku.orderCurrency : null;
+      addDemoBreakdown(sku.breakdown, order.breakdown);
+      sku.statusCounts[order.status] += 1;
+      skus.set(skuKey, sku);
+    }
+  }
+  for (const store of stores.values()) {
+    store.skuCount = [...skus.values()].filter((sku) => sku.storeId === store.storeId && sku.settlementCurrency === store.settlementCurrency).length;
+    store.breakdown.sharedCosts.amount = store.settlementCurrency === "RUB" ? "2350.00" : "180.00";
+    store.breakdown.directReceivable.amount = new Decimal(store.breakdown.sales.amount).plus(store.breakdown.directCosts.amount).toFixed(2);
+  }
+  const totals = new Map<string, FinanceMoneyBreakdown>();
+  for (const store of stores.values()) {
+    if (!store.settlementCurrency) continue;
+    const total = totals.get(store.settlementCurrency) ?? demoFinanceBreakdown(store.settlementCurrency, "0.00", "0.00");
+    addDemoBreakdown(total, store.breakdown);
+    totals.set(store.settlementCurrency, total);
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    month,
+    stores: [...stores.values()],
+    skuSummaries: [...skus.values()],
+    totalsByCurrency: [...totals.values()],
+    sync: createDemoFinanceSync(month),
+  };
+}
+
+/** Returns the demo order list used by the finance table and its detail drawer. */
+export function createDemoFinanceOrderPage(month: string, selectedStoreId = "all", sku?: string, status?: FinanceOrderStatus, page = 1, pageSize = 20): { items: FinanceOrderSummary[]; page: number; pageSize: number; total: number } {
+  const all = createDemoFinanceOrders(month, selectedStoreId).filter((order) => (!sku || order.items.some((item) => item.sku.includes(sku))) && (!status || order.status === status));
+  const start = (page - 1) * pageSize;
+  return { items: all.slice(start, start + pageSize), page, pageSize, total: all.length };
+}
+
+/** Provides one demo accrual timeline for the finance detail drawer. */
+export function createDemoFinanceOrderDetail(postingId: string, month = new Date().toISOString().slice(0, 7)): FinanceOrderDetail {
+  const order = createDemoFinanceOrders(month).find((candidate) => candidate.postingId === postingId) as (FinanceOrderSummary & { lines: FinanceLineView[] }) | undefined;
+  if (!order) throw new Error("演示财务订单不存在");
+  return { ...order, lines: order.lines };
+}
+
+/** Provides representative finance exceptions without exposing buyer information. */
+export function createDemoFinanceExceptions(month: string, selectedStoreId = "all"): FinanceExceptionView[] {
+  const order = createDemoFinanceOrders(month, selectedStoreId).find((candidate) => candidate.status === "review");
+  if (!order) return [];
+  return [{
+    id: `${order.postingId}-exception`, storeId: order.storeId, storeName: order.storeName, postingNumber: order.postingNumber, sku: null,
+    category: "unknown", amount: financeMoney("-320.00", order.settlementCurrency ?? order.orderCurrency), reason: "订单缺少发运时间，无法归属发运月份", accrualDate: `${month}-15`,
+  }];
+}
+
+/** Provides an immediately completed demo sync task for manual-rebuild interactions. */
+export function createDemoFinanceSync(month: string, id = "demo-finance-sync"): FinanceSyncView {
+  return { id, state: "completed", from: `${month}-01`, to: `${month}-28`, totalDays: 28, completedDays: 28, failedDays: 0, error: null, startedAt: new Date(Date.now() - 4_000).toISOString(), finishedAt: new Date().toISOString() };
 }

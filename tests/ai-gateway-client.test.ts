@@ -34,16 +34,17 @@ describe("HttpAiGatewayClient streaming", () => {
     };
     const client = new HttpAiGatewayClient(config, fetchImplementation);
     const chunks = [];
-    for await (const chunk of client.streamText({ messages: [{ role: "user", content: "你好" }] })) chunks.push(chunk);
+    for await (const chunk of client.streamText({ applicationId: "general-chat", messages: [{ role: "user", content: "你好" }] })) chunks.push(chunk);
 
-    expect(requestBody).toMatchObject({ model: "text.quality", stream: true });
+    expect(requestBody).toMatchObject({ stream: true });
+    expect(requestBody).not.toHaveProperty("model");
     expect(chunks.map((chunk) => chunk.text).join("")).toBe("你好");
     expect(chunks.at(-1)).toMatchObject({ requestId: "req-1", actualModel: "deepseek-test" });
   });
 
   it("maps Relay authorization failures to an actionable gateway error", async () => {
     const client = new HttpAiGatewayClient(config, async () => streamedResponse([], 401));
-    const stream = client.streamText({ messages: [{ role: "user", content: "你好" }] });
+    const stream = client.streamText({ applicationId: "general-chat", messages: [{ role: "user", content: "你好" }] });
 
     await expect((async () => {
       for await (const _chunk of stream) {

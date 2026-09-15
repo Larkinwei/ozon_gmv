@@ -22,6 +22,13 @@ DOMAIN_TARGET="gui/$(id -u)"
 ADMIN_READY_URL="http://127.0.0.1:3001/readyz"
 ACTION="${1:-}"
 
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+  set -a
+  # Keep local service restarts aligned with the repository's untracked runtime settings.
+  source "$PROJECT_DIR/.env"
+  set +a
+fi
+
 function print_usage() {
   echo "Usage: $0 {install|status|restart|update|uninstall}"
 }

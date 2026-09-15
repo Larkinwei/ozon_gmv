@@ -19,6 +19,8 @@ import { CategoryAnalysisModule } from "./selection/category-analysis-module";
 import { DiscoveryModule } from "./selection/discovery-module";
 import { WordstatClient } from "./selection/wordstat-client";
 import { BackupService } from "./services/backup-service";
+import { FinanceRepository } from "./db/finance-repository";
+import { FinanceAnalysisService } from "./finance/finance-service";
 import { ProxySettingsService } from "./services/proxy-settings-service";
 import { ProductImageService } from "./services/product-image-service";
 import { startScheduler } from "./services/scheduler";
@@ -45,6 +47,7 @@ const syncService = new SyncService(
   new MarketplaceSyncCheckpointsRepository(database),
 );
 const updates = new UpdateService(config, proxySettings);
+const finance = new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
 const selection = new SelectionModule(config, database, {
   wordstatFactory: (folderId, apiKey) => new WordstatClient({
     folderId,
@@ -60,10 +63,10 @@ categories.start();
 const discovery = new DiscoveryModule(config, database, {
   fetchImplementation: proxySettings.createFetch(),
 });
-const dependencies = { config, database, events, syncService, proxySettings, updates, selection, categories, discovery };
+const dependencies = { config, database, events, syncService, proxySettings, updates, selection, categories, discovery, finance };
 const adminApp = await buildAdminApp(dependencies);
 const wallboardApp = await buildWallboardApp(dependencies);
-const scheduler = startScheduler(syncService);
+const scheduler = startScheduler(syncService, finance);
 const backups = new BackupService(database, join(config.DATA_DIR, "backups"));
 backups.start();
 
@@ -77,6 +80,7 @@ void discovery.start().then((refreshed) => {
 }).catch((error: unknown) => {
   adminApp.log.warn({ err: error }, "Startup market snapshot refresh failed; retaining local cache");
 });
+finance.start();
 adminApp.log.info(
   { adminPort: config.ADMIN_PORT, wallboardPort: config.WALLBOARD_PORT },
   "Ozon GMV local service is ready",

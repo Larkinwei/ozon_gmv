@@ -16,6 +16,8 @@ export interface NormalizedPosting {
   orderNumber: string;
   fulfillmentMode: FulfillmentMode;
   orderAt: Date;
+  shipmentAt?: Date | null;
+  shipmentTimeSource?: "delivering_date" | "in_process_at" | "missing";
   status: string;
   substatus: string | null;
   grossAmount: string;
@@ -46,6 +48,19 @@ function resolveFulfillment(posting: OzonPosting, source: "FBO" | "FBS"): Fulfil
   return posting.delivery_schema?.toUpperCase().includes("RFBS") ? "RFBS" : "FBS";
 }
 
+function resolveShipmentTime(posting: OzonPosting, source: "FBO" | "FBS"): {
+  value: string | null;
+  source: "delivering_date" | "in_process_at" | "missing";
+} {
+  if (source === "FBS" && posting.delivering_date) {
+    return { value: posting.delivering_date, source: "delivering_date" };
+  }
+  if (posting.in_process_at) {
+    return { value: posting.in_process_at, source: "in_process_at" };
+  }
+  return { value: null, source: "missing" };
+}
+
 /** Drops all buyer fields and converts an Ozon response into the persistence contract. */
 export function normalizePosting(posting: OzonPosting, source: "FBO" | "FBS", observedAt = new Date()): NormalizedPosting {
   const orderAtValue = source === "FBO" ? posting.created_at ?? posting.in_process_at : posting.in_process_at;
@@ -67,12 +82,15 @@ export function normalizePosting(posting: OzonPosting, source: "FBO" | "FBS", ob
     };
   });
   const cancelled = posting.status.toLowerCase().includes("cancel");
+  const shipmentTime = resolveShipmentTime(posting, source);
 
   return {
     postingNumber: posting.posting_number,
     orderNumber: posting.order_number,
     fulfillmentMode: resolveFulfillment(posting, source),
     orderAt: new Date(orderAtValue),
+    shipmentAt: shipmentTime.value ? new Date(shipmentTime.value) : null,
+    shipmentTimeSource: shipmentTime.source,
     status: posting.status,
     substatus: posting.substatus ?? null,
     grossAmount: total.amount,
@@ -81,4 +99,3 @@ export function normalizePosting(posting: OzonPosting, source: "FBO" | "FBS", ob
     items,
   };
 }
-

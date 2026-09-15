@@ -19,6 +19,8 @@ export const ozonPostingSchema = z.object({
   order_number: z.string().min(1),
   created_at: z.string().datetime().optional(),
   in_process_at: z.string().datetime().optional(),
+  delivering_date: z.string().datetime().nullish(),
+  shipment_date: z.string().datetime().nullish(),
   status: z.string().min(1),
   substatus: z.string().nullish(),
   delivery_schema: z.string().optional(),
@@ -88,6 +90,94 @@ const financeBalancePayloadSchema = z.object({
 }).passthrough();
 
 export const financeBalanceResponseSchema = z.preprocess(unwrapResult, financeBalancePayloadSchema);
+
+const accrualMoneySchema = z.object({
+  amount: z.union([z.string(), z.number()]).transform(String),
+  currency: z.string().min(3).max(3).transform((value) => value.toUpperCase()),
+}).passthrough();
+
+const accrualTypeIdSchema = z.union([z.string(), z.number()]).transform(String);
+
+const financeCommissionSchema = z.object({
+  seller_price: accrualMoneySchema.nullish(),
+  sale_commission: accrualMoneySchema.nullish(),
+  commission: accrualMoneySchema.nullish(),
+  sale_amount: accrualMoneySchema.nullish(),
+  sale_price: accrualMoneySchema.nullish(),
+  bonus: accrualMoneySchema.nullish(),
+  coinvestment: accrualMoneySchema.nullish(),
+}).passthrough();
+
+const financeDeliveryServiceSchema = z.object({
+  type_id: accrualTypeIdSchema,
+  accrued: accrualMoneySchema.nullish(),
+}).passthrough();
+
+const financePostingProductSchema = z.object({
+  sku: z.union([z.string(), z.number()]).transform(String),
+  quantity: z.union([z.number(), z.string()]).transform(Number).nullish(),
+  commission: financeCommissionSchema.nullish(),
+  delivery: z.object({
+    total_accrued: accrualMoneySchema.nullish(),
+    services: z.array(financeDeliveryServiceSchema).default([]),
+  }).passthrough().nullish(),
+}).passthrough();
+
+const financeItemFeeSchema = z.object({
+  type_id: accrualTypeIdSchema,
+  accrued: accrualMoneySchema.nullish(),
+}).passthrough();
+
+const financeAccrualSchema = z.object({
+  accrued_category: z.string().default("UNSPECIFIED"),
+  date: z.string().default(""),
+  type_id: accrualTypeIdSchema.nullish(),
+  unit_number: z.union([z.string(), z.number()]).transform(String).default(""),
+  total_amount: accrualMoneySchema.nullish(),
+  posting: z.object({
+    products: z.array(financePostingProductSchema).default([]),
+  }).passthrough().nullish(),
+  item_fees: z.object({
+    fees: z.array(z.object({
+      sku: z.union([z.string(), z.number()]).transform(String),
+      fees: z.array(financeItemFeeSchema).default([]),
+    }).passthrough()).default([]),
+  }).passthrough().nullish(),
+  non_item_fee: z.object({
+    type_id: accrualTypeIdSchema,
+    accrued: accrualMoneySchema.nullish(),
+  }).passthrough().nullish(),
+}).passthrough();
+
+export const financeAccrualByDayResponseSchema = z.object({
+  accruals: z.array(financeAccrualSchema).default([]),
+  last_id: z.union([z.string(), z.number()]).transform(String).nullish(),
+}).passthrough();
+
+export const financeAccrualPostingsResponseSchema = z.object({
+  posting_accruals: z.array(z.object({
+    posting_number: z.string(),
+    accruals: z.array(z.object({
+      accrual_date: z.string(),
+      accrued: accrualMoneySchema,
+      quantity: z.number().int().default(0),
+      seller_price: accrualMoneySchema.nullish(),
+      sku: z.union([z.string(), z.number()]).transform(String),
+      type_id: accrualTypeIdSchema,
+    }).passthrough()).default([]),
+  }).passthrough()).default([]),
+}).passthrough();
+
+export const financeAccrualTypesResponseSchema = z.object({
+  accrual_types: z.array(z.object({
+    id: accrualTypeIdSchema,
+    name: z.string().default(""),
+    description: z.string().default(""),
+  }).passthrough()).default([]),
+}).passthrough();
+
+/** The cash-flow report evolves independently from accrual line fields; retain it as raw JSON. */
+export const financeCashFlowStatementResponseSchema = z.unknown();
 
 const questionItemSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String).nullish(),
@@ -255,3 +345,6 @@ export const productPicturesInfoResponseSchema = z.object({}).passthrough();
 export type OzonPosting = z.infer<typeof ozonPostingSchema>;
 export type OzonRoles = z.infer<typeof rolesResponseSchema>;
 export type OzonProductInfo = z.infer<typeof productInfoSchema>;
+export type OzonFinanceAccrual = z.infer<typeof financeAccrualSchema>;
+export type OzonFinanceAccrualPostings = z.infer<typeof financeAccrualPostingsResponseSchema>["posting_accruals"][number];
+export type OzonFinanceAccrualType = z.infer<typeof financeAccrualTypesResponseSchema>["accrual_types"][number];

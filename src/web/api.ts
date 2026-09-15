@@ -74,8 +74,25 @@ import type {
   AiRelaySettingsView,
   AiRelayTestResult,
   AiProductSourceView,
+  FinanceExceptionView,
+  FinanceOrderDetail,
+  FinanceOrderStatus,
+  FinanceOrderSummary,
+  FinanceOverview,
+  FinanceSyncView,
 } from "../shared/contracts";
-import { createDemoOrderDetail, createDemoQuestionDetail, createDemoSnapshot, createDemoStoreOperations, demoStores } from "./demo-data";
+import {
+  createDemoFinanceExceptions,
+  createDemoFinanceOrderPage,
+  createDemoFinanceOrderDetail,
+  createDemoFinanceOverview,
+  createDemoFinanceSync,
+  createDemoOrderDetail,
+  createDemoQuestionDetail,
+  createDemoSnapshot,
+  createDemoStoreOperations,
+  demoStores,
+} from "./demo-data";
 
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 let runtimeRole: RuntimeView["role"] = "admin";
@@ -226,6 +243,64 @@ export async function fetchQuestionDetail(storeId: string, questionId: string): 
     return createDemoQuestionDetail(storeId, questionId);
   }
   return apiFetch(`/api/store-operations/questions/${encodeURIComponent(storeId)}/${encodeURIComponent(questionId)}`);
+}
+
+/** Loads the selected month's order payout aggregates for Ozon stores. */
+export async function fetchFinanceOverview(month: string, storeId = "all"): Promise<FinanceOverview> {
+  if (DEMO_MODE) return createDemoFinanceOverview(month, storeId);
+  const params = new URLSearchParams({ month });
+  if (storeId !== "all") params.set("storeIds", storeId);
+  return apiFetch(`/api/finance/overview?${params.toString()}`);
+}
+
+export interface FinanceOrderFilters {
+  month: string;
+  storeId: string;
+  sku?: string;
+  status?: FinanceOrderStatus;
+  page?: number;
+  pageSize?: number;
+}
+
+/** Loads shipment-month orders with their accrued direct costs. */
+export async function fetchFinanceOrders(filters: FinanceOrderFilters): Promise<{ items: FinanceOrderSummary[]; page: number; pageSize: number; total: number }> {
+  if (DEMO_MODE) {
+    return createDemoFinanceOrderPage(filters.month, filters.storeId, filters.sku, filters.status, filters.page ?? 1, filters.pageSize ?? 20);
+  }
+  const params = new URLSearchParams({ month: filters.month, page: String(filters.page ?? 1), pageSize: String(filters.pageSize ?? 20) });
+  if (filters.storeId !== "all") params.set("storeIds", filters.storeId);
+  if (filters.sku) params.set("sku", filters.sku);
+  if (filters.status) params.set("status", filters.status);
+  return apiFetch(`/api/finance/orders?${params.toString()}`);
+}
+
+/** Loads one order's full accrual timeline for the detail drawer. */
+export async function fetchFinanceOrderDetail(postingId: string, month?: string): Promise<FinanceOrderDetail> {
+  if (DEMO_MODE) return createDemoFinanceOrderDetail(postingId, month);
+  return apiFetch(`/api/finance/orders/${encodeURIComponent(postingId)}`);
+}
+
+/** Loads unmatched, unknown, and shipment-date exceptions for the selected month. */
+export async function fetchFinanceExceptions(month: string, storeId = "all"): Promise<FinanceExceptionView[]> {
+  if (DEMO_MODE) return createDemoFinanceExceptions(month, storeId);
+  const params = new URLSearchParams({ month });
+  if (storeId !== "all") params.set("storeIds", storeId);
+  return apiFetch(`/api/finance/exceptions?${params.toString()}`);
+}
+
+/** Starts a non-blocking monthly finance reconciliation run. */
+export async function startFinanceSync(month: string, storeId = "all"): Promise<FinanceSyncView> {
+  if (DEMO_MODE) return createDemoFinanceSync(month);
+  return apiFetch("/api/finance/sync", {
+    method: "POST",
+    body: JSON.stringify({ month, ...(storeId !== "all" ? { storeIds: storeId } : {}) }),
+  });
+}
+
+/** Reads the progress of a background finance reconciliation run. */
+export async function fetchFinanceSync(runId: string): Promise<FinanceSyncView> {
+  if (DEMO_MODE) return createDemoFinanceSync(new Date().toISOString().slice(0, 7), runId);
+  return apiFetch(`/api/finance/sync/${encodeURIComponent(runId)}`);
 }
 
 export async function createStore(input: StoreCreateInput): Promise<StoreCreateResult> {

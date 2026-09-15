@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/web/**/*.test.ts", "src/web/**/*.test.tsx"],
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/server/**/*.test.ts", "src/web/**/*.test.ts", "src/web/**/*.test.tsx"],
     coverage: {
       reporter: ["text", "html"],
     },

@@ -12,7 +12,9 @@ import type { AppConfig } from "./config";
 import { AiConversationModule } from "./ai/conversation-module";
 import { HttpAiGatewayClient, type AiGatewayClient } from "./ai/gateway-client";
 import { AdminRepository } from "./db/admin-repository";
+import { FinanceRepository } from "./db/finance-repository";
 import { DashboardRepository } from "./db/dashboard-repository";
+import { PostingsRepository } from "./db/postings-repository";
 import { ProductImagesRepository } from "./db/product-images-repository";
 import type { AppDatabase } from "./db/database";
 import { SettingsRepository } from "./db/settings-repository";
@@ -22,6 +24,7 @@ import type { DashboardEventBus } from "./realtime/event-bus";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerAiRoutes } from "./routes/ai";
 import { registerDashboardRoutes } from "./routes/dashboard";
+import { registerFinanceRoutes } from "./routes/finance";
 import { registerNotificationRoutes } from "./routes/notifications";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSelectionRoutes } from "./routes/selection";
@@ -39,6 +42,7 @@ import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { UpdateService } from "./services/update-service";
 import { StoreOperationsService, type StoreOperationsReader } from "./services/store-operations-service";
+import { FinanceAnalysisService, type FinanceReader } from "./finance/finance-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
 import { DiscoveryModule } from "./selection/discovery-module";
 import { MyDataModule } from "./selection/my-data-module";
@@ -66,6 +70,7 @@ export interface AppDependencies {
   resellImages?: ResellImageService;
   publishDrafts?: PublishDraftsModule;
   storeOperations?: StoreOperationsReader;
+  finance?: FinanceReader;
   aiGateway?: AiGatewayClient;
   aiConversations?: AiConversationModule;
 }
@@ -187,6 +192,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   });
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
+  const finance = dependencies.finance ?? new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
   const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config, fetch, aiRelaySettings);
   const aiConversations = dependencies.aiConversations ?? new AiConversationModule(database, aiGateway);
   const listAiSources = (): AiProductSourceView[] => [
@@ -204,6 +210,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerAiRoutes(app, aiConversations, () => aiGateway.checkHealth(), () => aiRelaySettings.view().modelAlias, listAiSources);
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
+  registerFinanceRoutes(app, finance);
   registerDashboardRoutes(app, new DashboardRepository(database), events);
   registerSelectionRoutes(app, selection, myData, resell, resellImages, publishDrafts);
   registerSelectionCategoryRoutes(app, categories);

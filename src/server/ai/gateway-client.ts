@@ -2,13 +2,17 @@ import type { AppConfig } from "../config";
 import type { AiRelaySettingsService } from "../services/ai-relay-settings-service";
 
 export interface AiStructuredRequest {
+  applicationId: string;
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
   schemaName: string;
   schema: Record<string, unknown>;
+  variables?: Record<string, string>;
 }
 
 export interface AiTextRequest {
+  applicationId: string;
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  variables?: Record<string, string>;
 }
 
 export interface AiTextStreamChunk {
@@ -60,18 +64,18 @@ export class HttpAiGatewayClient implements AiGatewayClient {
     const relay = this.runtimeConfig();
     let response: Response;
     try {
-      response = await this.fetchWithTimeout(`${relay.baseUrl}/v1/chat/completions`, {
+      response = await this.fetchWithTimeout(`${relay.baseUrl}/v1/apps/${encodeURIComponent(request.applicationId)}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(relay.apiKey ? { Authorization: `Bearer ${relay.apiKey}` } : {}),
         },
         body: JSON.stringify({
-          model: relay.modelAlias,
           messages: [
             { role: "system", content: `Return only valid JSON matching this schema: ${JSON.stringify(request.schema)}` },
             ...request.messages,
           ],
+          variables: request.variables,
           temperature: 0.7,
           response_format: { type: "json_object" },
         }),
@@ -112,7 +116,7 @@ export class HttpAiGatewayClient implements AiGatewayClient {
     const relay = this.runtimeConfig();
     let response: Response;
     try {
-      response = await this.fetchWithTimeout(`${relay.baseUrl}/v1/chat/completions`, {
+      response = await this.fetchWithTimeout(`${relay.baseUrl}/v1/apps/${encodeURIComponent(request.applicationId)}/chat/completions`, {
         method: "POST",
         headers: {
           "Accept": "text/event-stream",
@@ -120,8 +124,8 @@ export class HttpAiGatewayClient implements AiGatewayClient {
           ...(relay.apiKey ? { Authorization: `Bearer ${relay.apiKey}` } : {}),
         },
         body: JSON.stringify({
-          model: relay.modelAlias,
           messages: request.messages,
+          variables: request.variables,
           temperature: 0.7,
           stream: true,
           stream_options: { include_usage: true },

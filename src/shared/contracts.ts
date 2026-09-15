@@ -205,6 +205,153 @@ export interface StoreOperationsSnapshot {
   stores: StoreOperationsStoreView[];
 }
 
+export const financeCategories = [
+  "revenue",
+  "commission",
+  "logistics",
+  "promotion",
+  "returns",
+  "other_direct",
+  "shared",
+  "unknown",
+] as const;
+export type FinanceCategory = (typeof financeCategories)[number];
+
+export const financeOrderStatuses = [
+  "awaiting_revenue",
+  "direct_receivable",
+  "pending_adjustments",
+  "stable",
+  "review",
+] as const;
+export type FinanceOrderStatus = (typeof financeOrderStatuses)[number];
+
+export interface FinanceMoneyBreakdown {
+  sales: Money;
+  commission: Money;
+  logistics: Money;
+  promotion: Money;
+  returns: Money;
+  otherDirect: Money;
+  unknown: Money;
+  directCosts: Money;
+  directReceivable: Money;
+  sharedCosts: Money;
+  unknownAmount: Money;
+}
+
+export interface FinanceStoreSummary {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  settlementCurrency: string | null;
+  orderCurrency: string | null;
+  orderCount: number;
+  salesQuantity: number;
+  skuCount: number;
+  breakdown: FinanceMoneyBreakdown;
+  awaitingRevenueOrderCount: number;
+  directReceivableOrderCount: number;
+  pendingOrderCount: number;
+  stableOrderCount: number;
+  reviewOrderCount: number;
+  lastAccrualAt: string | null;
+}
+
+export interface FinanceSkuSummary {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  sku: string;
+  settlementCurrency: string | null;
+  orderCurrency: string | null;
+  orderCount: number;
+  quantity: number;
+  breakdown: FinanceMoneyBreakdown;
+  statusCounts: Record<FinanceOrderStatus, number>;
+}
+
+export interface FinanceOrderItem {
+  sku: string;
+  offerId: string;
+  name: string;
+  quantity: number;
+  currency: string;
+}
+
+export interface FinanceOrderSummary {
+  postingId: string;
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  postingNumber: string;
+  orderNumber: string;
+  shipmentMonth: string | null;
+  shipmentAt: string | null;
+  shipmentTimeSource: string;
+  orderCurrency: string;
+  settlementCurrency: string | null;
+  items: FinanceOrderItem[];
+  breakdown: FinanceMoneyBreakdown;
+  status: FinanceOrderStatus;
+  exceptionReasons: string[];
+  lastAccrualAt: string | null;
+}
+
+export interface FinanceLineView {
+  id: string;
+  accrualDate: string;
+  category: FinanceCategory;
+  categoryLabel: string;
+  typeId: string | null;
+  typeName: string | null;
+  postingNumber: string | null;
+  sku: string | null;
+  amount: Money;
+  quantity: number | null;
+  sellerPrice: Money | null;
+}
+
+export interface FinanceOrderDetail extends FinanceOrderSummary {
+  lines: FinanceLineView[];
+}
+
+export interface FinanceExceptionView {
+  id: string;
+  storeId: string;
+  storeName: string;
+  postingNumber: string | null;
+  sku: string | null;
+  category: FinanceCategory;
+  amount: Money;
+  reason: string;
+  accrualDate: string;
+}
+
+export type FinanceSyncState = "queued" | "running" | "completed" | "failed";
+
+export interface FinanceSyncView {
+  id: string | null;
+  state: FinanceSyncState | "idle";
+  from: string | null;
+  to: string | null;
+  totalDays: number;
+  completedDays: number;
+  failedDays: number;
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface FinanceOverview {
+  generatedAt: string;
+  month: string;
+  stores: FinanceStoreSummary[];
+  skuSummaries: FinanceSkuSummary[];
+  totalsByCurrency: FinanceMoneyBreakdown[];
+  sync: FinanceSyncView;
+}
+
 export type DashboardEventType = "posting.created" | "posting.updated" | "sync.status";
 
 export interface DashboardEvent<T = unknown> {
