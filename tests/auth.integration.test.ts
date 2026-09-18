@@ -61,6 +61,7 @@ describe("administrator setup and session API", () => {
       expect(status.json()).toEqual({ authenticated: false, setupRequired: true });
       const unauthorized = await app.inject({ method: "GET", url: "/api/dashboard/overview" });
       expect(unauthorized.statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: "/api/orders/search" })).statusCode).toBe(401);
       expect((await app.inject({ method: "GET", url: "/api/settings/update" })).statusCode).toBe(401);
       expect((await app.inject({ method: "GET", url: "/api/settings/notifications" })).statusCode).toBe(401);
 
@@ -87,6 +88,13 @@ describe("administrator setup and session API", () => {
         cookies: { ozon_session: cookie?.value ?? "" },
       });
       expect(sessionResponse.json()).toEqual({ authenticated: true, username: "admin", setupRequired: false });
+      const orderSearchResponse = await app.inject({
+        method: "GET",
+        url: "/api/orders/search?page=1&pageSize=20",
+        cookies: { ozon_session: cookie?.value ?? "" },
+      });
+      expect(orderSearchResponse.statusCode).toBe(200);
+      expect(orderSearchResponse.json()).toMatchObject({ items: [], page: 1, pageSize: 20, total: 0 });
       const updateResponse = await app.inject({
         method: "GET",
         url: "/api/settings/update",

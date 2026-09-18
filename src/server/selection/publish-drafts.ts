@@ -49,6 +49,12 @@ export class PublishDraftsModule {
     return row ? toView(row) : null;
   }
 
+  /** Lists local drafts for AI context selection without contacting a marketplace. */
+  public list(): PublishDraftView[] {
+    const rows = this.database.prepare("SELECT * FROM publish_drafts ORDER BY updated_at_ms DESC LIMIT 100").all() as DraftRow[];
+    return rows.map(toView);
+  }
+
   /** Updates only the editable snapshot and overrides supplied by the caller. */
   public update(id: string, input: { sourceType?: PublishSourceType | undefined; sourceSku?: string | undefined; title?: string | null | undefined; sourceSnapshot?: ResellSourceView | undefined; fieldOverrides?: Record<string, unknown> | undefined }): PublishDraftView | null {
     const current = this.database.prepare("SELECT * FROM publish_drafts WHERE id = ?").get(id) as DraftRow | undefined;

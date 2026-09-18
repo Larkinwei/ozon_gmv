@@ -6,6 +6,7 @@ import type {
   DashboardSnapshot,
   Money,
   OrderDetail,
+  OrderSearchPage,
   PlatformBreakdown,
   RecentOrder,
   StoreBreakdown,
@@ -118,6 +119,26 @@ function createFilter(window: DashboardWindow, storeIds: string[], platform: Sto
   };
 }
 
+interface OrderSearchRow {
+  id: string;
+  posting_number: string;
+  order_number: string;
+  store_id: string;
+  store_name: string;
+  store_color: string;
+  order_at_ms: number;
+  gross_amount_minor: number;
+  currency: string;
+  image_url: string | null;
+  item_count: number;
+  product_names_json: string;
+  skus_json: string;
+  offer_ids_json: string;
+  fulfillment_mode: string;
+  status: string;
+  cancelled_at_ms: number | null;
+}
+
 function buildKpis(rows: SummaryRow[]): DashboardKpis {
   return {
     orders: rows.reduce((sum, row) => sum + row.orders, 0),
@@ -213,6 +234,96 @@ export class DashboardRepository {
 
   public constructor(private readonly database: AppDatabase) {
     this.storesRepository = new StoresRepository(database);
+  }
+
+  public searchOzonOrders(query: { q?: string; from: Date; to: Date; page: number; pageSize: number }): OrderSearchPage {
+    const clauses = ["p.order_at_ms >= ?", "p.order_at_ms < ?", "s.platform = 'ozon'"];
+    const dateParameters: Array<number | string> = [query.from.getTime(), query.to.getTime()];
+    const searchParameters: Array<number | string> = [];
+    if (query.q) {
+      const escaped = query.q.toLocaleLowerCase("ru-RU").replace(/[\\%_]/g, "\\$&");
+      const pattern = `%${escaped}%`;
+      clauses.push(`(
+        LOWER(p.posting_number) LIKE ? ESCAPE '\\'
+        OR LOWER(p.order_number) LIKE ? ESCAPE '\\'
+        OR EXISTS (
+          SELECT 1 FROM posting_items search_item
+          WHERE search_item.posting_id = p.id
+            AND (
+              LOWER(search_item.name) LIKE ? ESCAPE '\\'
+              OR LOWER(search_item.sku) LIKE ? ESCAPE '\\'
+              OR LOWER(search_item.offer_id) LIKE ? ESCAPE '\\'
+            )
+        )
+      )`);
+      searchParameters.push(pattern, pattern, pattern, pattern, pattern);
+    }
+    const whereSql = clauses.join(" AND ");
+    const countRow = this.database.prepare(`
+      SELECT COUNT(*) AS total
+      FROM postings p
+      JOIN stores s ON s.id = p.store_id
+      WHERE ${whereSql}
+    `).get(...dateParameters, ...searchParameters) as { total: number };
+    const start = (query.page - 1) * query.pageSize;
+    const rows = this.database.prepare(`
+      SELECT p.id, p.posting_number, p.order_number, p.store_id,
+             s.name AS store_name, s.color AS store_color,
+             p.order_at_ms, p.gross_amount_minor, p.currency,
+             (
+               SELECT image.primary_image_url
+               FROM posting_items image_item
+               LEFT JOIN product_images image ON image.store_id = p.store_id AND image.sku = image_item.sku
+               WHERE image_item.posting_id = p.id AND image.primary_image_url IS NOT NULL AND image.primary_image_url <> ''
+               ORDER BY image_item.id
+               LIMIT 1
+             ) AS image_url,
+             COALESCE((SELECT SUM(quantity) FROM posting_items WHERE posting_id = p.id), 0) AS item_count,
+             COALESCE((SELECT json_group_array(name) FROM (
+               SELECT DISTINCT name FROM posting_items
+               WHERE posting_id = p.id AND name <> '' ORDER BY name
+             )), '[]') AS product_names_json,
+             COALESCE((SELECT json_group_array(sku) FROM (
+               SELECT DISTINCT sku FROM posting_items
+               WHERE posting_id = p.id AND sku <> '' ORDER BY sku
+             )), '[]') AS skus_json,
+             COALESCE((SELECT json_group_array(offer_id) FROM (
+               SELECT DISTINCT offer_id FROM posting_items
+               WHERE posting_id = p.id AND offer_id <> '' ORDER BY offer_id
+             )), '[]') AS offer_ids_json,
+             p.fulfillment_mode, p.status, p.cancelled_at_ms
+      FROM postings p
+      JOIN stores s ON s.id = p.store_id
+      WHERE ${whereSql}
+      ORDER BY p.order_at_ms DESC, p.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...dateParameters, ...searchParameters, query.pageSize, start) as OrderSearchRow[];
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        platform: "ozon",
+        externalOrderId: row.posting_number,
+        postingNumber: row.posting_number,
+        orderNumber: row.order_number,
+        storeId: row.store_id,
+        storeName: row.store_name,
+        storeColor: row.store_color,
+        orderAt: new Date(row.order_at_ms).toISOString(),
+        amount: moneyFromMinorUnits(row.gross_amount_minor, row.currency),
+        imageUrl: row.image_url,
+        itemCount: row.item_count,
+        productNames: JSON.parse(row.product_names_json) as string[],
+        skus: JSON.parse(row.skus_json) as string[],
+        offerIds: JSON.parse(row.offer_ids_json) as string[],
+        fulfillment: row.fulfillment_mode,
+        status: row.status,
+        cancelled: row.cancelled_at_ms !== null,
+      })),
+      page: query.page,
+      pageSize: query.pageSize,
+      total: countRow.total,
+    };
   }
 
   /** Returns a non-PII order projection and its locally cached product images. */

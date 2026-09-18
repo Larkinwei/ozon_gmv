@@ -99,6 +99,34 @@ export interface RecentOrder {
   cancelled: boolean;
 }
 
+export interface OrderSearchItem {
+  id: string;
+  platform: "ozon";
+  externalOrderId: string;
+  postingNumber: string;
+  orderNumber: string;
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  orderAt: string;
+  amount: Money;
+  imageUrl: string | null;
+  itemCount: number;
+  productNames: string[];
+  skus: string[];
+  offerIds: string[];
+  fulfillment: string;
+  status: string;
+  cancelled: boolean;
+}
+
+export interface OrderSearchPage {
+  items: OrderSearchItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
 export interface OrderDetailItem {
   id: string;
   sku: string;
@@ -205,6 +233,198 @@ export interface StoreOperationsSnapshot {
   stores: StoreOperationsStoreView[];
 }
 
+export const financeCategories = [
+  "revenue",
+  "commission",
+  "logistics",
+  "promotion",
+  "returns",
+  "other_direct",
+  "shared",
+  "unknown",
+] as const;
+export type FinanceCategory = (typeof financeCategories)[number];
+
+export const financeOrderStatuses = [
+  "awaiting_revenue",
+  "direct_receivable",
+  "pending_adjustments",
+  "stable",
+  "review",
+] as const;
+export type FinanceOrderStatus = (typeof financeOrderStatuses)[number];
+
+export const financeCancellationStates = ["none", "no_revenue", "with_revenue"] as const;
+export type FinanceCancellationState = (typeof financeCancellationStates)[number];
+
+export interface FinanceMoneyBreakdown {
+  sales: Money;
+  commission: Money;
+  logistics: Money;
+  promotion: Money;
+  returns: Money;
+  otherDirect: Money;
+  unknown: Money;
+  directCosts: Money;
+  directReceivable: Money;
+  sharedCosts: Money;
+  unknownAmount: Money;
+}
+
+export interface FinanceStoreSummary {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  settlementCurrency: string | null;
+  orderCurrency: string | null;
+  orderCount: number;
+  salesQuantity: number;
+  skuCount: number;
+  breakdown: FinanceMoneyBreakdown;
+  awaitingRevenueOrderCount: number;
+  directReceivableOrderCount: number;
+  pendingOrderCount: number;
+  stableOrderCount: number;
+  reviewOrderCount: number;
+  cancelledOrderCount: number;
+  cancelledNoRevenueOrderCount: number;
+  cancelledWithRevenueOrderCount: number;
+  lastAccrualAt: string | null;
+}
+
+export interface FinanceSkuSummary {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  sku: string;
+  settlementCurrency: string | null;
+  orderCurrency: string | null;
+  orderCount: number;
+  quantity: number;
+  breakdown: FinanceMoneyBreakdown;
+  statusCounts: Record<FinanceOrderStatus, number>;
+}
+
+export interface FinanceOrderItem {
+  sku: string;
+  offerId: string;
+  name: string;
+  quantity: number;
+  currency: string;
+}
+
+export interface FinanceOrderSummary {
+  postingId: string;
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  postingNumber: string;
+  orderNumber: string;
+  shipmentMonth: string | null;
+  shipmentAt: string | null;
+  shipmentTimeSource: string;
+  orderCurrency: string;
+  settlementCurrency: string | null;
+  items: FinanceOrderItem[];
+  breakdown: FinanceMoneyBreakdown;
+  status: FinanceOrderStatus;
+  cancelled: boolean;
+  cancellationState: FinanceCancellationState;
+  exceptionReasons: string[];
+  lastAccrualAt: string | null;
+}
+
+export interface FinanceLineView {
+  id: string;
+  accrualDate: string;
+  category: FinanceCategory;
+  categoryLabel: string;
+  typeId: string | null;
+  typeName: string | null;
+  postingNumber: string | null;
+  sku: string | null;
+  amount: Money;
+  quantity: number | null;
+  sellerPrice: Money | null;
+}
+
+export interface FinanceOrderDetail extends FinanceOrderSummary {
+  lines: FinanceLineView[];
+}
+
+export interface FinanceExceptionView {
+  id: string;
+  storeId: string;
+  storeName: string;
+  postingNumber: string | null;
+  sku: string | null;
+  category: FinanceCategory;
+  amount: Money;
+  reason: string;
+  accrualDate: string;
+}
+
+export type FinanceSyncState = "queued" | "running" | "completed" | "failed";
+
+export interface FinanceSyncView {
+  id: string | null;
+  state: FinanceSyncState | "idle";
+  from: string | null;
+  to: string | null;
+  totalDays: number;
+  completedDays: number;
+  failedDays: number;
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface FinanceCoverageStoreView {
+  storeId: string;
+  totalDays: number;
+  completedDays: number;
+  failedDays: number;
+  missingDates: string[];
+  lastSyncedAt: string | null;
+  complete: boolean;
+}
+
+export interface FinanceCoverageView {
+  month: string;
+  from: string | null;
+  to: string | null;
+  totalDays: number;
+  completedDays: number;
+  failedDays: number;
+  missingDates: string[];
+  complete: boolean;
+  future: boolean;
+  stores: FinanceCoverageStoreView[];
+}
+
+export interface FinanceUnassignedFeeView {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  currency: string;
+  amount: Money;
+  lineCount: number;
+  typeId: string | null;
+  typeName: string | null;
+  sourceDateFrom: string;
+  sourceDateTo: string;
+}
+
+export interface FinanceOverview {
+  generatedAt: string;
+  month: string;
+  stores: FinanceStoreSummary[];
+  skuSummaries: FinanceSkuSummary[];
+  totalsByCurrency: FinanceMoneyBreakdown[];
+  unassignedFees: FinanceUnassignedFeeView[];
+  sync: FinanceSyncView;
+}
+
 export type DashboardEventType = "posting.created" | "posting.updated" | "sync.status";
 
 export interface DashboardEvent<T = unknown> {
@@ -227,6 +447,19 @@ export interface NetworkSettingsView {
   manualProxy: string | null;
   detectedProxy: string | null;
   hasManualCredentials: boolean;
+}
+
+export interface AiRelaySettingsView {
+  baseUrl: string;
+  apiKeyConfigured: boolean;
+  apiKeyMasked: string | null;
+  modelAlias: string;
+  timeoutMs: number;
+}
+
+export interface AiRelayTestResult {
+  ok: boolean;
+  message: string;
 }
 
 export interface ProxyTestResult {
@@ -1268,4 +1501,83 @@ export interface SelectionMarketQueryPage {
 
 export interface SelectionMarketQueryDetail extends SelectionMarketQueryListItem {
   wordstat: SelectionWordstatView | null;
+}
+
+export type AiApplicationStatus = "enabled" | "coming_soon";
+
+export interface AiApplicationView {
+  id: string;
+  name: string;
+  description: string;
+  status: AiApplicationStatus;
+}
+
+export interface AiProductContext {
+  name: string;
+  category: string;
+  attributes: Record<string, unknown>;
+  material: string;
+  color: string;
+  targetMarket: string;
+  imagePurpose: string;
+  style: string;
+  aspectRatio: string;
+}
+
+export interface AiProductSourceView {
+  id: string;
+  kind: "draft" | "product";
+  name: string;
+  sku: string;
+  category: string;
+  productContext: AiProductContext;
+}
+
+export interface AiPromptCandidate {
+  prompt: string;
+  negativePrompt: string;
+  subjectProtection: string[];
+  composition: string;
+  lighting: string;
+  background: string;
+  style: string;
+  aspectRatio: string;
+  intendedUse: string;
+  warnings: string[];
+}
+
+export interface AiMessageView {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  content: { text: string } | { candidates: AiPromptCandidate[] };
+  runId: string | null;
+  createdAtMs: number;
+}
+
+export type AiConversationRunStatus = "idle" | "submitted" | "streaming" | "completed" | "error" | "aborted";
+
+export type AiConversationStreamEvent =
+  | { type: "run_started"; data: { runId: string } }
+  | { type: "user_message"; data: { message: AiMessageView } }
+  | { type: "status"; data: { status: "thinking"; label: string } }
+  | { type: "delta"; data: { text: string } }
+  | { type: "completed"; data: { conversation: AiConversationView } }
+  | { type: "aborted"; data: { conversation: AiConversationView } }
+  | { type: "error"; data: { code: string; message: string } };
+
+export interface AiConversationView {
+  id: string;
+  applicationId: string;
+  title: string;
+  productContext: AiProductContext;
+  createdBy: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  messages: AiMessageView[];
+}
+
+export interface AiRelayStatusView {
+  available: boolean;
+  modelAlias: string;
 }

@@ -21,6 +21,7 @@ import type {
   ResellTaskListPage,
   OrderNotificationSettings,
   OrderDetail,
+  OrderSearchPage,
   ProxyMode,
   PublishSourceType,
   ProxyTestResult,
@@ -66,8 +67,34 @@ import type {
   WallboardPairingView,
   WordstatJobView,
   WordstatSettingsView,
+  AiApplicationView,
+  AiConversationStreamEvent,
+  AiConversationView,
+  AiProductContext,
+  AiRelayStatusView,
+  AiRelaySettingsView,
+  AiRelayTestResult,
+  AiProductSourceView,
+  FinanceExceptionView,
+  FinanceCoverageView,
+  FinanceOrderDetail,
+  FinanceOrderStatus,
+  FinanceOrderSummary,
+  FinanceOverview,
+  FinanceSyncView,
 } from "../shared/contracts";
-import { createDemoOrderDetail, createDemoQuestionDetail, createDemoSnapshot, createDemoStoreOperations, demoStores } from "./demo-data";
+import {
+  createDemoFinanceExceptions,
+  createDemoFinanceOrderPage,
+  createDemoFinanceOrderDetail,
+  createDemoFinanceOverview,
+  createDemoFinanceSync,
+  createDemoOrderDetail,
+  createDemoQuestionDetail,
+  createDemoSnapshot,
+  createDemoStoreOperations,
+  demoStores,
+} from "./demo-data";
 
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 let runtimeRole: RuntimeView["role"] = "admin";
@@ -188,6 +215,40 @@ export async function fetchOrderDetail(id: string): Promise<OrderDetail> {
   return apiFetch(`${prefix}/orders/${encodeURIComponent(id)}`);
 }
 
+export interface OrderSearchFilters {
+  q?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export async function fetchOrderSearch(filters: OrderSearchFilters = {}): Promise<OrderSearchPage> {
+  if (DEMO_MODE) {
+    const snapshot = createDemoSnapshot("30d", "all");
+    const q = filters.q?.trim().toLocaleLowerCase("zh-CN") ?? "";
+    const from = filters.from ? Date.parse(filters.from) : Date.now() - 90 * 24 * 60 * 60 * 1000;
+    const to = filters.to ? Date.parse(filters.to) : Date.now();
+    const items = snapshot.recentOrders
+      .filter((order) => order.platform === "ozon")
+      .map((order) => ({ ...order, orderNumber: order.postingNumber.split("-").slice(0, -1).join("-"), imageUrl: null, skus: [] as string[], offerIds: [] as string[] }))
+      .filter((order) => {
+        const searchable = `${order.postingNumber} ${order.orderNumber} ${order.productNames.join(" ")} ${order.skus.join(" ")} ${order.offerIds.join(" ")}`.toLocaleLowerCase("zh-CN");
+        return Date.parse(order.orderAt) >= from && Date.parse(order.orderAt) < to && (!q || searchable.includes(q));
+      });
+    const page = filters.page ?? 1;
+    const pageSize = filters.pageSize ?? 20;
+    return { items: items.slice((page - 1) * pageSize, page * pageSize).map((item) => ({ ...item, platform: "ozon" as const })), page, pageSize, total: items.length };
+  }
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  params.set("page", String(filters.page ?? 1));
+  params.set("pageSize", String(filters.pageSize ?? 20));
+  return apiFetch(`/api/orders/search?${params.toString()}`);
+}
+
 export function dashboardStreamUrl(): string {
   return runtimeRole === "wallboard" ? "/api/wallboard/stream" : "/api/dashboard/stream";
 }
@@ -218,6 +279,74 @@ export async function fetchQuestionDetail(storeId: string, questionId: string): 
     return createDemoQuestionDetail(storeId, questionId);
   }
   return apiFetch(`/api/store-operations/questions/${encodeURIComponent(storeId)}/${encodeURIComponent(questionId)}`);
+}
+
+/** Loads the selected month's order payout aggregates for Ozon stores. */
+export async function fetchFinanceOverview(month: string, storeId = "all"): Promise<FinanceOverview> {
+  if (DEMO_MODE) return createDemoFinanceOverview(month, storeId);
+  const params = new URLSearchParams({ month });
+  if (storeId !== "all") params.set("storeIds", storeId);
+  return apiFetch(`/api/finance/overview?${params.toString()}`);
+}
+
+/** Loads the selected month's finance accrual coverage through today. */
+export async function fetchFinanceCoverage(month: string, storeId = "all"): Promise<FinanceCoverageView> {
+  if (DEMO_MODE) {
+    return { month, from: `${month}-01`, to: new Date().toISOString().slice(0, 10), totalDays: 0, completedDays: 0, failedDays: 0, missingDates: [], complete: true, future: false, stores: [] };
+  }
+  const params = new URLSearchParams({ month });
+  if (storeId !== "all") params.set("storeIds", storeId);
+  return apiFetch(`/api/finance/coverage?${params.toString()}`);
+}
+
+export interface FinanceOrderFilters {
+  month: string;
+  storeId: string;
+  sku?: string;
+  status?: FinanceOrderStatus;
+  page?: number;
+  pageSize?: number;
+}
+
+/** Loads shipment-month orders with their accrued direct costs. */
+export async function fetchFinanceOrders(filters: FinanceOrderFilters): Promise<{ items: FinanceOrderSummary[]; page: number; pageSize: number; total: number }> {
+  if (DEMO_MODE) {
+    return createDemoFinanceOrderPage(filters.month, filters.storeId, filters.sku, filters.status, filters.page ?? 1, filters.pageSize ?? 20);
+  }
+  const params = new URLSearchParams({ month: filters.month, page: String(filters.page ?? 1), pageSize: String(filters.pageSize ?? 20) });
+  if (filters.storeId !== "all") params.set("storeIds", filters.storeId);
+  if (filters.sku) params.set("sku", filters.sku);
+  if (filters.status) params.set("status", filters.status);
+  return apiFetch(`/api/finance/orders?${params.toString()}`);
+}
+
+/** Loads one order's full accrual timeline for the detail drawer. */
+export async function fetchFinanceOrderDetail(postingId: string, month?: string): Promise<FinanceOrderDetail> {
+  if (DEMO_MODE) return createDemoFinanceOrderDetail(postingId, month);
+  return apiFetch(`/api/finance/orders/${encodeURIComponent(postingId)}`);
+}
+
+/** Loads shipment-date and reconciliation exceptions for the selected month. */
+export async function fetchFinanceExceptions(month: string, storeId = "all"): Promise<FinanceExceptionView[]> {
+  if (DEMO_MODE) return createDemoFinanceExceptions(month, storeId);
+  const params = new URLSearchParams({ month });
+  if (storeId !== "all") params.set("storeIds", storeId);
+  return apiFetch(`/api/finance/exceptions?${params.toString()}`);
+}
+
+/** Starts a non-blocking monthly finance reconciliation run. */
+export async function startFinanceSync(month: string, storeId = "all", mode: "ensure" | "rebuild" = "rebuild"): Promise<FinanceSyncView> {
+  if (DEMO_MODE) return createDemoFinanceSync(month);
+  return apiFetch("/api/finance/sync", {
+    method: "POST",
+    body: JSON.stringify({ month, mode, ...(storeId !== "all" ? { storeIds: storeId } : {}) }),
+  });
+}
+
+/** Reads the progress of a background finance reconciliation run. */
+export async function fetchFinanceSync(runId: string): Promise<FinanceSyncView> {
+  if (DEMO_MODE) return createDemoFinanceSync(new Date().toISOString().slice(0, 7), runId);
+  return apiFetch(`/api/finance/sync/${encodeURIComponent(runId)}`);
 }
 
 export async function createStore(input: StoreCreateInput): Promise<StoreCreateResult> {
@@ -289,6 +418,18 @@ export async function updateNetworkSettings(mode: ProxyMode, manualProxy?: strin
 
 export async function testNetworkSettings(): Promise<ProxyTestResult> {
   return apiFetch("/api/settings/network/test", { method: "POST" });
+}
+
+export async function fetchAiRelaySettings(): Promise<AiRelaySettingsView> {
+  return apiFetch("/api/settings/ai-relay");
+}
+
+export async function updateAiRelaySettings(input: { baseUrl: string; apiKey?: string; modelAlias: string; timeoutMs: number }): Promise<AiRelaySettingsView> {
+  return apiFetch("/api/settings/ai-relay", { method: "PUT", body: JSON.stringify(input) });
+}
+
+export async function testAiRelaySettings(): Promise<AiRelayTestResult> {
+  return apiFetch("/api/settings/ai-relay/test", { method: "POST" });
 }
 
 export async function fetchOrderNotificationSettings(): Promise<OrderNotificationSettings> {
@@ -1063,3 +1204,133 @@ const demoSelectionOverview: SelectionOverview = {
   candidateCounts: { watching: 5, recommended: 2, rejected: 3 },
   lastImportAt: new Date().toISOString(),
 };
+
+const demoAiApplications: AiApplicationView[] = [
+  { id: "general-chat", name: "日常聊天", description: "不依赖商品资料的通用 AI 对话。", status: "enabled" },
+  { id: "product-image-prompt", name: "商品生图提示词", description: "根据商品资料生成多套结构化生图提示词。", status: "enabled" },
+  { id: "product-image-generate", name: "商品图片生成", description: "基于商品资料生成并编辑商品图片。", status: "coming_soon" },
+  { id: "product-copy", name: "商品文案生成", description: "生成适合目标市场的商品标题、卖点和描述。", status: "coming_soon" },
+  { id: "product-listing", name: "商品自动上架", description: "校验并准备商品草稿，提交前保留人工审批。", status: "coming_soon" },
+];
+const demoAiConversations: AiConversationView[] = [];
+
+export async function fetchAiApplications(): Promise<{ applications: AiApplicationView[] }> {
+  return DEMO_MODE ? { applications: demoAiApplications } : apiFetch("/api/ai/apps");
+}
+
+export async function fetchAiRelayStatus(): Promise<AiRelayStatusView> {
+  return DEMO_MODE ? { available: true, modelAlias: "text.quality" } : apiFetch("/api/ai/status");
+}
+
+export async function fetchAiSources(): Promise<{ sources: AiProductSourceView[] }> {
+  return DEMO_MODE ? { sources: [] } : apiFetch("/api/ai/sources");
+}
+
+export async function fetchAiConversations(): Promise<AiConversationView[]> {
+  return DEMO_MODE ? demoAiConversations : apiFetch("/api/ai/conversations");
+}
+
+export async function fetchAiConversation(id: string): Promise<AiConversationView> {
+  if (DEMO_MODE) {
+    const conversation = demoAiConversations.find((item) => item.id === id);
+    if (!conversation) throw new Error("对话不存在");
+    return conversation;
+  }
+  return apiFetch(`/api/ai/conversations/${encodeURIComponent(id)}`);
+}
+
+export async function createAiConversation(input: { applicationId: string; productContext: AiProductContext }): Promise<AiConversationView> {
+  if (DEMO_MODE) {
+    const now = Date.now();
+    const conversation: AiConversationView = { id: crypto.randomUUID(), applicationId: input.applicationId, title: input.productContext.name || (input.applicationId === "general-chat" ? "日常聊天" : "商品生图提示词"), productContext: input.productContext, createdBy: "demo", createdAtMs: now, updatedAtMs: now, messages: [] };
+    demoAiConversations.unshift(conversation);
+    return conversation;
+  }
+  return apiFetch("/api/ai/conversations", { method: "POST", body: JSON.stringify(input) });
+}
+
+export interface AiConversationStreamHandlers {
+  onEvent: (event: AiConversationStreamEvent) => void;
+  signal?: AbortSignal;
+}
+
+/** Streams one AI conversation response and forwards typed server events to the workbench. */
+export async function streamAiConversationMessage(id: string, content: string, handlers: AiConversationStreamHandlers): Promise<void> {
+  if (DEMO_MODE) {
+    const conversation = demoAiConversations.find((item) => item.id === id);
+    if (!conversation) throw new Error("对话不存在");
+    const now = Date.now();
+    const userMessage = { id: crypto.randomUUID(), conversationId: id, role: "user" as const, content: { text: content }, runId: null, createdAtMs: now };
+    conversation.messages.push(userMessage);
+    handlers.onEvent({ type: "run_started", data: { runId: crypto.randomUUID() } });
+    handlers.onEvent({ type: "user_message", data: { message: userMessage } });
+    handlers.onEvent({ type: "status", data: { status: "thinking", label: "正在思考…" } });
+    const assistantContent = conversation.applicationId === "general-chat"
+      ? { text: "你好，我可以陪你进行日常聊天。" as const }
+      : { candidates: [1, 2, 3].map((index) => ({ prompt: `Commercial e-commerce photo of ${conversation.productContext.name}, lifestyle scene ${index}, ${conversation.productContext.style}, ${conversation.productContext.aspectRatio}`, negativePrompt: "distorted product, changed shape, changed color, text, watermark", subjectProtection: ["保持商品原始颜色", "不得改变商品结构"], composition: "Product-centered balanced composition", lighting: "Soft natural studio lighting", background: "Clean lifestyle background suitable for the target market", style: conversation.productContext.style, aspectRatio: conversation.productContext.aspectRatio, intendedUse: conversation.productContext.imagePurpose, warnings: [] })) };
+    if ("text" in assistantContent) {
+      for (const character of assistantContent.text) {
+        await waitForDemoChunk(handlers.signal);
+        handlers.onEvent({ type: "delta", data: { text: character } });
+      }
+    }
+    conversation.messages.push({ id: crypto.randomUUID(), conversationId: id, role: "assistant", content: assistantContent, runId: null, createdAtMs: Date.now() });
+    conversation.updatedAtMs = now;
+    handlers.onEvent({ type: "completed", data: { conversation } });
+    return;
+  }
+
+  const response = await fetch(`/api/ai/conversations/${encodeURIComponent(id)}/messages`, {
+    method: "POST",
+    headers: { Accept: "text/event-stream", "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+    ...(handlers.signal ? { signal: handlers.signal } : {}),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { message?: string; [key: string]: unknown } | null;
+    throw new ApiRequestError(body?.message ?? `请求失败（${response.status}）`, response.status, body);
+  }
+  if (!response.body) throw new Error("AI Relay 没有返回流式内容");
+  await consumeAiEventStream(response.body, handlers.onEvent);
+}
+
+async function consumeAiEventStream(body: ReadableStream<Uint8Array>, onEvent: (event: AiConversationStreamEvent) => void): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventType = "message";
+  let eventData = "";
+  const dispatch = (): void => {
+    if (!eventData) return;
+    const parsed = JSON.parse(eventData) as unknown;
+    onEvent({ type: eventType, data: parsed } as AiConversationStreamEvent);
+    eventType = "message";
+    eventData = "";
+  };
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      buffer += decoder.decode(result.value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line) dispatch();
+        else if (line.startsWith("event:")) eventType = line.slice(6).trim();
+        else if (line.startsWith("data:")) eventData += `${line.slice(5).trim()}\n`;
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer) {
+      if (buffer.startsWith("data:")) eventData += buffer.slice(5).trim();
+      dispatch();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function waitForDemoChunk(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new DOMException("The request was aborted", "AbortError");
+  await new Promise((resolve) => window.setTimeout(resolve, 18));
+}

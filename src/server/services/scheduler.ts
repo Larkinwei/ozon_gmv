@@ -2,6 +2,7 @@ import { addDays, subDays, subHours, subMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 
 import type { SyncService } from "./sync-service";
+import type { FinanceReader } from "../finance/finance-service";
 
 const MINUTE = 60_000;
 const BEIJING_TIMEZONE = "Asia/Shanghai";
@@ -23,7 +24,7 @@ export function millisecondsUntilNextNightlyRun(now = new Date()): number {
 }
 
 /** Starts local polling plus short- and long-window reconciliation schedules. */
-export function startScheduler(syncService: SyncService): SchedulerHandle {
+export function startScheduler(syncService: SyncService, finance?: Pick<FinanceReader, "syncActiveStores">): SchedulerHandle {
   const incrementalTimer = setInterval(() => {
     const now = new Date();
     void syncService.syncActiveStores(subMinutes(now, 15), now, undefined, 10_000, "ozon").catch(() => undefined);
@@ -54,6 +55,9 @@ export function startScheduler(syncService: SyncService): SchedulerHandle {
       const now = new Date();
       void syncService.syncActiveStores(subDays(now, 7), now, undefined, 10_000, "ozon").catch(() => undefined);
       void syncService.syncActiveStores(subDays(now, 7), now, undefined, 10_000, "wildberries").catch(() => undefined);
+      if (finance) {
+        void finance.syncActiveStores(subDays(now, 180), now).catch(() => undefined);
+      }
       scheduleNightlyReconciliation();
     }, millisecondsUntilNextNightlyRun());
     nightlyTimer.unref();

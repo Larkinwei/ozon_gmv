@@ -25,6 +25,21 @@ const order: RecentOrder = {
 };
 
 describe("LiveOrders", () => {
+  it("hides the entire live order feed in privacy mode", () => {
+    render(
+      <LiveOrders
+        orders={[order]}
+        paused={false}
+        onPausedChange={() => undefined}
+        onOrderSelect={() => undefined}
+        privacyHidden
+      />,
+    );
+
+    expect(screen.queryByRole("heading", { name: "实时订单流" })).not.toBeInTheDocument();
+    expect(screen.queryByText(order.postingNumber)).not.toBeInTheDocument();
+  });
+
   it("shows the primary product name and remaining product types", () => {
     const onOrderSelect = vi.fn();
     render(

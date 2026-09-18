@@ -1,5 +1,6 @@
-import { CalendarDays, ChevronDown, Eye, EyeOff } from "lucide-react";
+import { CalendarDays, ChevronDown, Eye, EyeOff, Search } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import type { DashboardRange, StorePlatform, StoreView } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
@@ -109,6 +110,11 @@ export function DashboardHeader(props: DashboardHeaderProps): React.JSX.Element 
 
       <div className="header-status">
         <StatusPill status={props.streamStatus} />
+        {!props.wallboard && (
+          <Link className="icon-button" to="/orders/search" aria-label="搜索订单" title="搜索订单">
+            <Search size={19} aria-hidden="true" />
+          </Link>
+        )}
         <button
           className={props.privacyHidden ? "icon-button privacy-toggle" : "icon-button privacy-toggle is-active"}
           type="button"

@@ -76,5 +76,14 @@ describe("DashboardHeader privacy toggle", () => {
     expect(showButton).not.toHaveClass("is-active");
     expect(screen.getByRole("option", { name: "***" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "店铺 A" })).not.toBeInTheDocument();
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/dashboard"]}>
+          <DashboardHeader {...props} wallboard={false} privacyHidden />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("link", { name: "搜索订单" })).toHaveAttribute("href", "/orders/search");
   });
 });

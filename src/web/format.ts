@@ -10,6 +10,27 @@ export function formatMoney(value: Money): string {
   }).format(Number(value.amount));
 }
 
+const financeCurrencyNames: Record<string, string> = {
+  CNY: "人民币",
+  RUB: "俄罗斯卢布",
+};
+
+/** Formats finance amounts with compact currency symbols while keeping codes in data contracts. */
+export function formatFinanceMoney(value: Money): string {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: value.currency,
+    currencyDisplay: "narrowSymbol",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value.amount));
+}
+
+/** Returns the readable currency name used by the finance analysis page. */
+export function formatFinanceCurrencyName(currency: string): string {
+  return financeCurrencyNames[currency] ?? currency;
+}
+
 export function formatMoneyList(values: Money[]): string {
   return values.length > 0 ? values.map(formatMoney).join(" · ") : "—";
 }
@@ -34,4 +55,3 @@ export function syncHealthLabel(health: SyncHealth): string {
       return "等待首次同步";
   }
 }
-

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { deleteSelectionImport, fetchOrderDetail, login, logout, previewSelectionImport, syncStore } from "./api";
+import { deleteSelectionImport, fetchOrderDetail, fetchOrderSearch, login, logout, previewSelectionImport, syncStore } from "./api";
 
 describe("web API requests", () => {
   afterEach(() => {
@@ -68,6 +68,24 @@ describe("web API requests", () => {
       "/api/dashboard/orders/00000000-0000-4000-8000-000000000001",
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
+  });
+
+  it("loads paginated order search results with the requested filters", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], page: 2, pageSize: 20, total: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchOrderSearch({ q: "SKU-1", from: "2026-06-01T00:00:00.000Z", to: "2026-09-01T00:00:00.000Z", page: 2, pageSize: 20 });
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/orders/search?");
+    expect(url).toContain("q=SKU-1");
+    expect(url).toContain("page=2");
+    expect(url).toContain("pageSize=20");
   });
 
   it("lets the browser declare the multipart boundary for selection imports", async () => {

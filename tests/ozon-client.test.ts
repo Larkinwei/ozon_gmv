@@ -312,4 +312,39 @@ describe("Ozon Seller API client", () => {
     await expect(client.updateProductStock({ offerId: "MY-1001", productId: "456", warehouseId: "7", stock: 2 }))
       .rejects.toThrow("WAREHOUSE_NOT_FOUND");
   });
+
+  it("uses the current finance accrual, type, posting, and cash-flow endpoints", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      let payload: unknown = {};
+      if (url.endsWith("/v1/finance/accrual/by-day")) {
+        payload = { accruals: [], last_id: null };
+      } else if (url.endsWith("/v1/finance/accrual/types")) {
+        payload = { accrual_types: [{ id: 29, name: "Доставка", description: "delivery" }] };
+      } else if (url.endsWith("/v1/finance/accrual/postings")) {
+        payload = { posting_accruals: [{ posting_number: "posting-1", accruals: [] }] };
+      } else if (url.endsWith("/v1/finance/cash-flow-statement/list")) {
+        payload = { rows: [] };
+      }
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    await expect(client.getFinanceAccrualByDay("2026-08-05", "cursor-1")).resolves.toMatchObject({ accruals: [], lastId: null });
+    await expect(client.getFinanceAccrualTypes()).resolves.toEqual([{ id: "29", name: "Доставка", description: "delivery" }]);
+    await expect(client.getFinanceAccrualPostings(["posting-1"])).resolves.toEqual([{ posting_number: "posting-1", accruals: [] }]);
+    await expect(client.getFinanceCashFlowStatement(new Date("2026-08-01T00:00:00.000Z"), new Date("2026-08-05T00:00:00.000Z"))).resolves.toEqual({ raw: { rows: [] } });
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api-seller.ozon.ru/v1/finance/accrual/by-day",
+      "https://api-seller.ozon.ru/v1/finance/accrual/types",
+      "https://api-seller.ozon.ru/v1/finance/accrual/postings",
+      "https://api-seller.ozon.ru/v1/finance/cash-flow-statement/list",
+    ]);
+    expect(requests[0]?.body).toEqual({ date: "2026-08-05", last_id: "cursor-1" });
+    expect(requests[2]?.body).toEqual({ posting_numbers: ["posting-1"] });
+    expect(requests[3]?.body).toMatchObject({ page: 1, page_size: 1000, date: { from: "2026-08-01", to: "2026-08-05" }, with_details: true });
+  });
 });

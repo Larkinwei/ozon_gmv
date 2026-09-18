@@ -9,8 +9,12 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 
 import type { AppConfig } from "./config";
+import { AiConversationModule } from "./ai/conversation-module";
+import { HttpAiGatewayClient, type AiGatewayClient } from "./ai/gateway-client";
 import { AdminRepository } from "./db/admin-repository";
+import { FinanceRepository } from "./db/finance-repository";
 import { DashboardRepository } from "./db/dashboard-repository";
+import { PostingsRepository } from "./db/postings-repository";
 import { ProductImagesRepository } from "./db/product-images-repository";
 import type { AppDatabase } from "./db/database";
 import { SettingsRepository } from "./db/settings-repository";
@@ -18,8 +22,11 @@ import { StoresRepository } from "./db/stores-repository";
 import { WallboardPairingsRepository } from "./db/wallboard-pairings-repository";
 import type { DashboardEventBus } from "./realtime/event-bus";
 import { registerAuthRoutes } from "./routes/auth";
+import { registerAiRoutes } from "./routes/ai";
 import { registerDashboardRoutes } from "./routes/dashboard";
+import { registerFinanceRoutes } from "./routes/finance";
 import { registerNotificationRoutes } from "./routes/notifications";
+import { registerOrderSearchRoutes } from "./routes/order-search";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSelectionRoutes } from "./routes/selection";
 import { registerSelectionCategoryRoutes } from "./routes/selection-categories";
@@ -36,6 +43,7 @@ import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { UpdateService } from "./services/update-service";
 import { StoreOperationsService, type StoreOperationsReader } from "./services/store-operations-service";
+import { FinanceAnalysisService, type FinanceReader } from "./finance/finance-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
 import { DiscoveryModule } from "./selection/discovery-module";
 import { MyDataModule } from "./selection/my-data-module";
@@ -43,7 +51,9 @@ import { ResellModule } from "./selection/resell-module";
 import { ResellImageService } from "./selection/resell-image-service";
 import { PublishDraftsModule } from "./selection/publish-drafts";
 import { OssImageStorageService } from "./services/oss-image-storage-service";
+import { AiRelaySettingsService } from "./services/ai-relay-settings-service";
 import { WildberriesApiError } from "./wildberries/client";
+import type { AiProductContext, AiProductSourceView } from "../shared/contracts";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -61,6 +71,9 @@ export interface AppDependencies {
   resellImages?: ResellImageService;
   publishDrafts?: PublishDraftsModule;
   storeOperations?: StoreOperationsReader;
+  finance?: FinanceReader;
+  aiGateway?: AiGatewayClient;
+  aiConversations?: AiConversationModule;
 }
 
 interface SqliteError extends Error {
@@ -152,6 +165,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const stores = new StoresRepository(database);
   const settings = new SettingsRepository(database);
   const imageStorage = dependencies.imageStorage ?? new OssImageStorageService(config, database, proxySettings.createFetch());
+  const aiRelaySettings = new AiRelaySettingsService(config, database);
   const resellImages = dependencies.resellImages ?? new ResellImageService(database, imageStorage);
   const pairings = new WallboardPairingsRepository(database);
   const notifications = new OrderNotificationService(
@@ -179,17 +193,32 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   });
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
+  const finance = dependencies.finance ?? new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
+  const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config, fetch, aiRelaySettings);
+  const aiConversations = dependencies.aiConversations ?? new AiConversationModule(database, aiGateway);
+  const listAiSources = (): AiProductSourceView[] => [
+    ...publishDrafts.list().map((draft) => {
+      const source = draft.sourceSnapshot;
+      const productContext: AiProductContext = { name: source.productName, category: source.category ?? "", attributes: source.attributes ?? {}, material: "", color: "", targetMarket: "俄罗斯", imagePurpose: "场景图", style: "真实电商摄影", aspectRatio: "1:1" };
+      return { id: draft.id, kind: "draft" as const, name: source.productName || draft.title || draft.sourceSku, sku: draft.sourceSku, category: productContext.category, productContext };
+    }),
+    ...myData.listProducts({ page: 1, pageSize: 100, sort: "monthlyUnits" }).items.map((product) => ({ id: product.id, kind: "product" as const, name: product.productName, sku: product.sku, category: product.category, productContext: { name: product.productName, category: product.category, attributes: {}, material: "", color: "", targetMarket: "俄罗斯", imagePurpose: "场景图", style: "真实电商摄影", aspectRatio: "1:1" } })),
+  ];
   resell.start();
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
+  registerAiRoutes(app, aiConversations, () => aiGateway.checkHealth(), () => aiRelaySettings.view().modelAlias, listAiSources);
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
-  registerDashboardRoutes(app, new DashboardRepository(database), events);
+  registerFinanceRoutes(app, finance);
+  const dashboardRepository = new DashboardRepository(database);
+  registerOrderSearchRoutes(app, dashboardRepository);
+  registerDashboardRoutes(app, dashboardRepository, events);
   registerSelectionRoutes(app, selection, myData, resell, resellImages, publishDrafts);
   registerSelectionCategoryRoutes(app, categories);
   registerSelectionDiscoveryRoutes(app, discovery);
-  registerSettingsRoutes(app, proxySettings, updates, imageStorage);
+  registerSettingsRoutes(app, proxySettings, updates, imageStorage, aiRelaySettings);
   registerNotificationRoutes(app, notifications);
   registerWallboardManagementRoutes(app, config, pairings);
   app.get("/api/runtime", async () => ({ role: "admin" as const }));

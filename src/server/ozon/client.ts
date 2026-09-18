@@ -18,6 +18,10 @@ import {
   rolesResponseSchema,
   sellerInfoResponseSchema,
   financeBalanceResponseSchema,
+  financeAccrualByDayResponseSchema,
+  financeAccrualPostingsResponseSchema,
+  financeAccrualTypesResponseSchema,
+  financeCashFlowStatementResponseSchema,
   questionCountResponseSchema,
   questionInfoResponseSchema,
   questionListResponseSchema,
@@ -26,6 +30,9 @@ import {
   type OzonDescriptionCategoryNode,
   type OzonProductInfo,
   type OzonRoles,
+  type OzonFinanceAccrual,
+  type OzonFinanceAccrualPostings,
+  type OzonFinanceAccrualType,
 } from "./schemas";
 
 interface OzonClientOptions {
@@ -81,6 +88,17 @@ export interface OzonFinanceBalance {
   closingBalance: OzonFinanceAmount | null;
   accrued: OzonFinanceAmount | null;
   payments: OzonFinanceAmount[];
+}
+
+export interface OzonFinanceAccrualPage {
+  accruals: OzonFinanceAccrual[];
+  lastId: string | null;
+}
+
+export interface OzonFinanceAccrualPosting extends OzonFinanceAccrualPostings {}
+
+export interface OzonFinanceCashFlowReport {
+  raw: unknown;
 }
 
 export interface OzonQuestion {
@@ -308,6 +326,44 @@ export class OzonClient {
       accrued: normalizeFinanceAmount(total?.accrued),
       payments: (total?.payments ?? []).map((payment) => normalizeFinanceAmount(payment)).filter((payment): payment is OzonFinanceAmount => payment !== null),
     };
+  }
+
+  /** Reads one cursor page of the new Ozon accrual ledger for a calendar date. */
+  public async getFinanceAccrualByDay(date: string, lastId = ""): Promise<OzonFinanceAccrualPage> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new RangeError(`Invalid finance accrual date: ${date}`);
+    }
+    const response = await this.request("/v1/finance/accrual/by-day", {
+      date,
+      last_id: lastId,
+    }, financeAccrualByDayResponseSchema);
+    return { accruals: response.accruals, lastId: response.last_id ?? null };
+  }
+
+  /** Reads the dynamic finance type dictionary used to label and classify accruals. */
+  public async getFinanceAccrualTypes(): Promise<OzonFinanceAccrualType[]> {
+    const response = await this.request("/v1/finance/accrual/types", {}, financeAccrualTypesResponseSchema);
+    return response.accrual_types;
+  }
+
+  /** Reads order-level accrual rows for a bounded batch of posting numbers. */
+  public async getFinanceAccrualPostings(postingNumbers: string[]): Promise<OzonFinanceAccrualPosting[]> {
+    if (postingNumbers.length === 0) {
+      return [];
+    }
+    const response = await this.request("/v1/finance/accrual/postings", { posting_numbers: postingNumbers }, financeAccrualPostingsResponseSchema);
+    return response.posting_accruals;
+  }
+
+  /** Stores the seller-level cash-flow response for reconciliation without reshaping unknown fields. */
+  public async getFinanceCashFlowStatement(dateFrom: Date, dateTo: Date): Promise<OzonFinanceCashFlowReport> {
+    const raw = await this.request("/v1/finance/cash-flow-statement/list", {
+      page: 1,
+      page_size: 1000,
+      date: { from: formatFinanceDate(dateFrom), to: formatFinanceDate(dateTo) },
+      with_details: true,
+    }, financeCashFlowStatementResponseSchema);
+    return { raw };
   }
 
   /** Returns status counts for product questions, when the seller plan grants access. */
