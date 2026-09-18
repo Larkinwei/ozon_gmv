@@ -21,6 +21,7 @@ import type {
   ResellTaskListPage,
   OrderNotificationSettings,
   OrderDetail,
+  OrderSearchPage,
   ProxyMode,
   PublishSourceType,
   ProxyTestResult,
@@ -212,6 +213,40 @@ export async function fetchOrderDetail(id: string): Promise<OrderDetail> {
   }
   const prefix = runtimeRole === "wallboard" ? "/api/wallboard" : "/api/dashboard";
   return apiFetch(`${prefix}/orders/${encodeURIComponent(id)}`);
+}
+
+export interface OrderSearchFilters {
+  q?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export async function fetchOrderSearch(filters: OrderSearchFilters = {}): Promise<OrderSearchPage> {
+  if (DEMO_MODE) {
+    const snapshot = createDemoSnapshot("30d", "all");
+    const q = filters.q?.trim().toLocaleLowerCase("zh-CN") ?? "";
+    const from = filters.from ? Date.parse(filters.from) : Date.now() - 90 * 24 * 60 * 60 * 1000;
+    const to = filters.to ? Date.parse(filters.to) : Date.now();
+    const items = snapshot.recentOrders
+      .filter((order) => order.platform === "ozon")
+      .map((order) => ({ ...order, orderNumber: order.postingNumber.split("-").slice(0, -1).join("-"), imageUrl: null, skus: [] as string[], offerIds: [] as string[] }))
+      .filter((order) => {
+        const searchable = `${order.postingNumber} ${order.orderNumber} ${order.productNames.join(" ")} ${order.skus.join(" ")} ${order.offerIds.join(" ")}`.toLocaleLowerCase("zh-CN");
+        return Date.parse(order.orderAt) >= from && Date.parse(order.orderAt) < to && (!q || searchable.includes(q));
+      });
+    const page = filters.page ?? 1;
+    const pageSize = filters.pageSize ?? 20;
+    return { items: items.slice((page - 1) * pageSize, page * pageSize).map((item) => ({ ...item, platform: "ozon" as const })), page, pageSize, total: items.length };
+  }
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  params.set("page", String(filters.page ?? 1));
+  params.set("pageSize", String(filters.pageSize ?? 20));
+  return apiFetch(`/api/orders/search?${params.toString()}`);
 }
 
 export function dashboardStreamUrl(): string {

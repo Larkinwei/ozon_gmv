@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DashboardRepository } from "../src/server/db/dashboard-repository";
 import { MarketplaceRepository } from "../src/server/db/marketplace-repository";
 import { PostingsRepository } from "../src/server/db/postings-repository";
+import { ProductImagesRepository } from "../src/server/db/product-images-repository";
 import { StoresRepository } from "../src/server/db/stores-repository";
 import type { NormalizedPosting } from "../src/server/ozon/normalize";
 import type { WildberriesOrder, WildberriesSale } from "../src/server/wildberries/normalize";
@@ -34,6 +35,66 @@ function posting(number: string, orderAt: string, amount: string, currency: stri
 }
 
 describe("Dashboard store time series", () => {
+  it("searches local Ozon orders by order number, product name, SKU, and date", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await stores.create({
+        id: STORE_A_ID,
+        name: "Ozon 店铺",
+        clientId: "client-ozon",
+        apiKeyCiphertext: "cipher-ozon",
+        color: "#3B82F6",
+        fulfillmentModes: ["FBS"],
+        apiKeyExpiresAt: null,
+      });
+      await stores.create({
+        id: STORE_B_ID,
+        name: "WB 店铺",
+        platform: "wildberries",
+        clientId: "",
+        apiKeyCiphertext: "cipher-wb",
+        color: "#F59E0B",
+        fulfillmentModes: [],
+        apiKeyExpiresAt: null,
+      });
+
+      const target = posting("100-0001-1", "2026-08-02T10:00:00.000Z", "100.50", "RUB");
+      target.orderNumber = "buyer-order-42";
+      target.items[0]!.name = "蓝色旅行收纳包";
+      target.items[0]!.sku = "sku-blue-42";
+      target.items[0]!.offerId = "offer-blue-42";
+      const older = posting("100-0002-1", "2026-06-01T10:00:00.000Z", "200.25", "RUB");
+      const wildberriesPosting = posting("200-0001-1", "2026-08-02T11:00:00.000Z", "300.00", "RUB");
+      const postings = new PostingsRepository(context.database);
+      await postings.upsert(STORE_A_ID, target);
+      await postings.upsert(STORE_A_ID, older);
+      await postings.upsert(STORE_B_ID, wildberriesPosting);
+      new ProductImagesRepository(context.database).saveBatch(STORE_A_ID, [{ sku: "sku-blue-42", offerId: "offer-blue-42", imageUrl: "https://cdn.example.com/blue.jpg" }], Date.now());
+
+      const repository = new DashboardRepository(context.database);
+      const window = { from: new Date("2026-08-01T00:00:00.000Z"), to: new Date("2026-08-03T00:00:00.000Z") };
+      const byOrderNumber = repository.searchOzonOrders({ ...window, q: "buyer-order-42", page: 1, pageSize: 20 });
+      expect(byOrderNumber.total).toBe(1);
+      expect(byOrderNumber.items[0]).toMatchObject({ postingNumber: "100-0001-1", orderNumber: "buyer-order-42", platform: "ozon" });
+      expect(byOrderNumber.items[0]?.imageUrl).toBe("https://cdn.example.com/blue.jpg");
+
+      const byProduct = repository.searchOzonOrders({ ...window, q: "蓝色旅行", page: 1, pageSize: 20 });
+      expect(byProduct.items).toHaveLength(1);
+      const bySku = repository.searchOzonOrders({ ...window, q: "sku-blue-42", page: 1, pageSize: 20 });
+      expect(bySku.items[0]?.skus).toEqual(["sku-blue-42"]);
+      const byOfferId = repository.searchOzonOrders({ ...window, q: "offer-blue-42", page: 1, pageSize: 20 });
+      expect(byOfferId.items[0]?.offerIds).toEqual(["offer-blue-42"]);
+
+      const page = repository.searchOzonOrders({ from: new Date("2026-05-01T00:00:00.000Z"), to: new Date("2026-09-01T00:00:00.000Z"), page: 1, pageSize: 1 });
+      expect(page.total).toBe(2);
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]?.postingNumber).toBe("100-0001-1");
+    } finally {
+      context.cleanup();
+    }
+  });
+
   it("groups each bucket by store and keeps store filters exact", async () => {
     const context = createTestDatabase();
     try {

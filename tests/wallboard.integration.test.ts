@@ -71,6 +71,7 @@ describe("LAN wallboard isolation", () => {
       expect((await wallboardApp.inject({ method: "GET", url: "/api/settings/network" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/settings/update" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/settings/notifications" })).statusCode).toBe(404);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/orders/search" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/internal/notifications/stream" })).statusCode).toBe(404);
 
       await adminApp.inject({

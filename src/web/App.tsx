@@ -15,6 +15,7 @@ const AiPage = lazy(() => import("./pages/AiPage"));
 const ResellPage = lazy(() => import("./pages/ResellPage"));
 const SetupPage = lazy(() => import("./pages/SetupPage"));
 const StoresPage = lazy(() => import("./pages/StoresPage"));
+const OrderSearchPage = lazy(() => import("./pages/OrderSearchPage"));
 
 function AppLoading(): React.JSX.Element {
   return (
@@ -113,6 +114,7 @@ export function App(): React.JSX.Element {
     <Suspense fallback={<AppLoading />}>
       <Routes>
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/orders/search" element={<OrderSearchPage />} />
         <Route path="/wallboard" element={<DashboardPage wallboard />} />
         <Route path="/stores" element={<StoresPage />} />
         <Route path="/operations" element={<OperationsCenterLayout />}>

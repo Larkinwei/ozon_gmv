@@ -26,6 +26,7 @@ import { registerAiRoutes } from "./routes/ai";
 import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerFinanceRoutes } from "./routes/finance";
 import { registerNotificationRoutes } from "./routes/notifications";
+import { registerOrderSearchRoutes } from "./routes/order-search";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSelectionRoutes } from "./routes/selection";
 import { registerSelectionCategoryRoutes } from "./routes/selection-categories";
@@ -211,7 +212,9 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
   registerFinanceRoutes(app, finance);
-  registerDashboardRoutes(app, new DashboardRepository(database), events);
+  const dashboardRepository = new DashboardRepository(database);
+  registerOrderSearchRoutes(app, dashboardRepository);
+  registerDashboardRoutes(app, dashboardRepository, events);
   registerSelectionRoutes(app, selection, myData, resell, resellImages, publishDrafts);
   registerSelectionCategoryRoutes(app, categories);
   registerSelectionDiscoveryRoutes(app, discovery);

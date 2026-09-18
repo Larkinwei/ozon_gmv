@@ -99,6 +99,34 @@ export interface RecentOrder {
   cancelled: boolean;
 }
 
+export interface OrderSearchItem {
+  id: string;
+  platform: "ozon";
+  externalOrderId: string;
+  postingNumber: string;
+  orderNumber: string;
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  orderAt: string;
+  amount: Money;
+  imageUrl: string | null;
+  itemCount: number;
+  productNames: string[];
+  skus: string[];
+  offerIds: string[];
+  fulfillment: string;
+  status: string;
+  cancelled: boolean;
+}
+
+export interface OrderSearchPage {
+  items: OrderSearchItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
 export interface OrderDetailItem {
   id: string;
   sku: string;
