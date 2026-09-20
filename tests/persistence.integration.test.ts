@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { amountToMinorUnits } from "../src/server/db/money-storage";
+import { InventoryRepository } from "../src/server/db/inventory-repository";
 import { PostingsRepository } from "../src/server/db/postings-repository";
 import { StoresRepository } from "../src/server/db/stores-repository";
 import { SyncCheckpointsRepository } from "../src/server/db/sync-checkpoints-repository";
@@ -23,6 +24,41 @@ async function insertStore(repository: StoresRepository): Promise<void> {
 }
 
 describe("SQLite persistence", () => {
+  it("tracks low-stock episodes and only reopens after recovery", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await insertStore(stores);
+      const posting: NormalizedPosting = {
+        postingNumber: "24219509-0030-1",
+        orderNumber: "24219509-0030",
+        fulfillmentMode: "FBS",
+        orderAt: new Date("2026-08-05T10:00:00.000Z"),
+        status: "awaiting_packaging",
+        substatus: null,
+        grossAmount: "100.00",
+        currency: "RUB",
+        cancelledAt: null,
+        items: [{ sku: "147451960", offerId: "BAG-02", name: "Travel bag 2", quantity: 1, unitPrice: "100.00", currency: "RUB" }],
+      };
+      await new PostingsRepository(context.database).upsert(STORE_ID, posting);
+      const inventory = new InventoryRepository(context.database);
+      const candidate = inventory.listCandidates(STORE_ID)[0]!;
+      inventory.replaceSnapshots(STORE_ID, candidate, 1_000, [{ warehouseId: "warehouse-1", warehouseName: "Seller warehouse", productId: "product-1", availableStock: 49, reservedStock: 2 }]);
+      expect(inventory.evaluate(STORE_ID, candidate, 1_000, 50).newlyOpened).toBe(true);
+      expect(inventory.listOpenAlerts()).toHaveLength(1);
+      inventory.acknowledge([inventory.listOpenAlerts()[0]!.id]);
+      expect(inventory.evaluate(STORE_ID, candidate, 2_000, 50).newlyOpened).toBe(false);
+      expect(inventory.listOpenAlerts()).toHaveLength(0);
+      inventory.replaceSnapshots(STORE_ID, candidate, 3_000, [{ warehouseId: "warehouse-1", warehouseName: "Seller warehouse", productId: "product-1", availableStock: 50, reservedStock: 0 }]);
+      inventory.evaluate(STORE_ID, candidate, 3_000, 50);
+      inventory.replaceSnapshots(STORE_ID, candidate, 4_000, [{ warehouseId: "warehouse-1", warehouseName: "Seller warehouse", productId: "product-1", availableStock: 49, reservedStock: 0 }]);
+      expect(inventory.evaluate(STORE_ID, candidate, 4_000, 50).newlyOpened).toBe(true);
+    } finally {
+      context.cleanup();
+    }
+  });
+
   it("keeps polling writes idempotent and stores exact minor units", async () => {
     const context = createTestDatabase();
     try {

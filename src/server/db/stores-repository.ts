@@ -14,6 +14,7 @@ interface StoreRow {
   last_sync_started_at_ms: number | null;
   last_sync_finished_at_ms: number | null;
   last_sync_error: string | null;
+  inventory_monitor_enabled: number;
   platform: StorePlatform;
   external_store_id: string | null;
 }
@@ -47,6 +48,7 @@ export interface UpdateStoreRecord {
   fulfillmentModes?: FulfillmentMode[];
   apiKeyCiphertext?: string;
   apiKeyExpiresAt?: string | null;
+  inventoryMonitorEnabled?: boolean;
 }
 
 function capabilitiesFor(platform: StorePlatform): StoreCapabilities {
@@ -160,7 +162,7 @@ export class StoresRepository {
       this.database.prepare(
         `UPDATE stores SET
           name = ?, color = ?, enabled = ?, api_key_ciphertext = ?,
-          api_key_expires_at_ms = ?, updated_at_ms = ?
+          api_key_expires_at_ms = ?, inventory_monitor_enabled = ?, updated_at_ms = ?
          WHERE id = ?`,
       ).run(
         input.name ?? existing.name,
@@ -170,6 +172,7 @@ export class StoresRepository {
         input.apiKeyExpiresAt === undefined
           ? existing.apiKeyExpiresAt ? Date.parse(existing.apiKeyExpiresAt) : null
           : input.apiKeyExpiresAt ? Date.parse(input.apiKeyExpiresAt) : null,
+        input.inventoryMonitorEnabled === undefined ? Number(existing.inventoryMonitorEnabled) : Number(input.inventoryMonitorEnabled),
         Date.now(),
         id,
       );
@@ -230,6 +233,7 @@ export class StoresRepository {
       credentialType: row.platform === "wildberries" ? "wildberries_api_token" : "ozon_api_key",
       color: row.color,
       enabled: Boolean(row.enabled),
+      inventoryMonitorEnabled: Boolean(row.inventory_monitor_enabled),
       fulfillmentModes: modes.map((entry) => entry.mode),
       apiKeyExpiresAt: toIsoString(row.api_key_expires_at_ms),
       lastSyncStartedAt: toIsoString(row.last_sync_started_at_ms),

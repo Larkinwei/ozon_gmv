@@ -305,6 +305,7 @@ export const warehouseListResponseSchema = z.object({
 
 /** Per-offer result returned by Ozon after a stock update or stock readback. */
 const stockResultItemSchema = z.object({
+  sku: z.union([z.string(), z.number()]).transform(String).nullish(),
   offer_id: z.union([z.string(), z.number()]).transform(String).nullish(),
   product_id: z.union([z.string(), z.number()]).transform(String).nullish(),
   warehouse_id: z.union([z.string(), z.number()]).transform(String).nullish(),
@@ -333,6 +334,9 @@ export const stockReadbackResponseSchema = z.object({
     z.array(stockResultItemSchema),
   ]),
 }).passthrough();
+
+/** The v4 FBO stock response changes shape between API revisions; retain unknown fields for normalization. */
+export const stockInventoryResponseSchema = z.unknown();
 
 export const productInfoLimitResponseSchema = z.object({
   daily_create_remaining: z.number().int().nonnegative().nullish(),

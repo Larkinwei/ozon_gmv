@@ -14,6 +14,7 @@ import {
   productPicturesImportResponseSchema,
   productPicturesInfoResponseSchema,
   stockReadbackResponseSchema,
+  stockInventoryResponseSchema,
   stockUpdateResponseSchema,
   rolesResponseSchema,
   sellerInfoResponseSchema,
@@ -151,6 +152,7 @@ export interface OzonStockUpdateResult {
 }
 
 export interface OzonProductStock {
+  sku: string | null;
   offerId: string | null;
   productId: string | null;
   warehouseId: string | null;
@@ -267,6 +269,7 @@ function responseItems(value: unknown, key: "attributes" | "values"): unknown[] 
 }
 
 function stockItems(response: { result: unknown }): Array<{
+  sku?: string | null;
   offer_id?: string | null;
   product_id?: string | null;
   warehouse_id?: string | null;
@@ -275,11 +278,12 @@ function stockItems(response: { result: unknown }): Array<{
   stock?: number | null;
   present?: number | null;
   reserved?: number | null;
-}> {
+  }> {
   const result = response.result;
   if (Array.isArray(result)) return result;
   const record = asRecord(result);
   return record && Array.isArray(record.items) ? record.items as Array<{
+    sku?: string | null;
     offer_id?: string | null;
     product_id?: string | null;
     warehouse_id?: string | null;
@@ -289,6 +293,54 @@ function stockItems(response: { result: unknown }): Array<{
     present?: number | null;
     reserved?: number | null;
   }> : [];
+}
+
+function inventoryStockItems(response: unknown): Array<{
+  sku: string | null;
+  offerId: string | null;
+  productId: string | null;
+  warehouseId: string | null;
+  stock: number | null;
+  reserved: number | null;
+}> {
+  const root = asRecord(response);
+  const result = asRecord(root?.result) ?? root;
+  const itemContainer = result?.items;
+  const items = Array.isArray(itemContainer)
+    ? itemContainer
+    : (asRecord(itemContainer)?.items && Array.isArray(asRecord(itemContainer)?.items) ? asRecord(itemContainer)?.items as unknown[] : []);
+  const output: Array<{
+    sku: string | null;
+    offerId: string | null;
+    productId: string | null;
+    warehouseId: string | null;
+    stock: number | null;
+    reserved: number | null;
+  }> = [];
+  for (const value of items) {
+    const item = asRecord(value);
+    if (!item) continue;
+    const nestedStocks = Array.isArray(item.stocks) ? item.stocks : [item];
+    for (const nested of nestedStocks) {
+      const stock = asRecord(nested);
+      if (!stock) continue;
+      const numberOrNull = (candidate: unknown): number | null => {
+        const parsed = Number(candidate);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+      output.push({
+        sku: item.sku === undefined ? null : String(item.sku),
+        offerId: item.offer_id === undefined ? null : String(item.offer_id),
+        productId: item.product_id === undefined ? null : String(item.product_id),
+        warehouseId: stock.warehouse_id === undefined
+          ? (item.warehouse_id === undefined ? null : String(item.warehouse_id))
+          : String(stock.warehouse_id),
+        stock: numberOrNull(stock.stock ?? stock.present ?? item.stock ?? item.present),
+        reserved: numberOrNull(stock.reserved ?? item.reserved) ?? 0,
+      });
+    }
+  }
+  return output;
 }
 
 export class OzonClient {
@@ -623,12 +675,68 @@ export class OzonClient {
     if (!item) return null;
     const stock = item.stock ?? item.present ?? null;
     return {
+      sku: item.sku ?? null,
       offerId: item.offer_id ?? null,
       productId: item.product_id ?? null,
       warehouseId: item.warehouse_id ?? null,
       stock: Number.isFinite(stock) ? stock : null,
       reserved: item.reserved ?? null,
     };
+  }
+
+  /** Reads FBO stock for a batch of sold offers using the current v4 stock endpoint. */
+  public async getFboStockByOffers(offerIds: string[]): Promise<OzonProductStock[]> {
+    if (offerIds.length === 0) return [];
+    const output: OzonProductStock[] = [];
+    for (let offset = 0; offset < offerIds.length; offset += 1000) {
+      const offers = offerIds.slice(offset, offset + 1000);
+      let cursor = "";
+      while (true) {
+        const response = await this.request("/v4/product/info/stocks", {
+          filter: { offer_id: offers, visibility: "ALL" },
+          limit: 1000,
+          ...(cursor ? { cursor } : {}),
+        }, stockInventoryResponseSchema);
+        const items = inventoryStockItems(response);
+        output.push(...items.map((item) => ({
+          sku: item.sku,
+          offerId: item.offerId,
+          productId: item.productId,
+          warehouseId: item.warehouseId ?? "fbo",
+          stock: item.stock,
+          reserved: item.reserved,
+        })));
+        const result = asRecord(asRecord(response)?.result);
+        const nextCursor = result?.cursor === undefined || result.cursor === null ? "" : String(result.cursor);
+        if (!nextCursor || items.length === 0 || nextCursor === cursor) break;
+        cursor = nextCursor;
+      }
+    }
+    return output;
+  }
+
+  /** Reads all pages of FBS/rFBS stock for one seller warehouse. */
+  public async getFbsStocksByWarehouse(warehouseId: string): Promise<OzonProductStock[]> {
+    const output: OzonProductStock[] = [];
+    const limit = 1000;
+    for (let offset = 0; ; offset += limit) {
+      const response = await this.request("/v2/product/info/stocks-by-warehouse/fbs", {
+        warehouse_id: Number(warehouseId) || warehouseId,
+        limit,
+        offset,
+      }, stockReadbackResponseSchema);
+      const items = stockItems(response);
+      output.push(...items.map((item) => ({
+        sku: item.sku ?? null,
+        offerId: item.offer_id ?? null,
+        productId: item.product_id ?? null,
+        warehouseId: item.warehouse_id ?? warehouseId,
+        stock: item.stock ?? item.present ?? null,
+        reserved: item.reserved ?? null,
+      })));
+      if (items.length < limit) break;
+    }
+    return output;
   }
 
   /** Iterates current cursor-paginated FBO v3 or FBS v4 posting pages. */

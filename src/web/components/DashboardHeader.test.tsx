@@ -18,6 +18,7 @@ const store: StoreView = {
   clientId: "client-1",
   color: "#3B82F6",
   enabled: true,
+  inventoryMonitorEnabled: true,
   fulfillmentModes: ["FBO", "FBS"],
   apiKeyExpiresAt: null,
   lastSyncStartedAt: null,

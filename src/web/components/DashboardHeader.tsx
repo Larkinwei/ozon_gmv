@@ -19,7 +19,7 @@ const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
 ];
 
 interface DashboardHeaderProps {
-  stores: StoreView[];
+  stores: Array<Pick<StoreView, "id" | "name" | "platform">>;
   storeId: string;
   platform: StorePlatform | "all";
   range: DashboardRange;
@@ -110,11 +110,9 @@ export function DashboardHeader(props: DashboardHeaderProps): React.JSX.Element 
 
       <div className="header-status">
         <StatusPill status={props.streamStatus} />
-        {!props.wallboard && (
-          <Link className="icon-button" to="/orders/search" aria-label="搜索订单" title="搜索订单">
-            <Search size={19} aria-hidden="true" />
-          </Link>
-        )}
+        <Link className="icon-button" to="/orders/search" aria-label="搜索订单" title="搜索订单">
+          <Search size={19} aria-hidden="true" />
+        </Link>
         <button
           className={props.privacyHidden ? "icon-button privacy-toggle" : "icon-button privacy-toggle is-active"}
           type="button"

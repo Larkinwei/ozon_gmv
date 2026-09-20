@@ -58,6 +58,9 @@ export function registerDashboardRoutes(
     });
 
     const sendEvent = (event: ReturnType<DashboardEventBus["publish"]>): void => {
+      if (prefix === "/api/wallboard" && event.type === "inventory.low") {
+        return;
+      }
       reply.raw.write(`id: ${event.id}\n`);
       reply.raw.write(`event: ${event.type}\n`);
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);

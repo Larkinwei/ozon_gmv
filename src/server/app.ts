@@ -26,6 +26,7 @@ import { registerAiRoutes } from "./routes/ai";
 import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerFinanceRoutes } from "./routes/finance";
 import { registerNotificationRoutes } from "./routes/notifications";
+import { registerInventoryRoutes } from "./routes/inventory";
 import { registerOrderSearchRoutes } from "./routes/order-search";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSelectionRoutes } from "./routes/selection";
@@ -35,14 +36,16 @@ import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
 import { registerStoreOperationsRoutes } from "./routes/store-operations";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
+import { registerWallboardReadonlyRoutes } from "./routes/wallboard-readonly";
 import { wallboardAuthorization } from "./security/wallboard-session";
 import { SelectionModule } from "./selection/selection-module";
 import { WordstatClient } from "./selection/wordstat-client";
 import { OrderNotificationService } from "./services/order-notification-service";
 import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
+import type { InventoryMonitorService } from "./services/inventory-monitor-service";
 import type { UpdateService } from "./services/update-service";
-import { StoreOperationsService, type StoreOperationsReader } from "./services/store-operations-service";
+import { StoreOperationsService, type StoreOperationsReader, type WallboardBalanceReader } from "./services/store-operations-service";
 import { FinanceAnalysisService, type FinanceReader } from "./finance/finance-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
 import { DiscoveryModule } from "./selection/discovery-module";
@@ -60,6 +63,7 @@ export interface AppDependencies {
   database: AppDatabase;
   events: DashboardEventBus;
   syncService: SyncService;
+  inventory?: InventoryMonitorService;
   proxySettings: ProxySettingsService;
   updates: UpdateService;
   selection?: SelectionModule;
@@ -158,7 +162,7 @@ function registerErrorHandler(app: FastifyInstance): void {
 
 /** Builds the loopback-only management application. */
 export async function buildAdminApp(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, database, events, syncService, proxySettings, updates } = dependencies;
+  const { config, database, events, syncService, inventory, proxySettings, updates } = dependencies;
   const app = await createBaseApp(config);
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024, files: 200, parts: 220, fields: 10 } });
   const administrators = new AdminRepository(database);
@@ -220,6 +224,9 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerSelectionDiscoveryRoutes(app, discovery);
   registerSettingsRoutes(app, proxySettings, updates, imageStorage, aiRelaySettings);
   registerNotificationRoutes(app, notifications);
+  if (inventory) {
+    registerInventoryRoutes(app, inventory);
+  }
   registerWallboardManagementRoutes(app, config, pairings);
   app.get("/api/runtime", async () => ({ role: "admin" as const }));
   registerHealthRoutes(app, database);
@@ -237,14 +244,24 @@ export async function buildWallboardApp(dependencies: AppDependencies): Promise<
   const { config, database, events } = dependencies;
   const app = await createBaseApp(config);
   const pairings = new WallboardPairingsRepository(database);
+  const stores = new StoresRepository(database);
+  const storeOperations = dependencies.storeOperations && "getBalanceOverview" in dependencies.storeOperations
+    ? dependencies.storeOperations as StoreOperationsReader & WallboardBalanceReader
+    : new StoreOperationsService(config, stores, dependencies.proxySettings);
+  const authorization = wallboardAuthorization(pairings);
 
   registerWallboardPairingRoutes(app, pairings);
   app.get("/api/runtime", async () => ({ role: "wallboard" as const }));
+  registerWallboardReadonlyRoutes(app, stores, storeOperations, authorization);
+  registerOrderSearchRoutes(app, new DashboardRepository(database), {
+    path: "/api/wallboard/orders/search",
+    authorization,
+  });
   registerDashboardRoutes(
     app,
     new DashboardRepository(database),
     events,
-    wallboardAuthorization(pairings),
+    authorization,
     "/api/wallboard",
   );
   registerHealthRoutes(app, database);

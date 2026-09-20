@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { dashboardStreamUrl, DEMO_MODE } from "../api";
+import type { InventoryLowStockAlert } from "../../shared/contracts";
 
 export type StreamStatus = "connected" | "reconnecting" | "paused";
 
@@ -9,6 +10,7 @@ export function useDashboardStream(
   paused: boolean,
   onEvent: () => void,
   onOrderCreated?: () => void,
+  onInventoryLow?: (alert: InventoryLowStockAlert) => void,
 ): StreamStatus {
   const [status, setStatus] = useState<StreamStatus>(DEMO_MODE ? "connected" : "reconnecting");
 
@@ -32,8 +34,17 @@ export function useDashboardStream(
     });
     source.addEventListener("posting.updated", handleEvent);
     source.addEventListener("sync.status", handleEvent);
+    source.addEventListener("inventory.low", (event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent<string>).data) as { data?: InventoryLowStockAlert };
+        if (payload.data) onInventoryLow?.(payload.data);
+      } catch {
+        onEvent();
+      }
+      onEvent();
+    });
     return () => source.close();
-  }, [onEvent, onOrderCreated, paused]);
+  }, [onEvent, onOrderCreated, onInventoryLow, paused]);
 
   return status;
 }

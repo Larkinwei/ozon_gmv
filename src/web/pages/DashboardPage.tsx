@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { useSearchParams } from "react-router-dom";
 
-import type { DashboardRange, RecentOrder, StorePlatform } from "../../shared/contracts";
-import { fetchDashboard, fetchStoreOperations, fetchStores } from "../api";
+import type { DashboardRange, InventoryLowStockAlert, RecentOrder, StorePlatform } from "../../shared/contracts";
+import { fetchDashboard, fetchStoreOperations, fetchStores, fetchWallboardBalances, fetchWallboardStoreOptions } from "../api";
 import { dashboardPrivacy, useDashboardPrivacy } from "../dashboard-privacy";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { KpiGrid } from "../components/KpiGrid";
@@ -13,6 +13,7 @@ import { OrderDetailDrawer } from "../components/OrderDetailDrawer";
 import { StoreRanking } from "../components/StoreRanking";
 import { SyncStrip } from "../components/SyncStrip";
 import { StoreOperationsPanel } from "../components/StoreOperationsPanel";
+import { LowStockWarning } from "../components/LowStockWarning";
 import { TrendPanel } from "../components/TrendPanel";
 import { useDashboardStream } from "../hooks/use-dashboard-stream";
 import { soundPlayer } from "../sound-player";
@@ -50,6 +51,8 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   const [customTo, setCustomTo] = useState(() => defaultCustomTime(0));
   const [feedPaused, setFeedPaused] = useState(false);
   const [feedOrders, setFeedOrders] = useState<RecentOrder[]>([]);
+  const [visibleFeedCount, setVisibleFeedCount] = useState(5);
+  const [incomingLowStock, setIncomingLowStock] = useState<InventoryLowStockAlert | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(() => orderIdFromUrl);
   const privacyHidden = useDashboardPrivacy();
 
@@ -90,7 +93,10 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   const handleOrderCreated = useCallback(() => {
     soundPlayer.play();
   }, []);
-  const streamStatus = useDashboardStream(false, handleStreamEvent, handleOrderCreated);
+  const handleInventoryLow = useCallback((alert: InventoryLowStockAlert) => {
+    setIncomingLowStock(alert);
+  }, []);
+  const streamStatus = useDashboardStream(false, handleStreamEvent, handleOrderCreated, handleInventoryLow);
   const filters = useMemo(() => {
     const from = range === "custom" ? toUtc(customFrom) : undefined;
     const to = range === "custom" ? toUtc(customTo) : undefined;
@@ -105,6 +111,7 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   const customRangeValid = range !== "custom" || Boolean(filters.from && filters.to && filters.from < filters.to);
 
   const storesQuery = useQuery({ queryKey: ["stores"], queryFn: fetchStores, enabled: !wallboard });
+  const wallboardStoresQuery = useQuery({ queryKey: ["wallboard-store-options"], queryFn: fetchWallboardStoreOptions, enabled: wallboard, staleTime: 60_000 });
   const dashboardQuery = useQuery({
     queryKey: ["dashboard", filters],
     queryFn: () => fetchDashboard(filters),
@@ -113,9 +120,9 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
     placeholderData: (previous) => previous,
   });
   const operationsQuery = useQuery({
-    queryKey: ["store-operations", platform, storeId],
-    queryFn: () => fetchStoreOperations(storeId, platform),
-    enabled: !wallboard,
+    queryKey: wallboard ? ["wallboard-balances"] : ["store-operations", platform, storeId],
+    queryFn: () => wallboard ? fetchWallboardBalances("all", "all") : fetchStoreOperations(storeId, platform),
+    enabled: true,
     refetchInterval: 5 * 60_000,
     placeholderData: (previous) => previous,
   });
@@ -126,7 +133,19 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
     }
   }, [dashboardQuery.data, feedPaused]);
 
-  const stores = storesQuery.data ?? dashboardQuery.data?.sync ?? [];
+  useEffect(() => {
+    setVisibleFeedCount(5);
+  }, [filters]);
+
+  const stores = wallboard
+    ? wallboardStoresQuery.data ?? []
+    : storesQuery.data ?? dashboardQuery.data?.sync ?? [];
+  useEffect(() => {
+    if (wallboard && wallboardStoresQuery.data && storeId !== "all" && !wallboardStoresQuery.data.some((store) => store.id === storeId)) {
+      setStoreId("all");
+    }
+  }, [wallboard, wallboardStoresQuery.data, storeId]);
+  const visibleFeedOrders = feedOrders.slice(0, visibleFeedCount);
   return (
     <div className={wallboard ? "dashboard-page is-wallboard" : "dashboard-page"}>
       <a className="skip-link" href="#dashboard-main">
@@ -170,7 +189,9 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
               <StoreRanking stores={dashboardQuery.data.stores} privacyHidden={privacyHidden} />
             </div>
             <LiveOrders
-              orders={feedOrders}
+              orders={visibleFeedOrders}
+              totalOrders={feedOrders.length}
+              onLoadMore={() => setVisibleFeedCount((count) => Math.min(count + 10, feedOrders.length))}
               paused={feedPaused}
               onPausedChange={setFeedPaused}
               onOrderSelect={selectOrder}
@@ -178,20 +199,19 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
             />
           </div>
           <SyncStrip stores={dashboardQuery.data.sync} privacyHidden={privacyHidden} />
-          {!wallboard && (
-            <StoreOperationsPanel
-              snapshot={operationsQuery.data}
-              isLoading={operationsQuery.isLoading}
-              error={operationsQuery.error}
-              onRetry={() => void operationsQuery.refetch()}
-              privacyHidden={privacyHidden}
-            />
-          )}
+          <StoreOperationsPanel
+            snapshot={operationsQuery.data}
+            isLoading={operationsQuery.isLoading}
+            error={operationsQuery.error}
+            onRetry={() => void operationsQuery.refetch()}
+            privacyHidden={privacyHidden}
+          />
         </main>
       ) : null}
       {selectedOrderId && (
         <OrderDetailDrawer orderId={selectedOrderId} onClose={closeOrder} privacyHidden={privacyHidden} />
       )}
+      {!wallboard && <LowStockWarning incomingAlert={incomingLowStock} />}
     </div>
   );
 }

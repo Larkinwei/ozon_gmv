@@ -1,4 +1,4 @@
-import { CirclePause, CirclePlay, PackageOpen } from "lucide-react";
+import { CirclePause, CirclePlay, ChevronDown, PackageOpen } from "lucide-react";
 
 import type { RecentOrder } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
@@ -6,13 +6,15 @@ import { formatBeijingTime, formatMoney } from "../format";
 
 interface LiveOrdersProps {
   orders: RecentOrder[];
+  totalOrders: number;
+  onLoadMore: () => void;
   paused: boolean;
   onPausedChange: (paused: boolean) => void;
   onOrderSelect: (id: string) => void;
   privacyHidden?: boolean;
 }
 
-export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect, privacyHidden = false }: LiveOrdersProps): React.JSX.Element | null {
+export function LiveOrders({ orders, totalOrders, onLoadMore, paused, onPausedChange, onOrderSelect, privacyHidden = false }: LiveOrdersProps): React.JSX.Element | null {
   if (privacyHidden) {
     return null;
   }
@@ -78,6 +80,11 @@ export function LiveOrders({ orders, paused, onPausedChange, onOrderSelect, priv
           })
         )}
       </div>
+      {totalOrders > orders.length && (
+        <button className="secondary-button compact-button live-load-more" type="button" onClick={onLoadMore}>
+          <ChevronDown size={16} aria-hidden="true" />查看更多订单（还有 {totalOrders - orders.length} 条）
+        </button>
+      )}
     </section>
   );
 }

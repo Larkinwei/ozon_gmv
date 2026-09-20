@@ -5,12 +5,13 @@ import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatMoneyList } from "../format";
 
 export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreBreakdown[]; privacyHidden?: boolean }): React.JSX.Element {
-  const currencies = new Set(stores.flatMap((store) => store.gmv.map((value) => value.currency)));
+  const visibleStores = stores.filter((store) => store.orders > 0);
+  const currencies = new Set(visibleStores.flatMap((store) => store.gmv.map((value) => value.currency)));
   const mixedCurrencies = currencies.size > 1;
   const valueForBar = (store: StoreBreakdown): number => (
     mixedCurrencies ? store.orders : Number(store.gmv[0]?.amount ?? 0)
   );
-  const maximum = Math.max(...stores.map(valueForBar), 1);
+  const maximum = Math.max(...visibleStores.map(valueForBar), 1);
   return (
     <section className="panel ranking-panel" aria-labelledby="ranking-title">
       <div className="panel-heading">
@@ -19,14 +20,14 @@ export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreB
           <h2 id="ranking-title">店铺贡献排行</h2>
         </div>
         <span className="panel-count">
-          <Store size={16} aria-hidden="true" /> {mixedCurrencies ? "多币种按订单量排序" : `${stores.length} 家店铺`}
+          <Store size={16} aria-hidden="true" /> {mixedCurrencies ? "多币种按订单量排序" : `${visibleStores.length} 家店铺`}
         </span>
       </div>
-      {stores.length === 0 ? (
+      {visibleStores.length === 0 ? (
         <div className="empty-state">当前范围暂无店铺数据</div>
       ) : (
         <ol className="ranking-list">
-          {stores.map((store, index) => {
+          {visibleStores.map((store, index) => {
             const barValue = valueForBar(store);
             return (
               <li key={store.storeId}>

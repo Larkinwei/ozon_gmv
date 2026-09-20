@@ -200,6 +200,7 @@ if ($Phase -eq "uninstall") {
   Stop-OzonService
   Unregister-OzonService
   & netsh.exe advfirewall firewall delete rule name="Ozon GMV Wallboard (Private LAN)" | Out-Null
+  & netsh.exe advfirewall firewall delete rule name="Ozon GMV Wallboard (Tailscale)" | Out-Null
   if ($DeleteData -and (Test-Path $DataDir)) {
     Remove-Item $DataDir -Recurse -Force
   }
@@ -215,6 +216,8 @@ try {
   & sc.exe failureflag $ServiceName 1 | Out-Null
   & netsh.exe advfirewall firewall delete rule name="Ozon GMV Wallboard (Private LAN)" | Out-Null
   & netsh.exe advfirewall firewall add rule name="Ozon GMV Wallboard (Private LAN)" dir=in action=allow protocol=TCP localport=3002 profile=private remoteip=localsubnet | Out-Null
+  & netsh.exe advfirewall firewall delete rule name="Ozon GMV Wallboard (Tailscale)" | Out-Null
+  & netsh.exe advfirewall firewall add rule name="Ozon GMV Wallboard (Tailscale)" dir=in action=allow protocol=TCP localport=3002 profile=any remoteip=100.64.0.0/10 | Out-Null
   & $ServiceExe start | Out-Null
 
   $ready = $false

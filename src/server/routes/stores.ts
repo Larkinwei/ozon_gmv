@@ -39,6 +39,7 @@ const updateStoreSchema = z
     apiToken: z.string().trim().min(10).max(2000).optional(),
     color: colorSchema.optional(),
     enabled: z.boolean().optional(),
+    inventoryMonitorEnabled: z.boolean().optional(),
     fulfillmentModes: z.array(z.enum(fulfillmentModes)).min(1).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "至少提供一个修改字段")
@@ -124,6 +125,7 @@ export function registerStoreRoutes(
           ...(input.name ? { name: input.name } : {}),
           ...(input.color ? { color: input.color } : {}),
           ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(input.inventoryMonitorEnabled !== undefined ? { inventoryMonitorEnabled: input.inventoryMonitorEnabled } : {}),
           ...(input.apiToken ? { apiKeyCiphertext: encryptSecret(apiToken, config.ENCRYPTION_KEY) } : {}),
           apiKeyExpiresAt: credentials.expiresAt,
         });
@@ -145,6 +147,7 @@ export function registerStoreRoutes(
       ...(input.name ? { name: input.name } : {}),
       ...(input.color ? { color: input.color } : {}),
       ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+      ...(input.inventoryMonitorEnabled !== undefined ? { inventoryMonitorEnabled: input.inventoryMonitorEnabled } : {}),
       ...(input.fulfillmentModes ? { fulfillmentModes: input.fulfillmentModes } : {}),
       ...(apiKeyCiphertext ? { apiKeyCiphertext } : {}),
       ...(apiKeyExpiresAt !== undefined ? { apiKeyExpiresAt } : {}),

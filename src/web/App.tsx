@@ -31,7 +31,7 @@ function PairingRequired(): React.JSX.Element {
     <main className="pairing-required">
       <div className="brand-mark" aria-hidden="true">O</div>
       <h1>大屏尚未配对</h1>
-      <p>请在安装电脑的“本机设置”中生成一次性局域网配对链接，再用本设备打开。</p>
+      <p>请在安装电脑的“本机设置”中生成固定只读链接，再用本设备打开。</p>
     </main>
   );
 }
@@ -80,6 +80,7 @@ export function App(): React.JSX.Element {
       <Suspense fallback={<AppLoading />}>
         <Routes>
           <Route path="/wallboard" element={<DashboardPage wallboard />} />
+          <Route path="/orders/search" element={<OrderSearchPage wallboard />} />
           <Route path="*" element={<Navigate to="/wallboard" replace />} />
         </Routes>
       </Suspense>

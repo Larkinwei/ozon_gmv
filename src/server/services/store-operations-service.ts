@@ -11,6 +11,7 @@ import type {
   StoreOperationsStoreView,
   StoreQuestionsView,
   StorePlatform,
+  WallboardBalanceSnapshot,
 } from "../../shared/contracts";
 import type { AppConfig } from "../config";
 import { StoresRepository, type StoreRecord } from "../db/stores-repository";
@@ -43,6 +44,10 @@ export interface StoreOperationsReader {
   getQuestionDetail(storeId: string, questionId: string): Promise<BuyerQuestionView | null>;
 }
 
+export interface WallboardBalanceReader {
+  getBalanceOverview(storeIds: string[], platform?: StorePlatform | "all"): Promise<WallboardBalanceSnapshot>;
+}
+
 interface StoreOperationsServiceOptions {
   clientFactory?: (store: StoreRecord) => StoreOperationsClient | WildberriesOperationsClient;
   now?: () => Date;
@@ -52,6 +57,11 @@ interface StoreOperationsServiceOptions {
 interface CacheEntry {
   expiresAt: number;
   value: StoreOperationsStoreView;
+}
+
+interface BalanceCacheEntry {
+  expiresAt: number;
+  value: StoreBalanceView;
 }
 
 function toMoney(value: OzonFinanceAmount | null): Money | null {
@@ -151,9 +161,11 @@ function mergeQuestionStatus(
 }
 
 /** Reads current finance and buyer-question summaries without coupling them to order synchronization. */
-export class StoreOperationsService implements StoreOperationsReader {
+export class StoreOperationsService implements StoreOperationsReader, WallboardBalanceReader {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inFlight = new Map<string, Promise<StoreOperationsStoreView>>();
+  private readonly balanceCache = new Map<string, BalanceCacheEntry>();
+  private readonly balanceInFlight = new Map<string, Promise<StoreBalanceView>>();
   private readonly clientFactory: (store: StoreRecord) => StoreOperationsClient | WildberriesOperationsClient;
   private readonly now: () => Date;
   private readonly cacheTtlMs: number;
@@ -192,6 +204,22 @@ export class StoreOperationsService implements StoreOperationsReader {
     return { generatedAt: this.now().toISOString(), stores: storeViews };
   }
 
+  /** Reads only balances for the private wallboard without requesting buyer-question data. */
+  public async getBalanceOverview(storeIds: string[], platform: StorePlatform | "all" = "all"): Promise<WallboardBalanceSnapshot> {
+    const activeStores = (await this.stores.listActive()).filter((store) => platform === "all" || store.platform === platform);
+    const selectedStores = storeIds.length === 0
+      ? activeStores
+      : activeStores.filter((store) => storeIds.includes(store.id));
+    const stores = await Promise.all(selectedStores.map(async (store) => ({
+      storeId: store.id,
+      storeName: store.name,
+      storeColor: store.color,
+      platform: store.platform,
+      balance: await this.getBalance(store),
+    })));
+    return { generatedAt: this.now().toISOString(), stores };
+  }
+
   public async getQuestionDetail(storeId: string, questionId: string): Promise<BuyerQuestionView | null> {
     const store = await this.stores.findById(storeId);
     if (!store || !store.enabled) {
@@ -222,6 +250,32 @@ export class StoreOperationsService implements StoreOperationsReader {
       this.inFlight.delete(store.id);
     });
     this.inFlight.set(store.id, refresh);
+    return refresh;
+  }
+
+  private async getBalance(store: StoreRecord): Promise<StoreBalanceView> {
+    const now = this.now().getTime();
+    const cached = this.balanceCache.get(store.id);
+    if (cached && cached.expiresAt > now) {
+      return cached.value;
+    }
+    const running = this.balanceInFlight.get(store.id);
+    if (running) {
+      return running;
+    }
+
+    const refresh = (async () => {
+      const client = this.clientFactory(store);
+      const previous = cached?.value;
+      const value = store.platform === "wildberries"
+        ? await this.refreshWildberriesBalance(client, previous)
+        : await this.refreshBalance(client as StoreOperationsClient, previous);
+      this.balanceCache.set(store.id, { value, expiresAt: this.now().getTime() + this.cacheTtlMs });
+      return value;
+    })().finally(() => {
+      this.balanceInFlight.delete(store.id);
+    });
+    this.balanceInFlight.set(store.id, refresh);
     return refresh;
   }
 

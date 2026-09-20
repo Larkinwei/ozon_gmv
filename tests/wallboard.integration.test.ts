@@ -14,7 +14,7 @@ import { UpdateService } from "../src/server/services/update-service";
 import { createTestDatabase } from "./test-context";
 
 describe("LAN wallboard isolation", () => {
-  it("uses a token once and exposes no management routes", async () => {
+  it("keeps a private wallboard link stable while exposing no management routes", async () => {
     const context = createTestDatabase();
     const events = new DashboardEventBus();
     const settings = new SettingsRepository(context.database);
@@ -52,14 +52,24 @@ describe("LAN wallboard isolation", () => {
         url: "/api/wallboard/pairings",
         cookies: { ozon_session: adminCookie },
       });
-      const link = pairing.json<{ links: string[] }>().links[0] as string;
-      const token = new URL(link).searchParams.get("token") ?? "";
+      const link = pairing.json<{ links: Array<{ url: string }> }>().links[0]?.url as string;
+      const secondPairing = await adminApp.inject({
+        method: "POST",
+        url: "/api/wallboard/pairings",
+        cookies: { ozon_session: adminCookie },
+      });
+      expect(secondPairing.json<{ links: Array<{ url: string }> }>().links[0]?.url).toBe(link);
+      const token = new URL(link).searchParams.get("access_token") ?? "";
 
-      const connect = await wallboardApp.inject({ method: "GET", url: `/connect?token=${encodeURIComponent(token)}` });
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/wallboard/store-options" })).statusCode).toBe(401);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/wallboard/store-balances/overview" })).statusCode).toBe(401);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/wallboard/orders/search" })).statusCode).toBe(401);
+
+      const connect = await wallboardApp.inject({ method: "GET", url: `/connect?access_token=${encodeURIComponent(token)}` });
       expect(connect.statusCode).toBe(302);
       const wallboardCookie = connect.cookies.find((cookie) => cookie.name === "ozon_wallboard")?.value ?? "";
-      const reused = await wallboardApp.inject({ method: "GET", url: `/connect?token=${encodeURIComponent(token)}` });
-      expect(reused.statusCode).toBe(410);
+      const reused = await wallboardApp.inject({ method: "GET", url: `/connect?access_token=${encodeURIComponent(token)}` });
+      expect(reused.statusCode).toBe(302);
 
       const overview = await wallboardApp.inject({
         method: "GET",
@@ -67,6 +77,9 @@ describe("LAN wallboard isolation", () => {
         cookies: { ozon_wallboard: wallboardCookie },
       });
       expect(overview.statusCode).toBe(200);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/wallboard/store-options", cookies: { ozon_wallboard: wallboardCookie } })).json()).toEqual([]);
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/wallboard/store-balances/overview", cookies: { ozon_wallboard: wallboardCookie } })).json()).toMatchObject({ stores: [] });
+      expect((await wallboardApp.inject({ method: "GET", url: "/api/wallboard/orders/search", cookies: { ozon_wallboard: wallboardCookie } })).json()).toMatchObject({ items: [], total: 0 });
       expect((await wallboardApp.inject({ method: "GET", url: "/api/stores" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/settings/network" })).statusCode).toBe(404);
       expect((await wallboardApp.inject({ method: "GET", url: "/api/settings/update" })).statusCode).toBe(404);
@@ -85,6 +98,8 @@ describe("LAN wallboard isolation", () => {
         cookies: { ozon_wallboard: wallboardCookie },
       });
       expect(revoked.statusCode).toBe(401);
+      const revokedLink = await wallboardApp.inject({ method: "GET", url: `/connect?access_token=${encodeURIComponent(token)}` });
+      expect(revokedLink.statusCode).toBe(410);
     } finally {
       await Promise.all([adminApp.close(), wallboardApp.close()]);
       context.cleanup();

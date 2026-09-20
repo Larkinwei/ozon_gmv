@@ -176,8 +176,8 @@ describe("order details and product image cache", () => {
         url: "/api/wallboard/pairings",
         cookies: { ozon_session: adminCookie },
       });
-      const token = new URL(pairing.json<{ links: string[] }>().links[0] as string).searchParams.get("token") ?? "";
-      const connect = await wallboardApp.inject({ method: "GET", url: `/connect?token=${encodeURIComponent(token)}` });
+      const token = new URL(pairing.json<{ links: Array<{ url: string }> }>().links[0]?.url as string).searchParams.get("access_token") ?? "";
+      const connect = await wallboardApp.inject({ method: "GET", url: `/connect?access_token=${encodeURIComponent(token)}` });
       const wallboardCookie = connect.cookies.find((cookie) => cookie.name === "ozon_wallboard")?.value ?? "";
       const wallboardDetail = await wallboardApp.inject({
         method: "GET",

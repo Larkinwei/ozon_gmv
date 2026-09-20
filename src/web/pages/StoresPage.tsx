@@ -87,6 +87,10 @@ export default function StoresPage(): React.JSX.Element {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => updateStore(id, { enabled }),
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["stores"] }),
   });
+  const inventoryToggleMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => updateStore(id, { inventoryMonitorEnabled: enabled }),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["stores"] }),
+  });
 
   function submitStore(value: StoreFormValue): void {
     if (editingStore) {
@@ -167,7 +171,7 @@ export default function StoresPage(): React.JSX.Element {
             <section className="store-table-card" aria-label="已连接店铺">
               <div className="table-scroll">
                 <table className="store-table">
-                  <thead><tr><th scope="col">店铺</th><th scope="col">履约</th><th scope="col">同步状态</th><th scope="col">密钥有效期</th><th scope="col">启用</th><th scope="col">操作</th></tr></thead>
+                  <thead><tr><th scope="col">店铺</th><th scope="col">履约</th><th scope="col">同步状态</th><th scope="col">密钥有效期</th><th scope="col">启用</th><th scope="col">库存监控</th><th scope="col">操作</th></tr></thead>
                   <tbody>
                     {stores.map((store) => {
                       const synchronizing = isStoreSynchronizing(store);
@@ -187,6 +191,7 @@ export default function StoresPage(): React.JSX.Element {
                           </td>
                           <td>{store.apiKeyExpiresAt ? formatBeijingTime(store.apiKeyExpiresAt, "yyyy-MM-dd") : <span className="muted">以平台控制台为准</span>}</td>
                           <td><label className="switch"><input type="checkbox" checked={store.enabled} onChange={(event) => toggleMutation.mutate({ id: store.id, enabled: event.target.checked })} aria-label={`${store.name}启用状态`} /><span /></label></td>
+                          <td><label className="switch"><input type="checkbox" checked={store.platform === "ozon" && store.inventoryMonitorEnabled} disabled={store.platform !== "ozon"} onChange={(event) => inventoryToggleMutation.mutate({ id: store.id, enabled: event.target.checked })} aria-label={`${store.name}库存监控状态`} /><span /></label></td>
                           <td><div className="table-actions">
                             <button type="button" onClick={() => actionMutation.mutate({ id: store.id, action: "test" })} aria-label={`测试 ${store.name} 连接`}><KeyRound size={17} /> 测试</button>
                             <button type="button" disabled={!store.enabled || synchronizing || submittingSync} aria-busy={synchronizing || submittingSync} onClick={() => actionMutation.mutate({ id: store.id, action: "sync", days: syncDays })} aria-label={`同步 ${store.name} 最近 ${syncDays} 天`}><RefreshCw className={synchronizing || submittingSync ? "sync-spinner" : undefined} size={17} /> {synchronizing ? "同步中" : "同步"}</button>

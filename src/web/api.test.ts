@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { deleteSelectionImport, fetchOrderDetail, fetchOrderSearch, login, logout, previewSelectionImport, syncStore } from "./api";
+import { deleteSelectionImport, fetchOrderDetail, fetchOrderSearch, fetchRuntime, login, logout, previewSelectionImport, syncStore } from "./api";
 
 describe("web API requests", () => {
   afterEach(() => {
@@ -86,6 +86,19 @@ describe("web API requests", () => {
     expect(url).toContain("q=SKU-1");
     expect(url).toContain("page=2");
     expect(url).toContain("pageSize=20");
+  });
+
+  it("uses the read-only wallboard search endpoint for paired mobile sessions", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ role: "wallboard" }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [], page: 1, pageSize: 20, total: 0 }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ role: "admin" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchRuntime();
+    await fetchOrderSearch({ page: 1, pageSize: 20 });
+    expect((fetchMock.mock.calls[1] as [string])[0]).toContain("/api/wallboard/orders/search?");
+    await fetchRuntime();
   });
 
   it("lets the browser declare the multipart boundary for selection imports", async () => {

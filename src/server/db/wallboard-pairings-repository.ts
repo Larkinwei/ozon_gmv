@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import type { AppDatabase } from "./database";
 import { SettingsRepository } from "./settings-repository";
 
 const GENERATION_KEY = "wallboard.session_generation";
+const ACCESS_TOKEN_KEY = "wallboard.access_token";
 
 interface PairingRow {
   id: string;
@@ -16,12 +17,34 @@ export interface WallboardPairingRecord {
   usedAt: number | null;
 }
 
-/** Persists one-time LAN pairing tokens and the global session revocation generation. */
+/** Persists wallboard access tokens and the global session revocation generation. */
 export class WallboardPairingsRepository {
   private readonly settings: SettingsRepository;
 
   public constructor(private readonly database: AppDatabase) {
     this.settings = new SettingsRepository(database);
+  }
+
+  /** Returns the stable bearer token used by the private wallboard link. */
+  public getOrCreateAccessToken(): string {
+    const existing = this.settings.get(ACCESS_TOKEN_KEY);
+    if (existing && existing.length >= 32) {
+      return existing;
+    }
+    const token = randomBytes(32).toString("base64url");
+    this.settings.set(ACCESS_TOKEN_KEY, token);
+    return token;
+  }
+
+  /** Checks the stable bearer token without exposing it through the database API. */
+  public hasAccessToken(token: string): boolean {
+    const expected = this.settings.get(ACCESS_TOKEN_KEY);
+    if (!expected || !token) {
+      return false;
+    }
+    const expectedHash = createHash("sha256").update(expected).digest();
+    const actualHash = createHash("sha256").update(token).digest();
+    return timingSafeEqual(expectedHash, actualHash);
   }
 
   public create(tokenHash: string, expiresAt: number): WallboardPairingRecord {
@@ -68,6 +91,7 @@ export class WallboardPairingsRepository {
     const generation = this.generation() + 1;
     this.database.transaction(() => {
       this.settings.set(GENERATION_KEY, String(generation));
+      this.settings.set(ACCESS_TOKEN_KEY, randomBytes(32).toString("base64url"));
       this.database.prepare("DELETE FROM wallboard_pairings").run();
     })();
     return generation;

@@ -526,19 +526,20 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
       ) : data.length === 0 ? (
         <div className="empty-state">所选时间段暂无订单趋势</div>
       ) : (
-        <div
-          className="charts"
-          role="group"
-          tabIndex={0}
-          aria-label="GMV 折线图及订单量堆叠柱状图。使用左右方向键查看相邻时间段。"
-          onBlur={handleChartBlur}
-          onFocus={() => setActiveBucket((current) => ({
-            index: current?.index ?? data.length - 1,
-            mode: "keyboard",
-          }))}
-          onKeyDown={handleChartKeyDown}
-          onMouseLeave={clearPointerBucket}
-        >
+        <div className="charts-scroll" aria-label="横向滑动查看完整图表">
+          <div
+            className="charts"
+            role="group"
+            tabIndex={0}
+            aria-label="GMV 折线图及订单量堆叠柱状图。使用左右方向键查看相邻时间段。"
+            onBlur={handleChartBlur}
+            onFocus={() => setActiveBucket((current) => ({
+              index: current?.index ?? data.length - 1,
+              mode: "keyboard",
+            }))}
+            onKeyDown={handleChartKeyDown}
+            onMouseLeave={clearPointerBucket}
+          >
           {activeDatum && (
             <UnifiedTrendDetail
               datum={activeDatum}
@@ -646,6 +647,7 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
                 />
               </BarChart>
             </ResponsiveContainer>
+          </div>
           </div>
         </div>
       )}

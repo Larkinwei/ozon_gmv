@@ -50,4 +50,12 @@ describe("Windows upgrade recovery scripts", () => {
     expect(moveIndex).toBeGreaterThan(unregisterIndex);
     expect(repairScript).not.toContain("Remove-Item $DataDir");
   });
+
+  it("allows only the read-only wallboard over the Tailscale address range", () => {
+    const serviceScript = installerFile("install-service.ps1");
+
+    expect(serviceScript).toContain('name="Ozon GMV Wallboard (Tailscale)"');
+    expect(serviceScript).toContain("localport=3002 profile=any remoteip=100.64.0.0/10");
+    expect(serviceScript).not.toContain("localport=3001 profile=any remoteip=100.64.0.0/10");
+  });
 });

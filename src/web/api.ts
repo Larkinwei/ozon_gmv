@@ -60,6 +60,8 @@ import type {
   SessionView,
   StoreCreateInput,
   StoreCreateResult,
+  WallboardBalanceSnapshot,
+  WallboardStoreOption,
   StoreOperationsSnapshot,
   StoreView,
   StorePlatform,
@@ -82,6 +84,7 @@ import type {
   FinanceOrderSummary,
   FinanceOverview,
   FinanceSyncView,
+  InventoryLowStockAlert,
 } from "../shared/contracts";
 import {
   createDemoFinanceExceptions,
@@ -126,6 +129,7 @@ interface StoreUpdateInput {
   color?: string;
   enabled?: boolean;
   fulfillmentModes?: StoreView["fulfillmentModes"];
+  inventoryMonitorEnabled?: boolean;
 }
 
 /** Sends JSON API requests without declaring a content type for an empty body. */
@@ -246,7 +250,8 @@ export async function fetchOrderSearch(filters: OrderSearchFilters = {}): Promis
   if (filters.to) params.set("to", filters.to);
   params.set("page", String(filters.page ?? 1));
   params.set("pageSize", String(filters.pageSize ?? 20));
-  return apiFetch(`/api/orders/search?${params.toString()}`);
+  const path = runtimeRole === "wallboard" ? "/api/wallboard/orders/search" : "/api/orders/search";
+  return apiFetch(`${path}?${params.toString()}`);
 }
 
 export function dashboardStreamUrl(): string {
@@ -255,6 +260,25 @@ export function dashboardStreamUrl(): string {
 
 export async function fetchStores(): Promise<StoreView[]> {
   return DEMO_MODE ? demoStores : apiFetch("/api/stores");
+}
+
+export async function fetchWallboardStoreOptions(): Promise<WallboardStoreOption[]> {
+  return DEMO_MODE
+    ? demoStores.map(({ id, name, platform, color }) => ({ id, name, platform, color }))
+    : apiFetch("/api/wallboard/store-options");
+}
+
+export async function fetchInventoryAlerts(): Promise<{ threshold: number; items: InventoryLowStockAlert[] }> {
+  return DEMO_MODE ? { threshold: 50, items: [] } : apiFetch("/api/inventory/alerts");
+}
+
+export async function acknowledgeInventoryAlerts(ids: string[]): Promise<void> {
+  if (!DEMO_MODE) {
+    await apiFetch<void>("/api/inventory/alerts/acknowledge", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    });
+  }
 }
 
 /** Loads the selected stores' finance balance and buyer-question summaries. */
@@ -271,6 +295,29 @@ export async function fetchStoreOperations(storeId: string, platform: StorePlatf
   }
   const query = params.toString();
   return apiFetch(`/api/store-operations/overview${query ? `?${query}` : ""}`);
+}
+
+export async function fetchWallboardBalances(storeId: string, platform: StorePlatform | "all" = "all"): Promise<WallboardBalanceSnapshot> {
+  if (DEMO_MODE) {
+    const snapshot = createDemoStoreOperations(storeId);
+    return {
+      generatedAt: snapshot.generatedAt,
+      stores: snapshot.stores
+        .filter((store) => platform === "all" || store.platform === platform)
+        .map(({ storeId: id, storeName, storeColor, platform: storePlatform, balance }) => ({
+          storeId: id,
+          storeName,
+          storeColor,
+          platform: storePlatform,
+          balance,
+        })),
+    };
+  }
+  const params = new URLSearchParams();
+  if (storeId !== "all") params.set("storeIds", storeId);
+  if (platform !== "all") params.set("platform", platform);
+  const query = params.toString();
+  return apiFetch(`/api/wallboard/store-balances/overview${query ? `?${query}` : ""}`);
 }
 
 /** Loads one read-only buyer-question detail for the authenticated admin dashboard. */
@@ -362,6 +409,7 @@ export async function createStore(input: StoreCreateInput): Promise<StoreCreateR
       clientId: "clientId" in input ? input.clientId : "",
       color: input.color,
       enabled: true,
+      inventoryMonitorEnabled: true,
       fulfillmentModes: "fulfillmentModes" in input ? input.fulfillmentModes : [],
       apiKeyExpiresAt: null,
       lastSyncStartedAt: new Date().toISOString(),

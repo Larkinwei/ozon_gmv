@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { DashboardRepository } from "../db/dashboard-repository";
@@ -16,8 +16,13 @@ const orderSearchQuerySchema = z.object({
   path: ["to"],
 });
 
-export function registerOrderSearchRoutes(app: FastifyInstance, dashboard: DashboardRepository): void {
-  app.get("/api/orders/search", { preHandler: requireSession }, async (request, reply) => {
+export interface OrderSearchRouteOptions {
+  path?: string;
+  authorization?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+}
+
+export function registerOrderSearchRoutes(app: FastifyInstance, dashboard: DashboardRepository, options: OrderSearchRouteOptions = {}): void {
+  app.get(options.path ?? "/api/orders/search", { preHandler: options.authorization ?? requireSession }, async (request, reply) => {
     const query = orderSearchQuerySchema.parse(request.query);
     const to = query.to ? new Date(query.to) : new Date();
     const from = query.from ? new Date(query.from) : new Date(to.getTime() - NINETY_DAYS_MS);

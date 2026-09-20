@@ -29,6 +29,8 @@ describe("LiveOrders", () => {
     render(
       <LiveOrders
         orders={[order]}
+        totalOrders={1}
+        onLoadMore={() => undefined}
         paused={false}
         onPausedChange={() => undefined}
         onOrderSelect={() => undefined}
@@ -45,6 +47,8 @@ describe("LiveOrders", () => {
     render(
       <LiveOrders
         orders={[order]}
+        totalOrders={1}
+        onLoadMore={() => undefined}
         paused={false}
         onPausedChange={() => undefined}
         onOrderSelect={onOrderSelect}
@@ -57,5 +61,22 @@ describe("LiveOrders", () => {
     const orderButton = screen.getByRole("button", { name: "查看订单 123-0001-1 详情" });
     fireEvent.click(orderButton);
     expect(onOrderSelect).toHaveBeenCalledWith("order-1");
+  });
+
+  it("shows a load-more action when more orders are available", () => {
+    const onLoadMore = vi.fn();
+    render(
+      <LiveOrders
+        orders={[order]}
+        totalOrders={11}
+        onLoadMore={onLoadMore}
+        paused={false}
+        onPausedChange={() => undefined}
+        onOrderSelect={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看更多订单（还有 10 条）" }));
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
   });
 });

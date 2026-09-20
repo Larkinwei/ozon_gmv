@@ -35,12 +35,21 @@ export interface StoreView {
   clientId: string;
   color: string;
   enabled: boolean;
+  inventoryMonitorEnabled: boolean;
   fulfillmentModes: FulfillmentMode[];
   apiKeyExpiresAt: string | null;
   lastSyncStartedAt: string | null;
   lastSyncFinishedAt: string | null;
   lastSyncError: string | null;
   syncHealth: SyncHealth;
+}
+
+/** Safe store fields used by the read-only wallboard filters. */
+export interface WallboardStoreOption {
+  id: string;
+  name: string;
+  platform: StorePlatform;
+  color: string;
 }
 
 export interface DashboardKpis {
@@ -226,6 +235,19 @@ export interface StoreOperationsStoreView {
   platform: StorePlatform;
   balance: StoreBalanceView;
   questions: StoreQuestionsView;
+}
+
+export interface WallboardBalanceStoreView {
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  platform: StorePlatform;
+  balance: StoreBalanceView;
+}
+
+export interface WallboardBalanceSnapshot {
+  generatedAt: string;
+  stores: WallboardBalanceStoreView[];
 }
 
 export interface StoreOperationsSnapshot {
@@ -425,7 +447,24 @@ export interface FinanceOverview {
   sync: FinanceSyncView;
 }
 
-export type DashboardEventType = "posting.created" | "posting.updated" | "sync.status";
+export type DashboardEventType = "posting.created" | "posting.updated" | "sync.status" | "inventory.low";
+
+export interface InventoryLowStockAlert {
+  id: string;
+  storeId: string;
+  storeName: string;
+  storeColor: string;
+  sku: string;
+  offerId: string;
+  fulfillment: FulfillmentMode;
+  productName: string;
+  imageUrl: string | null;
+  availableStock: number;
+  reservedStock: number;
+  threshold: number;
+  firstLowAt: string;
+  lastCheckedAt: string;
+}
 
 export interface DashboardEvent<T = unknown> {
   id: string;
@@ -470,9 +509,16 @@ export interface ProxyTestResult {
   message: string;
 }
 
+export type WallboardPairingNetwork = "tailscale" | "lan";
+
+export interface WallboardPairingLink {
+  url: string;
+  network: WallboardPairingNetwork;
+}
+
 export interface WallboardPairingView {
-  expiresAt: string;
-  links: string[];
+  expiresAt: string | null;
+  links: WallboardPairingLink[];
   qrCodeDataUrl: string;
 }
 

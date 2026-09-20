@@ -2,6 +2,7 @@ import { CalendarDays, ChevronLeft, ChevronRight, PackageOpen, Search } from "lu
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
+import { Link } from "react-router-dom";
 
 import type { OrderSearchFilters } from "../api";
 import { fetchOrderSearch } from "../api";
@@ -73,7 +74,7 @@ function SearchPagination({ page, pageSize, total, onPageChange }: { page: numbe
   );
 }
 
-export default function OrderSearchPage(): React.JSX.Element {
+export default function OrderSearchPage({ wallboard = false }: { wallboard?: boolean }): React.JSX.Element {
   const initialRange = defaultRange();
   const [keyword, setKeyword] = useState("");
   const [from, setFrom] = useState(initialRange.from);
@@ -127,6 +128,7 @@ export default function OrderSearchPage(): React.JSX.Element {
           <h1>订单搜索</h1>
           <p>搜索本地已同步的 Ozon 订单，默认覆盖最近 90 天。</p>
         </div>
+        {wallboard && <Link className="secondary-button compact-button order-search-back" to="/wallboard">返回大屏</Link>}
       </header>
 
       <form className="panel order-search-filter-panel" onSubmit={submitSearch}>

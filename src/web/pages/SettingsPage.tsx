@@ -183,7 +183,7 @@ export default function SettingsPage(): React.JSX.Element {
 
   async function copyLink(link: string): Promise<void> {
     await navigator.clipboard.writeText(link);
-    setNotice("配对链接已复制，有效期 10 分钟且只能使用一次。");
+    setNotice("固定大屏链接已复制；如需失效，请点击“撤销全部大屏”。");
   }
 
   const error = saveMutation.error
@@ -356,17 +356,17 @@ export default function SettingsPage(): React.JSX.Element {
         </section>
 
         <section className="settings-card" aria-labelledby="wallboard-heading">
-          <div className="settings-card__heading"><div className="settings-icon"><MonitorUp size={21} /></div><div><p className="eyebrow">LAN WALLBOARD</p><h3 id="wallboard-heading">局域网只读大屏</h3><p>配对设备只能查看经营大屏，无法访问店铺、密钥、同步和本机设置。</p></div></div>
-          <div className="lan-warning"><ShieldAlert size={18} /><div><strong>仅在可信的私有网络中使用</strong><p>请勿在机场、酒店等公共 Wi‑Fi 下开放大屏端口。</p></div></div>
+          <div className="settings-card__heading"><div className="settings-icon"><MonitorUp size={21} /></div><div><p className="eyebrow">PRIVATE WALLBOARD</p><h3 id="wallboard-heading">私有网络只读大屏</h3><p>配对设备只能查看经营大屏，无法访问店铺、密钥、同步和本机设置。</p></div></div>
+          <div className="lan-warning"><ShieldAlert size={18} /><div><strong>仅在可信的私有网络中使用</strong><p>电脑和手机连接 Tailscale 后，可在外部网络访问只读大屏；不要开放完整管理后台。</p></div></div>
           {!pairingMutation.data ? (
             <div className="settings-actions">
-              <button className="primary-button" type="button" onClick={() => pairingMutation.mutate()} disabled={pairingMutation.isPending}>{pairingMutation.isPending ? "正在生成…" : "生成一次性配对链接"}</button>
+              <button className="primary-button" type="button" onClick={() => pairingMutation.mutate()} disabled={pairingMutation.isPending}>{pairingMutation.isPending ? "正在生成…" : "生成固定大屏链接"}</button>
               <button className="secondary-button" type="button" onClick={() => revokeMutation.mutate()} disabled={revokeMutation.isPending}><Unplug size={17} />撤销全部大屏</button>
             </div>
           ) : (
             <div className="pairing-panel">
-              <img src={pairingMutation.data.qrCodeDataUrl} alt="局域网大屏配对二维码" width="220" height="220" />
-              <div><h4>扫码或复制链接</h4><p>链接有效期至 {new Date(pairingMutation.data.expiresAt).toLocaleTimeString("zh-CN")}，打开一次后立即失效。</p>{pairingMutation.data.links.map((link) => <div className="pairing-link" key={link}><code>{link}</code><button className="secondary-button compact-button" type="button" onClick={() => void copyLink(link)}><Clipboard size={15} />复制</button></div>)}<button className="secondary-button" type="button" onClick={() => pairingMutation.mutate()}>重新生成</button></div>
+              <img src={pairingMutation.data.qrCodeDataUrl} alt="私有网络大屏配对二维码" width="220" height="220" />
+              <div><h4>扫码或复制链接</h4><p>这是固定只读入口，不自动过期；仅在可信的 Tailscale 或局域网内使用。需要让旧链接失效时，请点击“撤销全部大屏”。</p>{pairingMutation.data.links.map((link) => <div className="pairing-link" key={link.url}><span className="pairing-link__label">{link.network === "tailscale" ? "Tailscale 远程地址" : "局域网地址"}</span><code>{link.url}</code><button className="secondary-button compact-button" type="button" onClick={() => void copyLink(link.url)}><Clipboard size={15} />复制</button></div>)}<button className="secondary-button" type="button" onClick={() => pairingMutation.mutate()}>刷新地址</button></div>
             </div>
           )}
         </section>

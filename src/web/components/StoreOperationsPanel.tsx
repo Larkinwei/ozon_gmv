@@ -6,12 +6,13 @@ import type {
   StoreOperationsState,
   StoreOperationsStatus,
   StoreOperationsStoreView,
+  WallboardBalanceSnapshot,
 } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatBeijingTime, formatMoney } from "../format";
 
 interface StoreOperationsPanelProps {
-  snapshot: StoreOperationsSnapshot | undefined;
+  snapshot: StoreOperationsSnapshot | WallboardBalanceSnapshot | undefined;
   isLoading: boolean;
   error: Error | null;
   onRetry: () => void;
@@ -86,7 +87,9 @@ function BalanceMetrics({ balance, privacyHidden }: { balance: StoreBalanceView;
   );
 }
 
-function BalanceStoreRow({ store, showMetrics, privacyHidden }: { store: StoreOperationsStoreView; showMetrics: boolean; privacyHidden: boolean }): React.JSX.Element {
+type BalanceStoreRowView = Pick<StoreOperationsStoreView, "storeId" | "storeName" | "storeColor" | "platform" | "balance"> | WallboardBalanceSnapshot["stores"][number];
+
+function BalanceStoreRow({ store, showMetrics, privacyHidden }: { store: BalanceStoreRowView; showMetrics: boolean; privacyHidden: boolean }): React.JSX.Element {
   const { balance } = store;
   return (
     <article className={`operations-store-row${showMetrics ? "" : " operations-store-row--compact"}`}>
