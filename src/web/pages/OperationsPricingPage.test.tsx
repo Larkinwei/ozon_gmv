@@ -43,6 +43,7 @@ describe("OperationsPricingPage", () => {
 
     expect(await screen.findByText("建议成交价")).toBeInTheDocument();
     expect(screen.getByText("¥295.51")).toBeInTheDocument();
+    expect(screen.queryByText("平台预计回款")).not.toBeInTheDocument();
   });
 
   it("switches to existing-price mode without showing a suggested price field", async () => {
@@ -51,6 +52,7 @@ describe("OperationsPricingPage", () => {
 
     await waitFor(() => expect(screen.getByText("平台实际成交价")).toBeInTheDocument());
     expect(screen.queryByText("建议成交价")).not.toBeInTheDocument();
-    expect(screen.getByText("输入 Ozon 实际成交价，查看扣除平台费用和物流后的预计利润。")).toBeInTheDocument();
+    expect(screen.getByText("输入 Ozon 实际成交价，按费用比例和物流估算利润。")).toBeInTheDocument();
+    expect(screen.queryByText("平台预计回款")).not.toBeInTheDocument();
   });
 });
