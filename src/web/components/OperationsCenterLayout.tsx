@@ -1,4 +1,4 @@
-import { BarChart3, Bot, ChevronDown, CircleDollarSign, ClipboardList, Menu, PackagePlus } from "lucide-react";
+import { BarChart3, Bot, Calculator, ChevronDown, CircleDollarSign, ClipboardList, Menu, PackagePlus } from "lucide-react";
 import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
@@ -29,6 +29,10 @@ const operationsNavGroups: Array<{ label: string; items: OperationsNavLink[] }> 
   {
     label: "AI 助手",
     items: [{ label: "AI 助手", to: "/operations/ai", icon: Bot }],
+  },
+  {
+    label: "工具",
+    items: [{ label: "定价与运费", to: "/operations/tools/pricing", icon: Calculator }],
   },
 ];
 

@@ -84,6 +84,9 @@ import type {
   FinanceOrderSummary,
   FinanceOverview,
   FinanceSyncView,
+  ExchangeRateSnapshot,
+  PricingScenarioCreateInput,
+  PricingScenarioView,
   InventoryLowStockAlert,
 } from "../shared/contracts";
 import {
@@ -96,6 +99,7 @@ import {
   createDemoQuestionDetail,
   createDemoSnapshot,
   createDemoStoreOperations,
+  createDemoExchangeRate,
   demoStores,
 } from "./demo-data";
 
@@ -394,6 +398,44 @@ export async function startFinanceSync(month: string, storeId = "all", mode: "en
 export async function fetchFinanceSync(runId: string): Promise<FinanceSyncView> {
   if (DEMO_MODE) return createDemoFinanceSync(new Date().toISOString().slice(0, 7), runId);
   return apiFetch(`/api/finance/sync/${encodeURIComponent(runId)}`);
+}
+
+/** Reads the cached CNY/RUB quote used by browser-side calculation tools. */
+export async function fetchExchangeRate(): Promise<ExchangeRateSnapshot> {
+  if (DEMO_MODE) return createDemoExchangeRate();
+  return apiFetch("/api/tools/exchange-rate");
+}
+
+/** Refreshes the CNY/RUB quote without changing any calculation draft. */
+export async function refreshExchangeRate(): Promise<ExchangeRateSnapshot> {
+  if (DEMO_MODE) return createDemoExchangeRate();
+  return apiFetch("/api/tools/exchange-rate/refresh", { method: "POST" });
+}
+
+/** Reads manually saved pricing snapshots from the local SQLite store. */
+export async function fetchPricingScenarios(query = ""): Promise<PricingScenarioView[]> {
+  if (DEMO_MODE) return [];
+  const params = query ? `?q=${encodeURIComponent(query)}` : "";
+  return apiFetch(`/api/tools/pricing/scenarios${params}`);
+}
+
+/** Reads one immutable pricing snapshot. */
+export async function fetchPricingScenario(id: string): Promise<PricingScenarioView> {
+  if (DEMO_MODE) throw new Error("Demo 模式没有独立历史方案");
+  return apiFetch(`/api/tools/pricing/scenarios/${encodeURIComponent(id)}`);
+}
+
+/** Saves a manually named pricing snapshot. */
+export async function createPricingScenario(input: PricingScenarioCreateInput): Promise<PricingScenarioView> {
+  if (DEMO_MODE) {
+    return { ...input, id: `demo-scenario-${Date.now()}`, sku: input.sku ?? null, exchangeSource: input.exchangeSource ?? null, exchangeEffectiveDate: input.exchangeEffectiveDate ?? null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  }
+  return apiFetch("/api/tools/pricing/scenarios", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Removes one manually saved pricing snapshot. */
+export async function deletePricingScenario(id: string): Promise<void> {
+  if (!DEMO_MODE) await apiFetch(`/api/tools/pricing/scenarios/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function createStore(input: StoreCreateInput): Promise<StoreCreateResult> {
