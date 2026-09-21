@@ -12,6 +12,7 @@ import type { AppConfig } from "./config";
 import { AiConversationModule } from "./ai/conversation-module";
 import { HttpAiGatewayClient, type AiGatewayClient } from "./ai/gateway-client";
 import { AdminRepository } from "./db/admin-repository";
+import type { PricingScenariosRepository } from "./db/pricing-scenarios-repository";
 import { FinanceRepository } from "./db/finance-repository";
 import { DashboardRepository } from "./db/dashboard-repository";
 import { PostingsRepository } from "./db/postings-repository";
@@ -35,6 +36,7 @@ import { registerSelectionDiscoveryRoutes } from "./routes/selection-discovery";
 import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
 import { registerStoreOperationsRoutes } from "./routes/store-operations";
+import { registerToolsRoutes } from "./routes/tools";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
 import { registerWallboardReadonlyRoutes } from "./routes/wallboard-readonly";
 import { wallboardAuthorization } from "./security/wallboard-session";
@@ -45,6 +47,7 @@ import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { InventoryMonitorService } from "./services/inventory-monitor-service";
 import type { UpdateService } from "./services/update-service";
+import type { ExchangeRateService } from "./services/exchange-rate-service";
 import { StoreOperationsService, type StoreOperationsReader, type WallboardBalanceReader } from "./services/store-operations-service";
 import { FinanceAnalysisService, type FinanceReader } from "./finance/finance-service";
 import { CategoryAnalysisModule } from "./selection/category-analysis-module";
@@ -78,6 +81,8 @@ export interface AppDependencies {
   finance?: FinanceReader;
   aiGateway?: AiGatewayClient;
   aiConversations?: AiConversationModule;
+  exchangeRate?: ExchangeRateService;
+  pricingScenarios?: PricingScenariosRepository;
 }
 
 interface SqliteError extends Error {
@@ -198,6 +203,8 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
   const finance = dependencies.finance ?? new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
+  const exchangeRate = dependencies.exchangeRate;
+  const pricingScenarios = dependencies.pricingScenarios;
   const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config, fetch, aiRelaySettings);
   const aiConversations = dependencies.aiConversations ?? new AiConversationModule(database, aiGateway);
   const listAiSources = (): AiProductSourceView[] => [
@@ -216,6 +223,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
   registerFinanceRoutes(app, finance);
+  if (exchangeRate && pricingScenarios) registerToolsRoutes(app, exchangeRate, pricingScenarios);
   const dashboardRepository = new DashboardRepository(database);
   registerOrderSearchRoutes(app, dashboardRepository);
   registerDashboardRoutes(app, dashboardRepository, events);

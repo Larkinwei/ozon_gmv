@@ -29,6 +29,8 @@ import { SyncService } from "./services/sync-service";
 import { UpdateService } from "./services/update-service";
 import { InventoryMonitorService, startInventoryMonitor } from "./services/inventory-monitor-service";
 import { StoreOperationsService } from "./services/store-operations-service";
+import { ExchangeRateService } from "./services/exchange-rate-service";
+import { PricingScenariosRepository } from "./db/pricing-scenarios-repository";
 
 const config = loadConfig();
 const database = openDatabase(join(config.DATA_DIR, "data"));
@@ -52,6 +54,8 @@ const syncService = new SyncService(
 const updates = new UpdateService(config, proxySettings);
 const finance = new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
 const storeOperations = new StoreOperationsService(config, stores, proxySettings);
+const exchangeRate = new ExchangeRateService(new SettingsRepository(database), proxySettings.createFetch());
+const pricingScenarios = new PricingScenariosRepository(database);
 const inventory = new InventoryMonitorService(config, stores, new InventoryRepository(database), events, proxySettings);
 const selection = new SelectionModule(config, database, {
   wordstatFactory: (folderId, apiKey) => new WordstatClient({
@@ -68,11 +72,12 @@ categories.start();
 const discovery = new DiscoveryModule(config, database, {
   fetchImplementation: proxySettings.createFetch(),
 });
-const dependencies = { config, database, events, syncService, inventory, proxySettings, updates, selection, categories, discovery, finance, storeOperations };
+const dependencies = { config, database, events, syncService, inventory, proxySettings, updates, selection, categories, discovery, finance, storeOperations, exchangeRate, pricingScenarios };
 const adminApp = await buildAdminApp(dependencies);
 const wallboardApp = await buildWallboardApp(dependencies);
 const scheduler = startScheduler(syncService, finance);
 const inventoryMonitor = startInventoryMonitor(inventory);
+const stopExchangeRate = exchangeRate.start();
 const backups = new BackupService(database, join(config.DATA_DIR, "backups"));
 backups.start();
 
@@ -106,6 +111,7 @@ async function shutdown(signal: string): Promise<void> {
   adminApp.log.info({ signal }, "Shutting down");
   scheduler.stop();
   inventoryMonitor.stop();
+  stopExchangeRate();
   backups.stop();
   updates.stop();
   await selection.stop();

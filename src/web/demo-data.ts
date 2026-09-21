@@ -22,8 +22,15 @@ import type {
   FinanceSkuSummary,
   FinanceStoreSummary,
   FinanceSyncView,
+  ExchangeRateSnapshot,
   Money,
 } from "../shared/contracts";
+
+/** Provides a clearly labelled fixed quote for the local demo mode. */
+export function createDemoExchangeRate(): ExchangeRateSnapshot {
+  const now = new Date().toISOString();
+  return { available: true, rate: "10", fromCurrency: "CNY", toCurrency: "RUB", source: "Demo 固定示例汇率", effectiveDate: now.slice(0, 10), checkedAt: now, fetchedAt: now, error: null };
+}
 
 export const demoStores: StoreView[] = [
   {

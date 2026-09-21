@@ -447,6 +447,57 @@ export interface FinanceOverview {
   sync: FinanceSyncView;
 }
 
+export interface ExchangeRateSnapshot {
+  available: boolean;
+  rate: string | null;
+  fromCurrency: "CNY";
+  toCurrency: "RUB";
+  source: string | null;
+  effectiveDate: string | null;
+  checkedAt: string | null;
+  fetchedAt: string | null;
+  error: string | null;
+}
+
+export type PricingScenarioMode = "target-price" | "existing-price";
+
+export interface PricingScenarioView {
+  id: string;
+  name: string;
+  sku: string | null;
+  mode: PricingScenarioMode;
+  inputs: unknown;
+  feeRates: unknown;
+  exchangeRate: string;
+  exchangeSource: string | null;
+  exchangeEffectiveDate: string | null;
+  ruleVersion: string;
+  result: unknown;
+  risk: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PricingScenarioCreateInput {
+  name: string;
+  sku?: string | null;
+  mode: PricingScenarioMode;
+  inputs: unknown;
+  feeRates: unknown;
+  exchangeRate: string;
+  exchangeSource?: string | null;
+  exchangeEffectiveDate?: string | null;
+  ruleVersion: string;
+  result: unknown;
+  risk: unknown;
+}
+
+export interface PricingScenarioComparison {
+  leftId: string;
+  rightId: string;
+  fields: Array<{ key: string; label: string; left: string; right: string; difference: string }>;
+}
+
 export type DashboardEventType = "posting.created" | "posting.updated" | "sync.status" | "inventory.low";
 
 export interface InventoryLowStockAlert {
