@@ -1,19 +1,17 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 const COOKIE_NAME = "ozon_session";
-const SESSION_DURATION_SECONDS = 8 * 60 * 60;
+// Browsers may cap persistent cookie lifetimes, so refresh this long-lived cookie
+// whenever the administrator actively uses the app.
+const SESSION_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60;
 
 interface SessionPayload {
   username: string;
-  expiresAt: number;
 }
 
 /** Creates the signed-cookie payload for the single administrator. */
 export function createSessionPayload(username: string): string {
-  const payload: SessionPayload = {
-    username,
-    expiresAt: Date.now() + SESSION_DURATION_SECONDS * 1000,
-  };
+  const payload: SessionPayload = { username };
   return Buffer.from(JSON.stringify(payload)).toString("base64url");
 }
 
@@ -24,7 +22,7 @@ export function setSessionCookie(reply: FastifyReply, username: string, secure: 
     sameSite: "strict",
     secure,
     signed: true,
-    maxAge: SESSION_DURATION_SECONDS,
+    maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
   });
 }
 
@@ -37,7 +35,7 @@ export function clearSessionCookie(reply: FastifyReply, secure: boolean): void {
   });
 }
 
-/** Returns the authenticated username or null when the cookie is absent, invalid, or expired. */
+/** Returns the authenticated username or null when the cookie is absent or invalid. */
 export function readSession(request: FastifyRequest): string | null {
   const signedValue = request.cookies[COOKIE_NAME];
   if (!signedValue) {
@@ -49,7 +47,7 @@ export function readSession(request: FastifyRequest): string | null {
   }
   try {
     const payload = JSON.parse(Buffer.from(unsigned.value, "base64url").toString("utf8")) as SessionPayload;
-    if (!payload.username || payload.expiresAt <= Date.now()) {
+    if (!payload.username) {
       return null;
     }
     return payload.username;
@@ -59,8 +57,11 @@ export function readSession(request: FastifyRequest): string | null {
 }
 
 export async function requireSession(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  if (!readSession(request)) {
+  const username = readSession(request);
+  if (!username) {
     await reply.code(401).send({ error: "AUTH_REQUIRED", message: "请先登录" });
+    return;
   }
+  setSessionCookie(reply, username, request.protocol === "https");
 }
 

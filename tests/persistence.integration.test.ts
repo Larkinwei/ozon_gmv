@@ -10,12 +10,13 @@ import type { NormalizedPosting } from "../src/server/ozon/normalize";
 import { createTestDatabase } from "./test-context";
 
 const STORE_ID = "8f9dc7d2-35a8-45d5-b199-c39c5a100001";
+const OTHER_STORE_ID = "8f9dc7d2-35a8-45d5-b199-c39c5a100002";
 
-async function insertStore(repository: StoresRepository): Promise<void> {
+async function insertStore(repository: StoresRepository, id = STORE_ID): Promise<void> {
   await repository.create({
-    id: STORE_ID,
+    id,
     name: "Test store",
-    clientId: "client",
+    clientId: id === STORE_ID ? "client" : `client-${id}`,
     apiKeyCiphertext: "ciphertext",
     color: "#3B82F6",
     fulfillmentModes: ["FBS"],
@@ -54,6 +55,40 @@ describe("SQLite persistence", () => {
       inventory.evaluate(STORE_ID, candidate, 3_000, 50);
       inventory.replaceSnapshots(STORE_ID, candidate, 4_000, [{ warehouseId: "warehouse-1", warehouseName: "Seller warehouse", productId: "product-1", availableStock: 49, reservedStock: 0 }]);
       expect(inventory.evaluate(STORE_ID, candidate, 4_000, 50).newlyOpened).toBe(true);
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("snoozes a store SKU for seven days across offers, but not other stores", async () => {
+    const context = createTestDatabase();
+    try {
+      const stores = new StoresRepository(context.database);
+      await insertStore(stores);
+      await insertStore(stores, OTHER_STORE_ID);
+      const inventory = new InventoryRepository(context.database);
+      const now = Date.now();
+      const candidate = { sku: "SHARED-SKU", offerId: "offer-a", fulfillment: "FBS" as const, productName: "Item", imageUrl: null };
+      const sameSkuOtherOffer = { ...candidate, offerId: "offer-b" };
+      inventory.replaceSnapshots(STORE_ID, candidate, now, [{ warehouseId: "w1", warehouseName: null, productId: null, availableStock: 10, reservedStock: 0 }]);
+      inventory.evaluate(STORE_ID, candidate, now, 30);
+      inventory.snoozeSku(STORE_ID, candidate.sku, now);
+
+      inventory.replaceSnapshots(STORE_ID, sameSkuOtherOffer, now, [{ warehouseId: "w1", warehouseName: null, productId: null, availableStock: 8, reservedStock: 0 }]);
+      expect(inventory.evaluate(STORE_ID, sameSkuOtherOffer, now, 30).newlyOpened).toBe(false);
+      inventory.replaceSnapshots(OTHER_STORE_ID, candidate, now, [{ warehouseId: "w1", warehouseName: null, productId: null, availableStock: 9, reservedStock: 0 }]);
+      expect(inventory.evaluate(OTHER_STORE_ID, candidate, now, 30).newlyOpened).toBe(true);
+      expect(inventory.listOpenAlerts(now)).toHaveLength(1);
+
+      const expiry = now + 7 * 24 * 60 * 60 * 1000;
+      expect(inventory.listOpenAlerts(expiry)).toHaveLength(3);
+      expect(inventory.evaluate(STORE_ID, sameSkuOtherOffer, expiry, 30).newlyOpened).toBe(true);
+
+      inventory.replaceSnapshots(STORE_ID, candidate, expiry + 1, [{ warehouseId: "w1", warehouseName: null, productId: null, availableStock: 35, reservedStock: 0 }]);
+      inventory.evaluate(STORE_ID, candidate, expiry + 1, 30);
+      inventory.replaceSnapshots(STORE_ID, candidate, expiry + 2, [{ warehouseId: "w1", warehouseName: null, productId: null, availableStock: 29, reservedStock: 0 }]);
+      expect(inventory.evaluate(STORE_ID, candidate, expiry + 2, 30).newlyOpened).toBe(true);
+      expect(inventory.listOpenAlerts(expiry + 2)).toHaveLength(3);
     } finally {
       context.cleanup();
     }

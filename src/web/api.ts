@@ -273,7 +273,7 @@ export async function fetchWallboardStoreOptions(): Promise<WallboardStoreOption
 }
 
 export async function fetchInventoryAlerts(): Promise<{ threshold: number; items: InventoryLowStockAlert[] }> {
-  return DEMO_MODE ? { threshold: 50, items: [] } : apiFetch("/api/inventory/alerts");
+  return DEMO_MODE ? { threshold: 30, items: [] } : apiFetch("/api/inventory/alerts");
 }
 
 export async function acknowledgeInventoryAlerts(ids: string[]): Promise<void> {
@@ -281,6 +281,15 @@ export async function acknowledgeInventoryAlerts(ids: string[]): Promise<void> {
     await apiFetch<void>("/api/inventory/alerts/acknowledge", {
       method: "POST",
       body: JSON.stringify({ ids }),
+    });
+  }
+}
+
+export async function snoozeInventorySku(storeId: string, sku: string): Promise<void> {
+  if (!DEMO_MODE) {
+    await apiFetch<void>("/api/inventory/alerts/snooze", {
+      method: "POST",
+      body: JSON.stringify({ storeId, sku }),
     });
   }
 }

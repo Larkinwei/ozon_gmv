@@ -5044,7 +5044,7 @@ td {
 .low-stock-warning h2 { margin: 2px 0 6px; font-size: 24px; }
 .low-stock-warning__heading p:last-child { margin: 0; color: #cbd5e1; }
 .low-stock-warning__list { display: grid; gap: 8px; margin: 22px 0; }
-.low-stock-warning__item { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px; border: 1px solid rgb(148 163 184 / 18%); border-radius: 10px; background: rgb(15 23 42 / 68%); }
+.low-stock-warning__item { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px; border: 1px solid rgb(148 163 184 / 18%); border-radius: 10px; background: rgb(15 23 42 / 68%); }
 .low-stock-warning__item img, .low-stock-warning__placeholder { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; }
 .low-stock-warning__placeholder { display: grid; place-items: center; color: #94a3b8; background: #263248; }
 .low-stock-warning__item-main { min-width: 0; display: grid; gap: 3px; }
@@ -5053,6 +5053,7 @@ td {
 .low-stock-warning__stock { display: grid; min-width: 72px; text-align: right; }
 .low-stock-warning__stock strong { color: #fbbf24; font-size: 21px; }
 .low-stock-warning__stock span { color: #94a3b8; font-size: 11px; }
+.low-stock-warning__snooze { white-space: nowrap; font-size: 12px; }
 .low-stock-warning__error { color: #fca5a5; }
 .low-stock-warning__close { width: 100%; justify-content: center; }
 

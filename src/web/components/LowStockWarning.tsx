@@ -3,16 +3,27 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { InventoryLowStockAlert } from "../../shared/contracts";
-import { acknowledgeInventoryAlerts, fetchInventoryAlerts } from "../api";
+import { acknowledgeInventoryAlerts, fetchInventoryAlerts, snoozeInventorySku } from "../api";
 
 interface LowStockWarningProps {
   incomingAlert?: InventoryLowStockAlert | null;
+  previewAlerts?: InventoryLowStockAlert[];
+  onPreviewClose?: () => void;
 }
 
-export function LowStockWarning({ incomingAlert }: LowStockWarningProps): React.JSX.Element | null {
+export function LowStockWarning({ incomingAlert, previewAlerts, onPreviewClose }: LowStockWarningProps): React.JSX.Element | null {
   const queryClient = useQueryClient();
-  const alertsQuery = useQuery({ queryKey: ["inventory-alerts"], queryFn: fetchInventoryAlerts });
+  const previewMode = previewAlerts !== undefined;
+  const alertsQuery = useQuery({ queryKey: ["inventory-alerts"], queryFn: fetchInventoryAlerts, enabled: !previewMode });
   const [alerts, setAlerts] = useState<InventoryLowStockAlert[]>([]);
+  const [previewHiddenIds, setPreviewHiddenIds] = useState<string[]>([]);
+  const snoozeMutation = useMutation({
+    mutationFn: ({ storeId, sku }: { storeId: string; sku: string }) => snoozeInventorySku(storeId, sku),
+    onSuccess: (_result, { storeId, sku }) => {
+      setAlerts((current) => current.filter((alert) => alert.storeId !== storeId || alert.sku !== sku));
+      void queryClient.invalidateQueries({ queryKey: ["inventory-alerts"] });
+    },
+  });
   const acknowledgeMutation = useMutation({
     mutationFn: () => acknowledgeInventoryAlerts(alerts.map((alert) => alert.id)),
     onSuccess: () => {
@@ -32,7 +43,10 @@ export function LowStockWarning({ incomingAlert }: LowStockWarningProps): React.
       : [...current, incomingAlert]);
   }, [incomingAlert]);
 
-  if (alerts.length === 0) return null;
+  const visibleAlerts = previewMode
+    ? previewAlerts.filter((alert) => !previewHiddenIds.includes(alert.id))
+    : alerts;
+  if (!visibleAlerts || visibleAlerts.length === 0) return null;
   return (
     <div className="low-stock-warning-backdrop" role="presentation">
       <section className="low-stock-warning" role="alertdialog" aria-modal="true" aria-labelledby="low-stock-warning-title">
@@ -41,11 +55,11 @@ export function LowStockWarning({ incomingAlert }: LowStockWarningProps): React.
           <div>
             <p className="eyebrow">INVENTORY WARNING</p>
             <h2 id="low-stock-warning-title">库存不足提醒</h2>
-            <p>以下商品库存已低于 50 件，请及时补货。</p>
+            <p>以下商品库存已低于 {visibleAlerts[0]?.threshold ?? alertsQuery.data?.threshold ?? 30} 件，请及时补货。</p>
           </div>
         </div>
         <div className="low-stock-warning__list">
-          {alerts.map((alert) => (
+          {visibleAlerts.map((alert) => (
             <div className="low-stock-warning__item" key={alert.id}>
               {alert.imageUrl ? <img src={alert.imageUrl} alt="" /> : <div className="low-stock-warning__placeholder" aria-hidden="true"><Package size={19} /></div>}
               <div className="low-stock-warning__item-main">
@@ -53,13 +67,24 @@ export function LowStockWarning({ incomingAlert }: LowStockWarningProps): React.
                 <span>{alert.storeName} · {alert.fulfillment} · SKU {alert.sku}</span>
               </div>
               <div className="low-stock-warning__stock"><strong>{alert.availableStock}</strong><span>可售库存</span></div>
+              <button
+                className="secondary-button compact-button low-stock-warning__snooze"
+                type="button"
+                disabled={!previewMode && snoozeMutation.isPending && snoozeMutation.variables?.storeId === alert.storeId && snoozeMutation.variables.sku === alert.sku}
+                onClick={() => previewMode
+                  ? setPreviewHiddenIds((current) => [...current, alert.id])
+                  : snoozeMutation.mutate({ storeId: alert.storeId, sku: alert.sku })}
+              >
+                {snoozeMutation.isPending && snoozeMutation.variables?.storeId === alert.storeId && snoozeMutation.variables.sku === alert.sku ? "处理中…" : "7天内不再提醒"}
+              </button>
             </div>
           ))}
         </div>
-        {acknowledgeMutation.error && <p className="low-stock-warning__error" role="alert">关闭提醒失败，请重试。</p>}
-        <button className="primary-button low-stock-warning__close" type="button" onClick={() => acknowledgeMutation.mutate()} disabled={acknowledgeMutation.isPending}>
+        {snoozeMutation.error && !previewMode && <p className="low-stock-warning__error" role="alert">暂时无法忽略此 SKU，请重试。</p>}
+        {acknowledgeMutation.error && !previewMode && <p className="low-stock-warning__error" role="alert">关闭提醒失败，请重试。</p>}
+        <button className="primary-button low-stock-warning__close" type="button" onClick={() => previewMode ? onPreviewClose?.() : acknowledgeMutation.mutate()} disabled={!previewMode && acknowledgeMutation.isPending}>
           <X size={16} aria-hidden="true" />
-          {acknowledgeMutation.isPending ? "关闭中…" : "关闭提醒"}
+          {!previewMode && acknowledgeMutation.isPending ? "关闭中…" : "关闭提醒"}
         </button>
       </section>
     </div>

@@ -14,8 +14,11 @@ const loginSchema = z.object({
 
 /** Registers authentication against the administrator created during local setup. */
 export function registerAuthRoutes(app: FastifyInstance, config: AppConfig, administrators: AdminRepository): void {
-  app.get("/api/auth/session", async (request) => {
+  app.get("/api/auth/session", async (request, reply) => {
     const username = readSession(request);
+    if (username) {
+      setSessionCookie(reply, username, config.COOKIE_SECURE);
+    }
     return username
       ? { authenticated: true, username, setupRequired: false }
       : { authenticated: false, setupRequired: !administrators.isInitialized() };

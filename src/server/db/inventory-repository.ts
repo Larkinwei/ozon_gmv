@@ -107,6 +107,10 @@ export class InventoryRepository {
   }
 
   public evaluate(storeId: string, candidate: InventoryCandidate, checkedAt: number, threshold: number): InventoryEvaluation {
+    const snooze = this.database.prepare(
+      `SELECT suppressed_until_ms FROM inventory_sku_snoozes WHERE store_id = ? AND sku = ?`,
+    ).get(storeId, candidate.sku) as { suppressed_until_ms: number } | undefined;
+    const isSnoozed = Boolean(snooze && snooze.suppressed_until_ms > checkedAt);
     const totals = this.database.prepare(
       `SELECT COALESCE(SUM(available_stock), 0) AS available_stock,
               COALESCE(SUM(reserved_stock), 0) AS reserved_stock
@@ -114,13 +118,18 @@ export class InventoryRepository {
        WHERE store_id = ? AND sku = ? AND offer_id = ? AND fulfillment_mode = ?`,
     ).get(storeId, candidate.sku, candidate.offerId, candidate.fulfillment) as { available_stock: number; reserved_stock: number };
     const existing = this.database.prepare(
-      `SELECT id, status FROM inventory_alerts
+      `SELECT id, status, last_checked_at_ms FROM inventory_alerts
        WHERE store_id = ? AND sku = ? AND offer_id = ? AND fulfillment_mode = ?`,
-    ).get(storeId, candidate.sku, candidate.offerId, candidate.fulfillment) as { id: string; status: string } | undefined;
+    ).get(storeId, candidate.sku, candidate.offerId, candidate.fulfillment) as { id: string; status: string; last_checked_at_ms: number } | undefined;
 
     if (totals.available_stock < threshold) {
       const id = existing?.id ?? randomUUID();
-      const newlyOpened = !existing || existing.status === "normal";
+      const snoozeExpiredSinceLastCheck = Boolean(
+        !isSnoozed && snooze && existing
+        && existing.last_checked_at_ms < snooze.suppressed_until_ms
+        && checkedAt >= snooze.suppressed_until_ms,
+      );
+      const newlyOpened = !isSnoozed && (!existing || existing.status === "normal" || snoozeExpiredSinceLastCheck);
       this.database.prepare(
         `INSERT INTO inventory_alerts (
            id, store_id, sku, offer_id, fulfillment_mode, product_name, image_url,
@@ -130,13 +139,13 @@ export class InventoryRepository {
            product_name = excluded.product_name, image_url = excluded.image_url,
            available_stock = excluded.available_stock, reserved_stock = excluded.reserved_stock,
            threshold = excluded.threshold, last_checked_at_ms = excluded.last_checked_at_ms,
-           status = CASE WHEN inventory_alerts.status = 'normal' THEN 'open' ELSE inventory_alerts.status END,
+           status = CASE WHEN ? THEN 'open' WHEN inventory_alerts.status = 'normal' THEN 'open' ELSE inventory_alerts.status END,
            first_low_at_ms = CASE WHEN inventory_alerts.status = 'normal' THEN excluded.first_low_at_ms ELSE inventory_alerts.first_low_at_ms END,
            acknowledged_at_ms = CASE WHEN inventory_alerts.status = 'normal' THEN NULL ELSE inventory_alerts.acknowledged_at_ms END,
            recovered_at_ms = NULL`,
       ).run(
         id, storeId, candidate.sku, candidate.offerId, candidate.fulfillment, candidate.productName, candidate.imageUrl,
-        totals.available_stock, totals.reserved_stock, threshold, checkedAt, checkedAt,
+        totals.available_stock, totals.reserved_stock, threshold, checkedAt, checkedAt, Number(isSnoozed),
       );
       const row = this.readAlert(storeId, candidate);
       return { alert: row ? toAlert(row) : null, newlyOpened };
@@ -152,16 +161,30 @@ export class InventoryRepository {
     return { alert: null, newlyOpened: false };
   }
 
-  public listOpenAlerts(): InventoryLowStockAlert[] {
+  public listOpenAlerts(now = Date.now()): InventoryLowStockAlert[] {
     const rows = this.database.prepare(
       `SELECT a.id, a.store_id, s.name AS store_name, s.color AS store_color,
               a.sku, a.offer_id, a.fulfillment_mode, a.product_name, a.image_url,
               a.available_stock, a.reserved_stock, a.threshold, a.first_low_at_ms, a.last_checked_at_ms
        FROM inventory_alerts a JOIN stores s ON s.id = a.store_id
        WHERE a.status = 'open'
+         AND NOT EXISTS (
+           SELECT 1 FROM inventory_sku_snoozes snooze
+           WHERE snooze.store_id = a.store_id AND snooze.sku = a.sku AND snooze.suppressed_until_ms > ?
+         )
        ORDER BY a.available_stock ASC, a.last_checked_at_ms DESC`,
-    ).all() as AlertRow[];
+    ).all(now) as AlertRow[];
     return rows.map(toAlert);
+  }
+
+  public snoozeSku(storeId: string, sku: string, now = Date.now()): number {
+    const suppressedUntil = now + 7 * 24 * 60 * 60 * 1000;
+    this.database.prepare(
+      `INSERT INTO inventory_sku_snoozes (store_id, sku, suppressed_until_ms)
+       VALUES (?, ?, ?)
+       ON CONFLICT (store_id, sku) DO UPDATE SET suppressed_until_ms = excluded.suppressed_until_ms`,
+    ).run(storeId, sku, suppressedUntil);
+    return suppressedUntil;
   }
 
   public acknowledge(ids: string[]): void {

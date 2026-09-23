@@ -1,4 +1,4 @@
-import { BellRing, Check, Clipboard, CloudUpload, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Sparkles, Unplug, Volume2 } from "lucide-react";
+import { AlertTriangle, BellRing, Check, Clipboard, CloudUpload, Download, Globe2, MonitorUp, Network, RefreshCw, ShieldAlert, Sparkles, Unplug, Volume2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -18,13 +18,35 @@ import {
   testImageStorageSettings,
   testAiRelaySettings,
   testOrderNotification,
+  fetchStores,
+  updateStore,
   updateNetworkSettings,
   updateImageStorageSettings,
   updateAiRelaySettings,
   updateOrderNotificationSettings,
 } from "../api";
 import { AppNav } from "../components/AppNav";
+import { LowStockWarning } from "../components/LowStockWarning";
 import { soundPlayer, useSoundEnabled } from "../sound-player";
+
+const inventoryWarningPreview = [
+  {
+    id: "00000000-0000-4000-8000-000000000030",
+    storeId: "00000000-0000-4000-8000-000000000031",
+    storeName: "示例跨境店铺",
+    storeColor: "#F59E0B",
+    sku: "987654321",
+    offerId: "DEMO-LOW-STOCK",
+    fulfillment: "FBS" as const,
+    productName: "库存提醒效果预览商品",
+    imageUrl: null,
+    availableStock: 12,
+    reservedStock: 3,
+    threshold: 30,
+    firstLowAt: new Date().toISOString(),
+    lastCheckedAt: new Date().toISOString(),
+  },
+];
 
 /** Manages Ozon network routing and LAN read-only wallboard access. */
 export default function SettingsPage(): React.JSX.Element {
@@ -37,6 +59,7 @@ export default function SettingsPage(): React.JSX.Element {
     queryFn: fetchOrderNotificationSettings,
     refetchInterval: 15_000,
   });
+  const storesQuery = useQuery({ queryKey: ["stores"], queryFn: fetchStores });
   const updateQuery = useQuery({
     queryKey: ["software-update"],
     queryFn: fetchUpdateStatus,
@@ -52,6 +75,7 @@ export default function SettingsPage(): React.JSX.Element {
   const [accessKeySecret, setAccessKeySecret] = useState("");
   const [imageStorageTestResult, setImageStorageTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [showInventoryWarningPreview, setShowInventoryWarningPreview] = useState(false);
   const [installingVersion, setInstallingVersion] = useState<string | null>(null);
   const soundEnabled = useSoundEnabled();
   useEffect(() => {
@@ -111,6 +135,10 @@ export default function SettingsPage(): React.JSX.Element {
     },
   });
   const pairingMutation = useMutation({ mutationFn: createWallboardPairing });
+  const inventoryStoreMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => updateStore(id, { inventoryMonitorEnabled: enabled }),
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["stores"] }),
+  });
   const revokeMutation = useMutation({
     mutationFn: revokeWallboardSessions,
     onSuccess: () => {
@@ -340,6 +368,32 @@ export default function SettingsPage(): React.JSX.Element {
           )}
         </section>
 
+        <section className="settings-card" aria-labelledby="inventory-warning-heading">
+          <div className="settings-card__heading"><div className="settings-icon"><AlertTriangle size={21} /></div><div><p className="eyebrow">LOW STOCK ALERTS</p><h3 id="inventory-warning-heading">库存不足提醒</h3><p>选择需要监控的 Ozon 店铺。有订单记录的 SKU 每 10 分钟检查一次；此处与店铺管理中的开关同步。</p></div></div>
+          <div className="update-message"><strong>当前提醒阈值：可售库存少于 30 件</strong><p>点击测试按钮可预览 GMV 首屏实际使用的警告弹窗，测试不会更改库存或保存告警。</p></div>
+          <div className="notification-settings" aria-label="库存监控店铺设置">
+            {storesQuery.isLoading && <p className="muted">正在加载店铺…</p>}
+            {storesQuery.isError && <p className="field-error" role="alert">店铺列表加载失败，请刷新页面重试。</p>}
+            {storesQuery.data?.filter((store) => store.platform === "ozon").map((store) => (
+              <label className="notification-toggle" key={store.id}>
+                <span><strong>{store.name}</strong><small>低于 30 件时在 GMV 首屏提醒</small></span>
+                <input
+                  type="checkbox"
+                  checked={store.inventoryMonitorEnabled}
+                  disabled={inventoryStoreMutation.isPending && inventoryStoreMutation.variables?.id === store.id}
+                  onChange={(event) => inventoryStoreMutation.mutate({ id: store.id, enabled: event.target.checked })}
+                  aria-label={`${store.name}库存监控`}
+                />
+              </label>
+            ))}
+            {storesQuery.data?.every((store) => store.platform !== "ozon") && <p className="muted">暂无可配置的 Ozon 店铺。</p>}
+            {inventoryStoreMutation.isError && <p className="field-error" role="alert">店铺监控设置保存失败，请重试。</p>}
+          </div>
+          <div className="settings-actions">
+            <button className="secondary-button" type="button" onClick={() => setShowInventoryWarningPreview(true)}><AlertTriangle size={17} />测试库存提醒</button>
+          </div>
+        </section>
+
         <section className="settings-card" aria-labelledby="web-sound-heading">
           <div className="settings-card__heading"><div className="settings-icon"><Volume2 size={21} /></div><div><p className="eyebrow">WEB SOUND</p><h3 id="web-sound-heading">大屏提示音</h3><p>大屏页面打开时，新订单到达会在浏览器内播放提示音；关闭网页后的系统通知不受影响。</p></div></div>
           <div className="notification-settings">
@@ -371,6 +425,7 @@ export default function SettingsPage(): React.JSX.Element {
           )}
         </section>
       </main>
+      {showInventoryWarningPreview && <LowStockWarning previewAlerts={inventoryWarningPreview} onPreviewClose={() => setShowInventoryWarningPreview(false)} />}
     </div>
   );
 }

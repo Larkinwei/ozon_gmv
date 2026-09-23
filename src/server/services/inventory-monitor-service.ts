@@ -6,7 +6,7 @@ import type { ProxySettingsService } from "./proxy-settings-service";
 import { OzonClient, type OzonProductStock } from "../ozon/client";
 import type { StoresRepository, StoreRecord } from "../db/stores-repository";
 
-export const LOW_STOCK_THRESHOLD = 50;
+export const LOW_STOCK_THRESHOLD = 30;
 
 function matches(candidate: InventoryCandidate, item: OzonProductStock): boolean {
   return Boolean(
@@ -50,6 +50,10 @@ export class InventoryMonitorService {
 
   public acknowledge(ids: string[]): void {
     this.inventory.acknowledge(ids);
+  }
+
+  public snoozeSku(storeId: string, sku: string): void {
+    this.inventory.snoozeSku(storeId, sku);
   }
 
   private async syncStore(store: StoreRecord): Promise<void> {

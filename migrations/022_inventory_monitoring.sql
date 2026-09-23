@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS inventory_alerts (
   image_url TEXT,
   available_stock INTEGER NOT NULL,
   reserved_stock INTEGER NOT NULL DEFAULT 0,
-  threshold INTEGER NOT NULL DEFAULT 50,
+  threshold INTEGER NOT NULL DEFAULT 30,
   status TEXT NOT NULL CHECK (status IN ('normal', 'open', 'acknowledged')),
   first_low_at_ms INTEGER,
   last_checked_at_ms INTEGER NOT NULL,
