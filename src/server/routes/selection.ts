@@ -1,14 +1,14 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { myDataFulfillmentModes, myDataSorts, publishSourceTypes, resellModes, resellStatuses, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
+import { myDataFulfillmentModes, myDataSorts, publishDraftStages, publishSourceTypes, resellModes, resellStatuses, selectionCandidateStatuses, selectionKeywordSorts, selectionMarketProductSorts } from "../../shared/contracts";
 import { requireSession } from "../security/session";
 import type { MyDataImportFile, MyDataModule } from "../selection/my-data-module";
 import type { SelectionImportFile, SelectionModule } from "../selection/selection-module";
 import { ResellModule, ResellValidationError } from "../selection/resell-module";
 import { ResellImageService } from "../selection/resell-image-service";
 import { PublishDraftsModule } from "../selection/publish-drafts";
-import type { ResellPreflightInput, ResellSourceView } from "../../shared/contracts";
+import type { PublishVariantDraft, ResellPreflightInput, ResellSourceView } from "../../shared/contracts";
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
 const keywordQuerySchema = z.object({
@@ -118,6 +118,8 @@ const resellInputSchema = z.object({
   packageDimensions: packageDimensionsSchema.optional(),
   barcode: z.string().trim().max(100).optional(),
   images: z.array(z.object({ assetId: z.string().uuid().optional(), sourceUrl: z.string().url().optional(), position: z.number().int().min(0) })).max(15).default([]),
+  publishDraftId: z.string().uuid().optional(),
+  publishVariantId: z.string().trim().min(1).max(120).optional(),
 });
 const resellTaskListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -146,8 +148,17 @@ const publishDraftSchema = z.object({
   title: z.string().trim().max(500).nullable().optional(),
   sourceSnapshot: resellInputSchema.shape.sourceSnapshot.unwrap(),
   fieldOverrides: z.record(z.string(), z.unknown()).optional(),
+  workflowStage: z.enum(publishDraftStages).optional(),
+  variants: z.array(z.object({
+    id: z.string().trim().min(1).max(120), sourceSkuId: z.string().max(120).default(""), label: z.string().max(500).default(""),
+    imageUrl: z.string().max(2000).default(""), richContent: z.string().max(20_000).default(""), videoUrl: z.string().max(2000).default(""),
+    offerId: z.string().max(80).default(""), purchasePrice: z.string().max(50).default(""), price: z.string().max(50).default(""), oldPrice: z.string().max(50).default(""),
+    currency: z.string().length(3).default("RUB"), stock: z.number().int().min(0).max(1_000_000).nullable().default(null), packageDimensions: packageDimensionsSchema,
+    attributes: z.record(z.string(), z.unknown()).default({}),
+  })).max(100).optional(),
 });
 const publishDraftPatchSchema = publishDraftSchema.partial();
+const publishDraftListSchema = z.object({ stage: z.enum(publishDraftStages).optional() });
 const publishSourceEnrichSchema = z.object({
   storeId: z.string().uuid(),
   sourceType: z.enum(publishSourceTypes),
@@ -423,7 +434,16 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
   });
   app.post("/api/selection/publish/sources/import", { preHandler: requireSession }, async (request, reply) => {
     const body = publishDraftSchema.parse(request.body);
-    return reply.code(201).send(publishDrafts.create(body as { sourceType: typeof body.sourceType; sourceSku: string; title?: string | null; sourceSnapshot: ResellSourceView; fieldOverrides?: Record<string, unknown> }));
+    return reply.code(201).send(publishDrafts.create(body as Parameters<PublishDraftsModule["create"]>[0]));
+  });
+  app.get("/api/selection/publish/sources", { preHandler: requireSession }, async (request) => {
+    const { stage } = publishDraftListSchema.parse(request.query);
+    return publishDrafts.list(stage);
+  });
+  app.delete("/api/selection/publish/drafts/:id", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    if (!publishDrafts.delete(id)) return reply.code(404).send({ error: "PUBLISH_DRAFT_NOT_FOUND", message: "商品草稿不存在" });
+    return reply.code(204).send();
   });
   app.post("/api/selection/publish/sources/enrich", { preHandler: requireSession }, async (request, reply) => {
     try {
@@ -450,6 +470,83 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
     const { id } = idParamsSchema.parse(request.params);
     const draft = publishDrafts.update(id, publishDraftPatchSchema.parse(request.body) as Parameters<PublishDraftsModule["update"]>[1]);
     return draft ?? reply.code(404).send({ error: "PUBLISH_DRAFT_NOT_FOUND", message: "商品草稿不存在" });
+  });
+  app.post("/api/selection/publish/drafts/batch-submit", { preHandler: requireSession }, async (request, reply) => {
+    const body = z.object({ draftIds: z.array(z.string().uuid()).min(1).max(100) }).parse(request.body);
+    const submitted: Array<{ draftId: string; title: string | null; tasks: Array<{ variantId: string; taskId: string; status: string }> }> = [];
+    const skipped: Array<{ draftId: string; title: string | null; reason: string }> = [];
+    for (const draftId of [...new Set(body.draftIds)]) {
+      const draft = publishDrafts.get(draftId);
+      if (!draft) { skipped.push({ draftId, title: null, reason: "商品草稿不存在" }); continue; }
+      if (draft.workflowStage !== "ready") { skipped.push({ draftId, title: draft.title, reason: "商品组尚未完成预检" }); continue; }
+      if (draft.sourceType !== "1688_collector" || draft.variants.length === 0) { skipped.push({ draftId, title: draft.title, reason: "当前仅支持包含变体的 1688 商品组" }); continue; }
+      const overrides = draft.fieldOverrides;
+      const source = draft.sourceSnapshot;
+      const storeId = String(overrides.storeId ?? "");
+      const fulfillmentMode = String(overrides.fulfillmentMode ?? "FBS");
+      const warehouseId = String(overrides.warehouseId ?? "");
+      const vat = String(overrides.vat ?? "0");
+      const groupModel = `${draft.title || source.productName} ${draft.sourceSku}`.trim().slice(0, 100);
+      if (!storeId) { skipped.push({ draftId, title: draft.title, reason: "缺少目标店铺配置" }); continue; }
+      const inputs: Array<{ variant: PublishVariantDraft; input: ResellPreflightInput }> = [];
+      const preflightIssues: string[] = [];
+      for (const variant of draft.variants) {
+        const imageUrls = [variant.imageUrl, ...source.images.map((image) => image.url)].filter((url, index, all) => Boolean(url) && all.indexOf(url) === index).slice(0, 15);
+        if (imageUrls.some((url) => !/^https?:\/\//i.test(url))) {
+          preflightIssues.push(`${variant.label || variant.sourceSkuId || variant.id}：图片地址无效`);
+          continue;
+        }
+        if (!variant.offerId.trim() || !variant.price.trim() || imageUrls.length === 0) {
+          preflightIssues.push(`${variant.label || variant.sourceSkuId || variant.id}：缺少 Offer ID、Ozon 售价或图片`);
+          continue;
+        }
+        if (variant.stock === null) {
+          preflightIssues.push(`${variant.label || variant.sourceSkuId || variant.id}：缺少库存数据`);
+          continue;
+        }
+        const input = parseResellInput({
+          sourceSku: variant.sourceSkuId || draft.sourceSku,
+          sourceType: draft.sourceType,
+          sourceSnapshot: { ...source, sku: variant.sourceSkuId || draft.sourceSku, productName: draft.title || source.productName, packageDimensions: variant.packageDimensions },
+          storeId, mode: "edit", offerId: variant.offerId, price: variant.price, ...(variant.oldPrice ? { oldPrice: variant.oldPrice } : {}), currency: variant.currency,
+          vat, stock: variant.stock, fulfillmentMode, warehouseId, title: draft.title || source.productName,
+          description: source.description ?? "", packageDimensions: variant.packageDimensions,
+          // Ozon merges same-card variants by shared attribute 9048; a stable
+          // source SKU suffix keeps separate supplier products with same title apart.
+          attributes: { ...(source.attributes ?? {}), ...variant.attributes, 9048: groupModel },
+          images: imageUrls.map((sourceUrl, position) => ({ sourceUrl, position })),
+          idempotencyKey: `publish:${draft.id}:${variant.id}`, publishDraftId: draft.id, publishVariantId: variant.id,
+        });
+        try {
+          let result = await resell.preflight(input);
+          if (!input.warehouseId && result.warehouses[0]?.id) {
+            input.warehouseId = result.warehouses[0].id;
+            result = await resell.preflight(input);
+          }
+          if (!result.valid) preflightIssues.push(`${variant.label || variant.sourceSkuId || variant.id}：${result.errors.join("；")}`);
+          inputs.push({ variant, input });
+        } catch (error) {
+          preflightIssues.push(`${variant.label || variant.sourceSkuId || variant.id}：${error instanceof Error ? error.message : "预检失败"}`);
+        }
+      }
+      if (preflightIssues.length > 0 || inputs.length !== draft.variants.length) {
+        skipped.push({ draftId, title: draft.title, reason: preflightIssues.join(" | ") || "有变体未通过预检" });
+        continue;
+      }
+      const tasks: Array<{ variantId: string; taskId: string; status: string }> = [];
+      try {
+        for (const { variant, input } of inputs) {
+          const task = await resell.createTask(input);
+          tasks.push({ variantId: variant.id, taskId: task.id, status: task.status });
+        }
+        publishDrafts.update(draft.id, { workflowStage: "submitted" });
+        submitted.push({ draftId, title: draft.title, tasks });
+      } catch (error) {
+        skipped.push({ draftId, title: draft.title, reason: `变体任务提交中断，已提交 ${tasks.length}/${inputs.length} 行：${error instanceof Error ? error.message : "未知错误"}` });
+        if (tasks.length > 0) publishDrafts.update(draft.id, { workflowStage: "submitted" });
+      }
+    }
+    return reply.code(202).send({ submitted, skipped });
   });
   app.post("/api/selection/publish/preflight", { preHandler: requireSession }, async (request) => resell.preflight(parseResellInput(request.body)));
   app.post("/api/selection/publish/tasks", { preHandler: requireSession }, async (request, reply) => {

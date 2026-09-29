@@ -46,7 +46,7 @@ function titleForTask(task: ResellTaskListItem): string {
 }
 
 function sourceTypeLabel(sourceType: PublishSourceType): string {
-  return { follow_sell: "MY 跟卖", normal_publish: "普通发布", json_import: "JSON 导入", seller_bridge: "Seller 补全", public_page: "公开页" }[sourceType];
+  return { follow_sell: "MY 跟卖", normal_publish: "普通发布", json_import: "JSON 导入", seller_bridge: "Seller 补全", public_page: "公开页", "1688_collector": "1688 采集" }[sourceType];
 }
 
 /** Displays local follow-sale history and keeps task detail in one focused drawer. */

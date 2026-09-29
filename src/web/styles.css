@@ -6329,3 +6329,17 @@ td {
   .pricing-comparison > div { grid-template-columns: 1fr 1fr; }
   .pricing-comparison small { grid-column: 1 / -1; text-align: left; }
 }
+.publish-variant-editor { margin: 0 0 22px; border: 1px solid var(--line, #e3e8ef); border-radius: 14px; background: #fff; padding: 20px; }
+.publish-variant-toolbar { display: flex; flex-wrap: wrap; gap: 9px; margin: 14px 0; }
+.publish-variant-list { display: grid; gap: 12px; }
+.publish-variant-card { border: 1px solid var(--line, #e3e8ef); border-radius: 12px; padding: 16px; background: #fbfcfe; }
+.publish-variant-card > header { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+.publish-variant-card > header label { display: flex; align-items: center; gap: 7px; font-weight: 700; }
+.publish-variant-card > header span { flex: 1; color: var(--muted, #718096); font-size: 12px; }
+.publish-variant-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.publish-variant-grid .field { min-width: 0; }
+.publish-variant-empty { padding: 16px; border-radius: 9px; color: var(--muted, #718096); background: #f7f9fc; }
+.publish-batch-result { margin: 14px 0; border: 1px solid var(--line, #e3e8ef); border-radius: 12px; padding: 14px 18px; background: #fff; }
+.publish-batch-result p { margin: 7px 0 0; }
+@media (max-width: 800px) { .publish-variant-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .publish-variant-grid { grid-template-columns: 1fr; } .publish-variant-card > header { flex-wrap: wrap; } .publish-variant-card > header span { flex-basis: 100%; order: 2; } }

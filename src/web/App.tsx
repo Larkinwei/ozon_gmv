@@ -10,6 +10,8 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const SelectionPage = lazy(() => import("./pages/SelectionPage"));
 const OperationsCenterLayout = lazy(() => import("./components/OperationsCenterLayout"));
 const PublishTasksPage = lazy(() => import("./pages/PublishTasksPage"));
+const PublishCollectionPage = lazy(() => import("./pages/PublishCollectionPage"));
+const CollectorExtensionPage = lazy(() => import("./pages/CollectorExtensionPage"));
 const FinanceAnalysisPage = lazy(() => import("./pages/FinanceAnalysisPage"));
 const AiPage = lazy(() => import("./pages/AiPage"));
 const OperationsPricingPage = lazy(() => import("./pages/OperationsPricingPage"));
@@ -122,7 +124,13 @@ export function App(): React.JSX.Element {
         <Route path="/operations" element={<OperationsCenterLayout />}>
           <Route index element={<Navigate to="selection" replace />} />
           <Route path="selection" element={<SelectionPage />} />
-          <Route path="publish" element={<ResellPage />} />
+          <Route path="publish" element={<Navigate to="/operations/publish/collection" replace />} />
+          <Route path="publish/collection" element={<PublishCollectionPage />} />
+          <Route path="publish/processing" element={<PublishCollectionPage />} />
+          <Route path="publish/ready" element={<PublishCollectionPage />} />
+          <Route path="publish/extension" element={<CollectorExtensionPage />} />
+          <Route path="publish/workbench" element={<ResellPage />} />
+          <Route path="publish/drafts/:draftId" element={<ResellPage />} />
           <Route path="publish/tasks" element={<PublishTasksPage />} />
           <Route path="publish/resell/:sku" element={<ResellPage />} />
           <Route path="finance" element={<FinanceAnalysisPage />} />

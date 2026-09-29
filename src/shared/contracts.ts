@@ -1032,8 +1032,35 @@ export interface MyDataOverview {
 export const resellModes = ["quick", "edit"] as const;
 export type ResellMode = (typeof resellModes)[number];
 
-export const publishSourceTypes = ["follow_sell", "normal_publish", "json_import", "seller_bridge", "public_page"] as const;
+export const publishSourceTypes = ["follow_sell", "normal_publish", "json_import", "seller_bridge", "public_page", "1688_collector"] as const;
 export type PublishSourceType = (typeof publishSourceTypes)[number];
+
+export const publishDraftStages = ["collected", "processing", "ready", "submitted"] as const;
+export type PublishDraftStage = (typeof publishDraftStages)[number];
+
+/** One supplier SKU inside a publishable Ozon product group. */
+export interface PublishVariantDraft {
+  id: string;
+  sourceSkuId: string;
+  label: string;
+  imageUrl: string;
+  richContent: string;
+  videoUrl: string;
+  offerId: string;
+  purchasePrice: string;
+  price: string;
+  oldPrice: string;
+  currency: string;
+  stock: number | null;
+  packageDimensions: ResellPackageDimensions;
+  attributes: Record<string, unknown>;
+  task?: {
+    id: string;
+    status: ResellStatus;
+    productId: string | null;
+    lastError: string | null;
+  } | null;
+}
 
 export const resellStatuses = [
   "draft",
@@ -1185,6 +1212,8 @@ export interface ResellPreflightView {
 
 export interface ResellTaskView {
   id: string;
+  publishDraftId?: string | null;
+  publishVariantId?: string | null;
   sourceType: PublishSourceType;
   sourceSku: string;
   storeId: string;
@@ -1229,10 +1258,12 @@ export interface ResellTaskDetailView extends ResellTaskView {
 export interface PublishDraftView {
   id: string;
   sourceType: PublishSourceType;
+  workflowStage: PublishDraftStage;
   sourceSku: string;
   title: string | null;
   sourceSnapshot: ResellSourceView;
   fieldOverrides: Record<string, unknown>;
+  variants: PublishVariantDraft[];
   createdAt: string;
   updatedAt: string;
 }

@@ -15,6 +15,8 @@ import type {
   ResellPreflightView,
   ResellSourceView,
   PublishDraftView,
+  PublishDraftStage,
+  PublishVariantDraft,
   ResellImageUploadView,
   ResellTaskView,
   ResellTaskDetailView,
@@ -834,13 +836,20 @@ export async function previewPublishPackage(files: File[]): Promise<{
 }
 
 export async function createPublishDraft(input: {
-  sourceType: string;
+  sourceType: PublishSourceType;
   sourceSku: string;
   title?: string | null;
   sourceSnapshot: ResellSourceView;
   fieldOverrides?: Record<string, unknown>;
+  variants?: PublishVariantDraft[];
+  workflowStage?: PublishDraftStage;
 }): Promise<PublishDraftView> {
   return apiFetch("/api/selection/publish/sources/import", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function fetchPublishDrafts(stage?: PublishDraftStage): Promise<PublishDraftView[]> {
+  const query = stage ? `?stage=${encodeURIComponent(stage)}` : "";
+  return apiFetch(`/api/selection/publish/sources${query}`);
 }
 
 export async function fetchPublishDraft(id: string): Promise<PublishDraftView> {
@@ -858,6 +867,20 @@ export async function enrichPublishSource(input: {
 
 export async function updatePublishDraft(id: string, input: Partial<Parameters<typeof createPublishDraft>[0]>): Promise<PublishDraftView> {
   return apiFetch(`/api/selection/publish/drafts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export async function deletePublishDraft(id: string): Promise<void> {
+  await apiFetch(`/api/selection/publish/drafts/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export interface PublishBatchSubmitResult {
+  submitted: Array<{ draftId: string; title: string | null; tasks: Array<{ variantId: string; taskId: string; status: string }> }>;
+  skipped: Array<{ draftId: string; title: string | null; reason: string }>;
+}
+
+/** Submits selected, fully preflighted product groups for human-confirmed listing. */
+export async function submitPublishDraftsBatch(draftIds: string[]): Promise<PublishBatchSubmitResult> {
+  return apiFetch("/api/selection/publish/drafts/batch-submit", { method: "POST", body: JSON.stringify({ draftIds }) });
 }
 
 export async function preflightPublish(input: ResellPreflightInput): Promise<ResellPreflightView> {

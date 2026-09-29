@@ -3,11 +3,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 
-import type { FulfillmentMode, PublishSourceType, ResellImageView, ResellMode, ResellPackageDimensions, ResellPreflightInput, ResellPreflightView, ResellSourceView, ResellStatus } from "../../shared/contracts";
-import { ApiRequestError, createPublishTask, createPublishDraft, enrichPublishSource, fetchResellSource, fetchResellTask, fetchStores, preflightPublish, previewPublishPackage, retryResellTask, setResellTaskStock, updatePublishDraft, uploadResellImage } from "../api";
+import type { FulfillmentMode, PublishSourceType, PublishVariantDraft, ResellImageView, ResellMode, ResellPackageDimensions, ResellPreflightInput, ResellPreflightView, ResellSourceView, ResellStatus } from "../../shared/contracts";
+import { ApiRequestError, createPublishTask, createPublishDraft, enrichPublishSource, fetchPublishDraft, fetchResellSource, fetchResellTask, fetchStores, preflightPublish, previewPublishPackage, retryResellTask, setResellTaskStock, updatePublishDraft, uploadResellImage } from "../api";
 import { hasPublishAttributeValue } from "../../shared/publish-attributes";
 import { formatMoney } from "../format";
 import { mergeSellerSource } from "../../shared/publish-source";
+import "./PublishCollectionPage.css";
 
 const statusLabels: Record<ResellStatus, string> = {
   draft: "草稿",
@@ -282,6 +283,7 @@ function sourceLabel(sourceType: PublishSourceType): string {
     json_import: "JSON 导入",
     seller_bridge: "Seller 补全",
     public_page: "公开商品页",
+    "1688_collector": "1688 采集",
   }[sourceType];
 }
 
@@ -371,10 +373,11 @@ function taskStatusTone(status: ResellStatus): string {
 
 /** Provides a guarded single-product publishing workflow for follow-sale and normal listings. */
 export default function ResellPage(): React.JSX.Element {
-  const { sku = "" } = useParams<{ sku: string }>();
+  const { sku = "", draftId: routeDraftId } = useParams<{ sku: string; draftId: string }>();
   const navigate = useNavigate();
   const sourceQuery = useQuery({ queryKey: ["resell-source", sku], queryFn: () => fetchResellSource(sku), enabled: Boolean(sku) });
   const storesQuery = useQuery({ queryKey: ["stores"], queryFn: fetchStores });
+  const draftQuery = useQuery({ queryKey: ["publish-draft", routeDraftId], queryFn: () => fetchPublishDraft(routeDraftId!), enabled: Boolean(routeDraftId) });
   const [sourceType, setSourceType] = useState<PublishSourceType>(sku ? "follow_sell" : "normal_publish");
   const [sourceOverride, setSourceOverride] = useState<ResellSourceView | null>(null);
   const [storeId, setStoreId] = useState(() => readLastPublishStoreId());
@@ -409,6 +412,8 @@ export default function ResellPage(): React.JSX.Element {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [images, setImages] = useState<ResellImageView[]>([]);
+  const [variants, setVariants] = useState<PublishVariantDraft[]>([]);
+  const [selectedVariantIds, setSelectedVariantIds] = useState<string[]>([]);
   const [sellerSyncPhase, setSellerSyncPhase] = useState<SellerSyncPhase>("idle");
   const [sellerSyncMessage, setSellerSyncMessage] = useState("");
   const [manualImageEdits, setManualImageEdits] = useState(false);
@@ -422,6 +427,7 @@ export default function ResellPage(): React.JSX.Element {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const replaceIndexRef = useRef<number | null>(null);
   const packageInputRef = useRef<HTMLInputElement>(null);
+  const loadedDraftRef = useRef<string | null>(null);
 
   const selectedStore = storesQuery.data?.find((store) => store.id === storeId);
   const enabledStores = useMemo(() => (storesQuery.data ?? []).filter((store) => store.enabled), [storesQuery.data]);
@@ -463,6 +469,38 @@ export default function ResellPage(): React.JSX.Element {
       setAttributesText((current) => current.trim() === "{}" ? `${JSON.stringify(source.attributes, null, 2)}\n` : current);
     }
   }, [source, sourceType]);
+
+  useEffect(() => {
+    const draft = draftQuery.data;
+    if (!draft || loadedDraftRef.current === draft.id) return;
+    loadedDraftRef.current = draft.id;
+    const overrides = draft.fieldOverrides;
+    setDraftId(draft.id);
+    setSourceType(draft.sourceType);
+    setSourceOverride(draft.sourceSnapshot);
+    setMode("edit");
+    setTitle(draft.title || draft.sourceSnapshot.productName || "");
+    setBrand(draft.sourceSnapshot.brand || "");
+    setCategory(draft.sourceSnapshot.category || "");
+    setDescription(draft.sourceSnapshot.description || "");
+    setAttributesText(`${JSON.stringify(draft.sourceSnapshot.attributes ?? {}, null, 2)}\n`);
+    setTypeId(draft.sourceSnapshot.typeId ? String(draft.sourceSnapshot.typeId) : "");
+    setDescriptionCategoryId(draft.sourceSnapshot.descriptionCategoryId ? String(draft.sourceSnapshot.descriptionCategoryId) : "");
+    setPackageDimensions(draft.sourceSnapshot.packageDimensions ?? { depth: "", width: "", height: "", dimensionUnit: "mm", weight: "", weightUnit: "g" });
+    setBarcode(draft.sourceSnapshot.barcode || "");
+    setImages(draft.sourceSnapshot.images ?? []);
+    setPrice(String(overrides.price ?? ""));
+    setOldPrice(String(overrides.oldPrice ?? ""));
+    setCurrency(String(overrides.currency ?? "RUB"));
+    setVat(String(overrides.vat ?? "0"));
+    setStock(String(overrides.stock ?? "2"));
+    setFulfillmentMode((overrides.fulfillmentMode as FulfillmentMode) ?? "FBS");
+    setWarehouseId(String(overrides.warehouseId ?? ""));
+    setOfferId(String(overrides.offerId ?? `OZON-${draft.sourceSku}`));
+    setVariants(draft.variants);
+    setVariants(draft.variants);
+    if (draft.workflowStage === "collected") void updatePublishDraft(draft.id, { workflowStage: "processing" });
+  }, [draftQuery.data]);
 
   useEffect(() => {
     if (enabledStores.length === 0) return;
@@ -633,6 +671,7 @@ export default function ResellPage(): React.JSX.Element {
   const createMutation = useMutation({
     mutationFn: () => createPublishTask(inputFromState(formState)),
     onSuccess: (task) => {
+      if (draftId) void updatePublishDraft(draftId, { workflowStage: "submitted" });
       setConfirmOpen(false);
       setTaskId(task.id);
       setLastUsedStoreId(storeId);
@@ -659,18 +698,33 @@ export default function ResellPage(): React.JSX.Element {
         description: description.trim(),
         brand: brand.trim(),
         category: category.trim(),
+        attributes: parsedAttributeValues,
         typeId: parsePositiveId(typeId),
         descriptionCategoryId: parsePositiveId(descriptionCategoryId),
         packageDimensions,
         barcode: barcode.trim(),
         images,
       };
+      let allVariantsReady = sourceType !== "1688_collector";
+      if (sourceType === "1688_collector") {
+        allVariantsReady = variants.length > 0;
+        const baseInput = inputFromState(formState);
+        for (const variant of variants) {
+          const positiveDimensions = [variant.packageDimensions.depth, variant.packageDimensions.width, variant.packageDimensions.height, variant.packageDimensions.weight].every((value) => Number(value) > 0);
+          if (!variant.offerId.trim() || !variant.price.trim() || !variant.imageUrl.trim() || variant.stock === null || !positiveDimensions) { allVariantsReady = false; continue; }
+          const variantInput = { ...baseInput, sourceSku: variant.sourceSkuId || source.sku, sourceSnapshot: { ...snapshot, packageDimensions: variant.packageDimensions }, offerId: variant.offerId, price: variant.price, ...(variant.oldPrice ? { oldPrice: variant.oldPrice } : {}), currency: variant.currency, stock: variant.stock, packageDimensions: variant.packageDimensions, attributes: { ...(baseInput.attributes ?? {}), ...variant.attributes, 9048: title.trim() }, images: [{ sourceUrl: variant.imageUrl, position: 0 }, ...images.filter((image) => image.url !== variant.imageUrl).map((image, position) => image.source === "uploaded" ? { assetId: image.id, position: position + 1 } : { sourceUrl: image.url, position: position + 1 })] };
+          const result = await preflightMutation.mutateAsync(variantInput);
+          if (!result.valid) allVariantsReady = false;
+        }
+      }
       const input = {
         sourceType,
         sourceSku: source.sku || sku,
         title: title.trim() || null,
         sourceSnapshot: snapshot,
-        fieldOverrides: { offerId, price, oldPrice, currency, vat, stock, fulfillmentMode, warehouseId },
+        fieldOverrides: { ...(draftQuery.data?.fieldOverrides ?? {}), storeId, offerId, price, oldPrice, currency, vat, stock, fulfillmentMode, warehouseId },
+        variants,
+        workflowStage: allVariantsReady && (sourceType === "1688_collector" || (preflight && preflight.errors.length === 0)) ? "ready" as const : "processing" as const,
       };
       return draftId ? updatePublishDraft(draftId, input) : createPublishDraft(input);
     },
@@ -1079,8 +1133,29 @@ export default function ResellPage(): React.JSX.Element {
             <div className="resell-source-product"><span className="resell-source-image">{source.images[0] ? <img src={source.images[0].url} alt={`${source.productName || "商品"} 主图`} /> : <PackagePlus size={24} aria-label="无商品主图" />}</span><div><h2 title={source.productName}>{source.productName || "待填写商品标题"}</h2><p>Ozon SKU：<strong>{source.sku || "待填写"}</strong></p>{productUrl && <a href={productUrl} target="_blank" rel="noreferrer">打开原商品 <ExternalLink size={14} /></a>}</div></div>
             <dl className="resell-source-metrics"><div><dt>来源类型</dt><dd>{sourceLabel(sourceType)}</dd></div><div><dt>图片数量</dt><dd>{source.images.length} 张</dd></div><div><dt>来源日期</dt><dd>{source.captureDay || "—"}</dd></div></dl>
             <div className="publish-source-facts"><span>类目：{source.category || "待补充"}</span><span>品牌：{source.brand || "待补充"}</span><span>商品类型：{source.typeId ? "已自动匹配" : "待补充"}</span><span>属性：{preflight ? `${preflight.requiredAttributes.filter((attribute) => hasPublishAttributeValue(readAttributeValue(parsedAttributeValues, attribute.id))).length}/${preflight.requiredAttributes.length} 项已完成` : "等待预检"}</span><span>价格：{sourceDisplayPrice.amount ? formatMoney(sourceDisplayPrice) : "待补充"}</span><span>月销量：{source.monthlyUnits.toLocaleString("zh-CN")}</span></div>
+            {sourceType === "1688_collector" && <details className="publish-collapsible-section publish-supplier-details"><summary><span><span className="eyebrow">SOURCE REFERENCE</span><strong>1688 供货信息</strong><small>{Array.isArray(draftQuery.data?.fieldOverrides.supplierVariants) ? `${(draftQuery.data.fieldOverrides.supplierVariants as unknown[]).length} 个规格记录` : "等待规格数据"}</small></span><span className="publish-summary-action">查看采集内容</span></summary><div className="publish-supplier-details__body"><p>供货价：{String(draftQuery.data?.fieldOverrides.supplierPriceRange || draftQuery.data?.fieldOverrides.supplierPrice || "未采集")} CNY</p><p>店铺：{String(draftQuery.data?.fieldOverrides.supplierName || "未采集")}</p>{Array.isArray(draftQuery.data?.fieldOverrides.supplierAttributes) && <dl>{(draftQuery.data.fieldOverrides.supplierAttributes as Array<{ name?: string; value?: string }>).slice(0, 24).map((attribute, index) => <div key={`${attribute.name}-${index}`}><dt>{attribute.name || "属性"}</dt><dd>{attribute.value || "—"}</dd></div>)}</dl>}{Array.isArray(draftQuery.data?.fieldOverrides.supplierVariants) && <div className="publish-supplier-variants">{(draftQuery.data.fieldOverrides.supplierVariants as Array<{ name?: string; imageUrl?: string; price?: string }>).slice(0, 40).map((variant, index) => <article key={`${variant.name}-${index}`}>{variant.imageUrl && <img src={variant.imageUrl} alt="" />}<span>{variant.name || `规格 ${index + 1}`}</span><strong>{variant.price ? `${variant.price} CNY` : "价格待确认"}</strong></article>)}</div>}</div></details>}
             {(source.missingFields?.length ?? 0) > 0 && <div className="publish-missing-fields"><CircleAlert size={15} />缺失：{source.missingFields?.join("、")}</div>}
         </section>
+        {sourceType === "1688_collector" && <section className="publish-variant-editor" aria-labelledby="publish-variants-heading">
+          <div className="publish-section-heading"><p className="eyebrow">1688 SKU GROUP</p><h3 id="publish-variants-heading">变体设置 <span>{variants.length} 个变体</span></h3><span>供货价仅作成本参考；每个变体需单独填写 Ozon 售价。</span></div>
+          <div className="publish-variant-toolbar"><button className="secondary-button" type="button" onClick={() => setVariants((rows) => [...rows, { id: crypto.randomUUID(), sourceSkuId: "", label: "", imageUrl: "", richContent: "", videoUrl: "", offerId: `${source.sku}-${rows.length + 1}`.slice(0, 80), purchasePrice: "", price: "", oldPrice: "", currency, stock: null, packageDimensions: { depth: "", width: "", height: "", dimensionUnit: "mm", weight: "", weightUnit: "g" }, attributes: {} }])}><PackagePlus size={16} />新增变体</button><button className="secondary-button" type="button" disabled={!selectedVariantIds.length} onClick={() => { setVariants((rows) => rows.filter((row) => !selectedVariantIds.includes(row.id))); setSelectedVariantIds([]); }}>批量删除所选</button><button className="secondary-button" type="button" disabled>模型生成（暂未启用）</button></div>
+          {variants.length === 0 ? <p className="publish-variant-empty">采集未识别到 SKU 规格，可手动新增变体。</p> : <div className="publish-variant-list">{variants.map((variant, index) => <article className="publish-variant-card" key={variant.id}>
+            <header><label><input type="checkbox" checked={selectedVariantIds.includes(variant.id)} onChange={(event) => setSelectedVariantIds((ids) => event.target.checked ? [...ids, variant.id] : ids.filter((id) => id !== variant.id))} />变体 {index + 1}</label><span>1688 SKU {variant.sourceSkuId || "未识别"} · 供货价 {variant.purchasePrice || "未采集"} CNY</span><button className="secondary-button compact-button" type="button" onClick={() => setVariants((rows) => [...rows.slice(0, index + 1), { ...variant, id: crypto.randomUUID(), offerId: `${variant.offerId}-COPY`.slice(0, 80), task: null }, ...rows.slice(index + 1)])}>复制</button><button className="icon-button icon-button--danger" type="button" aria-label={`删除变体 ${index + 1}`} onClick={() => setVariants((rows) => rows.filter((row) => row.id !== variant.id))}><Trash2 size={15} /></button></header>
+            <div className="publish-variant-grid">
+              <label className="field"><span>规格区分词</span><input value={variant.label} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, label: event.target.value } : row))} placeholder="例如：黑色 / 2 件装" /></label>
+              <label className="field"><span>来源 SKU 编号</span><input value={variant.sourceSkuId} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, sourceSkuId: event.target.value } : row))} /></label>
+              <label className="field"><span>1688 规格图片 URL</span><input value={variant.imageUrl} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, imageUrl: event.target.value } : row))} placeholder="未采集时填写图片 URL" /></label>
+              <label className="field"><span>采购价 CNY</span><input inputMode="decimal" value={variant.purchasePrice} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, purchasePrice: event.target.value } : row))} /></label>
+              <label className="field"><span>Offer ID *</span><input value={variant.offerId} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, offerId: event.target.value } : row))} /></label>
+              <label className="field"><span>Ozon 售价 *</span><input inputMode="decimal" value={variant.price} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, price: event.target.value } : row))} placeholder="逐变体填写" /></label>
+              <label className="field"><span>库存 *</span><input type="number" min="0" value={variant.stock ?? ""} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, stock: event.target.value === "" ? null : Number(event.target.value) } : row))} /></label>
+              {(["depth", "width", "height", "weight"] as const).map((key) => <label className="field" key={key}><span>{{ depth: "长度 mm", width: "宽度 mm", height: "高度 mm", weight: "重量 g" }[key]}</span><input inputMode="decimal" value={variant.packageDimensions[key]} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, packageDimensions: { ...row.packageDimensions, [key]: event.target.value } } : row))} /></label>)}
+              <label className="field field--wide"><span>变体属性 JSON <small>按目标类目填写随规格变化的颜色、尺码属性 ID</small></span><textarea key={`${variant.id}-${JSON.stringify(variant.attributes)}`} defaultValue={`${JSON.stringify(variant.attributes, null, 2)}\n`} rows={3} onBlur={(event) => { try { const parsed: unknown = JSON.parse(event.target.value); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(); setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, attributes: parsed as Record<string, unknown> } : row)); } catch { setFormError(`变体 ${index + 1} 属性必须是 JSON 对象`); } }} /></label>
+              <label className="field field--wide"><span>富内容入口 <small>模型生成暂未启用</small></span><textarea value={variant.richContent} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, richContent: event.target.value } : row))} rows={2} placeholder="预留 Ozon 富内容字段" /></label>
+              <label className="field field--wide"><span>视频 URL <small>模型生成暂未启用</small></span><input value={variant.videoUrl} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, videoUrl: event.target.value } : row))} placeholder="可选" /></label>
+            </div>
+          </article>)}</div>}
+        </section>}
         <div className="resell-layout">
           <section className="resell-form-card">
             <div className="resell-mode-switch" role="tablist" aria-label="发布模式"><button className={mode === "quick" ? "is-active" : ""} type="button" role="tab" aria-selected={mode === "quick"} onClick={() => setMode("quick")} disabled={sourceType !== "follow_sell"}>快速创建<span>按 SKU 复用商品卡</span></button><button className={mode === "edit" ? "is-active" : ""} type="button" role="tab" aria-selected={mode === "edit"} onClick={() => setMode("edit")}>编辑后发布<span>补充类目和商品属性</span></button></div>

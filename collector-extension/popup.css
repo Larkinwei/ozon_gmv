@@ -1,0 +1,21 @@
+:root { color-scheme: light; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; }
+* { box-sizing: border-box; }
+body { width: 320px; min-height: 300px; margin: 0; background: #fff; }
+.popup { padding: 17px; }
+header { display: flex; align-items: center; gap: 11px; padding-bottom: 14px; border-bottom: 1px solid #e7ebf1; }
+header img { width: 38px; height: 38px; }
+header div, .current-product div { display: grid; gap: 2px; }
+header strong { font-size: 15px; }
+header span, .current-product p, .note { color: #6b7789; }
+.current-product { display: flex; gap: 10px; margin: 15px 0; padding: 12px; border: 1px solid #e5eaf1; border-radius: 10px; background: #f8faff; }
+.current-product p { margin: 2px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.status-dot { width: 9px; height: 9px; flex: none; margin-top: 5px; border-radius: 50%; background: #98a2b3; }
+.status-dot.is-ready { background: #12a66a; box-shadow: 0 0 0 3px #12a66a22; }
+button { width: 100%; min-height: 37px; margin-top: 8px; border: 0; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 600; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+.primary { color: #fff; background: #2563eb; }
+.secondary { border: 1px solid #dce3ec; color: #263449; background: #fff; }
+.text-button { min-height: 30px; color: #3568bd; background: transparent; }
+.note { margin: 12px 0 0; font-size: 11px; }
+code { color: #44536a; }
+.error { margin: 8px 0 0; color: #b42318; font-size: 12px; }

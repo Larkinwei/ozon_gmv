@@ -1,4 +1,4 @@
-import { BarChart3, Bot, Calculator, ChevronDown, CircleDollarSign, ClipboardList, Menu, PackagePlus } from "lucide-react";
+import { BarChart3, Bot, Calculator, ChevronDown, CircleDollarSign, ClipboardCheck, ClipboardList, Download, Menu, PackageCheck, PackagePlus, Workflow } from "lucide-react";
 import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
@@ -18,7 +18,11 @@ const operationsNavGroups: Array<{ label: string; items: OperationsNavLink[] }> 
   {
     label: "商品发布",
     items: [
-      { label: "商品上架", to: "/operations/publish", icon: PackagePlus },
+      { label: "采集箱", to: "/operations/publish/collection", icon: PackageCheck },
+      { label: "加工箱", to: "/operations/publish/processing", icon: Workflow },
+      { label: "待上架", to: "/operations/publish/ready", icon: ClipboardCheck },
+      { label: "采集插件", to: "/operations/publish/extension", icon: Download },
+      { label: "商品上架", to: "/operations/publish/workbench", icon: PackagePlus },
       { label: "发布任务", to: "/operations/publish/tasks", icon: ClipboardList },
     ],
   },
@@ -42,7 +46,7 @@ export default function OperationsCenterLayout(): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
 
   function isNavLinkActive(to: string): boolean {
-    if (to === "/operations/publish") return location.pathname === to || location.pathname.startsWith(`${to}/resell/`);
+    if (to.startsWith("/operations/publish/")) return location.pathname === to || (to === "/operations/publish/workbench" && (location.pathname.startsWith("/operations/publish/drafts/") || location.pathname.startsWith("/operations/publish/resell/")));
     return location.pathname === to;
   }
 

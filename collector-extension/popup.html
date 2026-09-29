@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ozon GMV 商品采集助手</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <header><img src="icons/icon-48.png" alt=""><div><strong>Ozon GMV</strong><span>商品采集助手</span></div></header>
+      <section class="current-product" aria-live="polite">
+        <span class="status-dot"></span>
+        <div><strong id="status-title">正在检查当前页面…</strong><p id="status-detail">请在 GMV 采集箱粘贴 Ozon 商品链接。</p></div>
+      </section>
+      <button id="capture" class="primary" type="button" disabled>采集当前 1688 商品</button>
+      <button id="open-inbox" class="secondary" type="button">打开 GMV 采集箱</button>
+      <p class="note">批量采集请从 GMV 采集箱点击“一键采集”并粘贴商品链接。当前 1688 页面也保留单商品采集按钮。</p>
+      <p id="error" class="error" role="alert" hidden></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

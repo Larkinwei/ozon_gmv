@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Ozon GMV 商品采集助手",
+  "version": "0.2.1",
+  "description": "在 GMV 采集箱粘贴 Ozon 或 1688 商品链接并批量采集商品信息。",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Ozon GMV：批量采集商品链接",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://www.ozon.ru/*",
+    "https://ozon.ru/*",
+    "https://detail.1688.com/*",
+    "http://localhost:3001/*",
+    "http://127.0.0.1:3001/*",
+    "http://localhost:5173/*",
+    "http://127.0.0.1:5173/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://detail.1688.com/offer/*"],
+      "js": ["content/1688.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.ozon.ru/product/*", "https://ozon.ru/product/*"],
+      "js": ["content/ozon.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost:3001/*", "http://127.0.0.1:3001/*",
+        "http://localhost:5173/*", "http://127.0.0.1:5173/*"
+      ],
+      "js": ["content/gmv-bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

@@ -59,12 +59,16 @@ interface ResellTaskRow {
   source_type: PublishSourceType;
   source_snapshot_json: string | null;
   idempotency_key: string | null;
+  publish_draft_id: string | null;
+  publish_variant_id: string | null;
 }
 
 interface ResellTaskInput extends ResellPreflightInput {
   title?: string | undefined;
   description?: string | undefined;
   attributes?: Record<string, unknown> | undefined;
+  publishDraftId?: string | undefined;
+  publishVariantId?: string | undefined;
 }
 
 interface ResellModuleOptions {
@@ -433,6 +437,8 @@ function taskView(row: ResellTaskRow, store: StoreRecord): ResellTaskView {
     ozonTaskId: row.ozon_task_id,
     productId: row.product_id,
     lastError: row.last_error,
+    publishDraftId: row.publish_draft_id,
+    publishVariantId: row.publish_variant_id,
     createdAt: new Date(row.created_at_ms).toISOString(),
     updatedAt: new Date(row.updated_at_ms).toISOString(),
     completedAt: row.completed_at_ms ? new Date(row.completed_at_ms).toISOString() : null,
@@ -834,13 +840,13 @@ export class ResellModule {
       this.database.prepare(`INSERT INTO resell_tasks
         (id, store_id, source_sku, target_offer_id, mode, price, old_price, currency, vat, stock,
          fulfillment_mode, warehouse_id, title, description, attributes_json, status,
-         source_type, source_snapshot_json, idempotency_key, created_at_ms, updated_at_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?, ?, ?)`)
+         source_type, source_snapshot_json, idempotency_key, publish_draft_id, publish_variant_id, created_at_ms, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, effectiveInput.storeId, effectiveInput.sourceSku, effectiveInput.offerId, effectiveInput.mode, effectiveInput.price, effectiveInput.oldPrice ?? null,
           effectiveInput.currency, effectiveInput.vat, effectiveInput.stock, effectiveInput.fulfillmentMode, effectiveInput.warehouseId,
           effectiveInput.title ?? result.source.productName, effectiveInput.description ?? result.source.description ?? null,
           effectiveInput.attributes || result.source.attributes ? JSON.stringify(effectiveInput.attributes ?? result.source.attributes) : null, effectiveInput.sourceType ?? "follow_sell",
-          JSON.stringify(taskSource), effectiveInput.idempotencyKey ?? null, now, now);
+          JSON.stringify(taskSource), effectiveInput.idempotencyKey ?? null, effectiveInput.publishDraftId ?? null, effectiveInput.publishVariantId ?? null, now, now);
       this.recordEvent(id, "creating", "跟卖任务已提交");
     })();
     this.images.saveTaskImages(id, images);
