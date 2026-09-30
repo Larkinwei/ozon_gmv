@@ -217,6 +217,28 @@ const productInfoSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String).nullish(),
   product_id: z.union([z.string(), z.number()]).transform(String).nullish(),
   offer_id: z.string().default(""),
+  name: z.string().nullish(),
+  product_name: z.string().nullish(),
+  sku: z.union([z.string(), z.number()]).transform(String).nullish(),
+  status: z.string().nullish(),
+  status_name: z.string().nullish(),
+  statuses: z.object({
+    status: z.string().nullish(),
+    status_name: z.string().nullish(),
+    status_description: z.string().nullish(),
+    status_failed: z.string().nullish(),
+    moderate_status: z.string().nullish(),
+    validation_status: z.string().nullish(),
+  }).passthrough().nullish(),
+  is_archived: z.boolean().nullish(),
+  stocks: z.object({ has_stock: z.boolean().nullish() }).passthrough().nullish(),
+  price: z.union([z.string(), z.number()]).transform(String).nullish(),
+  old_price: z.union([z.string(), z.number()]).transform(String).nullish(),
+  min_price: z.union([z.string(), z.number()]).transform(String).nullish(),
+  currency_code: z.string().nullish(),
+  vat: z.string().nullish(),
+  volume_weight: z.union([z.string(), z.number()]).transform(Number).nullish(),
+  created_at: z.string().nullish(),
   images: z.array(z.string()).default([]),
   primary_image: z.array(z.string()).default([]),
   sources: z.array(z.object({ sku: z.union([z.string(), z.number()]) })).default([]),
@@ -224,7 +246,7 @@ const productInfoSchema = z.object({
   // so product-info lookup remains usable for existing-offer detection.
   type_id: z.union([z.string(), z.number()]).transform(Number).refine((value) => Number.isInteger(value) && value > 0).nullish().catch(null),
   description_category_id: z.union([z.string(), z.number()]).transform(Number).refine((value) => Number.isInteger(value) && value > 0).nullish().catch(null),
-});
+}).passthrough();
 
 export const productInfoListResponseSchema = z.object({
   items: z.array(productInfoSchema).default([]),

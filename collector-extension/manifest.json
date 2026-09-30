@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ozon GMV 商品采集助手",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "在 GMV 采集箱粘贴 Ozon 或 1688 商品链接并批量采集商品信息。",
   "icons": {
     "16": "icons/icon-16.png",
@@ -17,7 +17,7 @@
       "32": "icons/icon-32.png"
     }
   },
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [
     "https://www.ozon.ru/*",
     "https://ozon.ru/*",

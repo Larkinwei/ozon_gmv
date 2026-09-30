@@ -806,6 +806,73 @@ export async function fetchResellTasks(filters: {
   return apiFetch(`/api/selection/publish/tasks?${params.toString()}`);
 }
 
+export interface OnlineProductPage {
+  storeId: string;
+  visibility: "ALL" | "VISIBLE" | "INVISIBLE" | "ARCHIVED";
+  items: Array<{ productId: string; offerId: string; productName: string | null; imageUrl: string | null; sku: string | null; status: string | null; archived: boolean | null; price: string | null; oldPrice: string | null; minimumPrice: string | null; currencyCode: string | null; vat: string | null; sourceUrl: string | null; volumeWeight: number | null; createdAt: string | null; statusFailed: string | null; validationStatus: string | null; hasFboStocks: boolean | null; hasFbsStocks: boolean | null }>;
+  count: number;
+  readAt: string;
+}
+
+/** Reads current product identifiers and stock-channel flags from one Ozon store. */
+export async function fetchOnlineProducts(storeId: string, visibility: OnlineProductPage["visibility"] = "ALL", productIds?: string[]): Promise<OnlineProductPage> {
+  const params = new URLSearchParams({ storeId, visibility });
+  if (productIds?.length) params.set("productIds", productIds.join(","));
+  return apiFetch(`/api/selection/publish/online-products?${params.toString()}`);
+}
+
+export interface OnlineProductUpdateResult { updated?: string[]; archived?: string[]; skipped: Array<{ productId: string; reason: string }> }
+
+/** Reads the warehouses available to the selected Ozon account. */
+export async function fetchOnlineProductWarehouses(storeId: string): Promise<Array<{ id: string; name: string }>> {
+  const params = new URLSearchParams({ storeId });
+  const result = await apiFetch<{ items: Array<{ id: string; name: string }> }>(`/api/selection/publish/online-products/warehouses?${params.toString()}`);
+  return result.items;
+}
+
+/** Updates selected Ozon card prices after the user confirms the item list. */
+export async function updateOnlineProductPrices(input: { storeId: string; edits: Array<{ productId: string; price: string; oldPrice?: string; minimumPrice?: string }> }): Promise<OnlineProductUpdateResult> {
+  return apiFetch("/api/selection/publish/online-products/prices", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Updates selected Ozon warehouse stock after the user confirms the target. */
+export async function updateOnlineProductStocks(input: { storeId: string; warehouseId: string; items: Array<{ productId: string; stock: number }> }): Promise<OnlineProductUpdateResult> {
+  return apiFetch("/api/selection/publish/online-products/stocks", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Archives selected online products after a separate confirmation. */
+export async function archiveOnlineProducts(input: { storeId: string; productIds: string[] }): Promise<OnlineProductUpdateResult> {
+  return apiFetch("/api/selection/publish/online-products/archive", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Saves source-product navigation links inside GMV only. */
+export async function updateOnlineProductSourceLinks(input: { storeId: string; edits: Array<{ productId: string; sourceUrl: string }> }): Promise<{ updated: string[] }> {
+  return apiFetch("/api/selection/publish/online-products/source-links", { method: "POST", body: JSON.stringify(input) });
+}
+
+export interface PublishProductModels {
+  textModel: string;
+  imageModel: string;
+}
+
+export interface PublishDistributionResult {
+  submitted: Array<{ sourceTaskId: string; targetStoreId: string; taskId: string; status: string }>;
+  skipped: Array<{ sourceTaskId: string; targetStoreId: string; reason: string }>;
+}
+
+/** Creates separately tracked target-store tasks after the distribution confirmation dialog. */
+export async function submitPublishDistribution(sourceTaskIds: string[], targetStoreIds: string[]): Promise<PublishDistributionResult> {
+  return apiFetch("/api/selection/publish/distribution/submit", { method: "POST", body: JSON.stringify({ sourceTaskIds, targetStoreIds }) });
+}
+
+export async function fetchPublishProductModels(): Promise<PublishProductModels> {
+  return apiFetch("/api/selection/publish/models");
+}
+
+export async function updatePublishProductModels(models: PublishProductModels): Promise<PublishProductModels> {
+  return apiFetch("/api/selection/publish/models", { method: "PUT", body: JSON.stringify(models) });
+}
+
 export async function fetchResellTaskDetail(id: string): Promise<ResellTaskDetailView> {
   return apiFetch(`/api/selection/publish/tasks/${encodeURIComponent(id)}`);
 }

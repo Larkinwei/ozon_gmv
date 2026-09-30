@@ -529,10 +529,21 @@ interface DiscoverySyncBannerProps {
 /** Makes background market synchronization visible from every selection tab. */
 export function DiscoverySyncBanner(props: DiscoverySyncBannerProps): React.JSX.Element | null {
   const { sync } = props;
-  if (!sync || sync.status === "idle" || sync.status === "completed") return null;
+  if (!sync || sync.status === "idle") return null;
   const isCloud = sync.source === "cloud";
   if (sync.status === "running") {
     return <div className="discovery-sync-banner" role="status" aria-live="polite"><RefreshCw className="is-spinning" size={19} /><div><strong>{isCloud ? "正在同步云端市场数据" : "正在采集 Ozon 市场数据"}</strong><span>{sync.currentItem ?? "数据准备中，请稍候…"}</span></div><small>{isCloud ? "完成后页面会自动刷新" : `${sync.completedSteps} / ${sync.totalSteps || "—"}`}</small></div>;
+  }
+  if (sync.status === "completed") {
+    let completionText = "本机市场数据快照已更新。";
+    if (isCloud) {
+      completionText = "云端市场数据已刷新，本机数据已同步。";
+    } else if (sync.cloudPublished) {
+      completionText = "本机数据已更新，完整快照已发布到云端。";
+    }
+    const stepCount = sync.totalSteps > 0 ? `${sync.completedSteps} / ${sync.totalSteps} 步已完成` : "同步已完成";
+    const finishedAt = sync.finishedAt ? new Date(sync.finishedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+    return <div className="discovery-sync-banner discovery-sync-banner--success" role="status" aria-live="polite"><Check size={19} /><div><strong>{isCloud ? "云端市场数据刷新成功" : "Ozon 市场数据同步成功"}</strong><span>{completionText}</span></div><small>{finishedAt ? `${stepCount} · ${finishedAt}` : stepCount}</small></div>;
   }
   return <div className="discovery-sync-banner discovery-sync-banner--error" role="alert"><CircleAlert size={19} /><div><strong>{isCloud ? "云端市场数据同步失败" : "Ozon 市场数据同步未完成"}</strong><span>{sync.error ?? "请检查网络和数据源设置后重试。"}</span></div><button className="secondary-button compact-button" type="button" disabled={props.retrying} onClick={isCloud ? props.onRetry : props.onOpenSources}>{isCloud ? <CloudDownload size={16} /> : <Database size={16} />}{props.retrying ? "正在重试…" : isCloud ? "重新同步" : "查看数据源"}</button></div>;
 }

@@ -21,6 +21,64 @@ function posting(postingNumber: string): Record<string, unknown> {
 }
 
 describe("Ozon Seller API client", () => {
+  it("reads a page of seller products without changing Ozon data", async () => {
+    let requestUrl = "";
+    let requestBody: Record<string, unknown> = {};
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ result: {
+        items: [{ product_id: 123, offer_id: "OFFER-123", archived: false, has_fbo_stocks: true, has_fbs_stocks: false }],
+        last_id: "cursor-1", has_next: true,
+      } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    const page = await client.listProductPage({ visibility: "ALL", limit: 1000 });
+
+    expect(requestUrl).toBe("https://api-seller.ozon.ru/v3/product/list");
+    expect(requestBody).toEqual({ filter: { visibility: "ALL" }, last_id: "", limit: 1000 });
+    expect(page).toEqual({ items: [{ productId: "123", offerId: "OFFER-123", productName: null, imageUrl: null, sku: null, status: null, archived: false, price: null, oldPrice: null, minimumPrice: null, currencyCode: null, vat: null, sourceUrl: null, volumeWeight: null, createdAt: null, statusFailed: null, validationStatus: null, hasFboStocks: true, hasFbsStocks: false }], lastId: "cursor-1", hasNext: true });
+  });
+
+  it("reads current product names by product ID for online-product display", async () => {
+    let requestBody: Record<string, unknown> = {};
+    const fetchImplementation = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ items: [{ product_id: 123, offer_id: "OFFER-123", product_name: "Sample", sku: 456, statuses: { status: "seller-changed", status_name: "审核中" }, is_archived: false }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    const products = await client.getProductInfoByProductIds(["123"]);
+
+    expect(requestBody).toEqual({ product_id: ["123"] });
+    expect(products[0]).toMatchObject({ product_id: "123", product_name: "Sample", statuses: { status: "seller-changed", status_name: "审核中" }, is_archived: false });
+  });
+
+  it("reports archive requests only when Ozon confirms them", async () => {
+    let requestUrl = "";
+    let requestBody: Record<string, unknown> = {};
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ result: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    await expect(client.archiveProducts(["123"])).resolves.toBeUndefined();
+    expect(requestUrl).toBe("https://api-seller.ozon.ru/v1/product/archive");
+    expect(requestBody).toEqual({ product_id: ["123"] });
+
+    const rejectedClient = new OzonClient({
+      clientId: "client",
+      apiKey: "secret",
+      baseUrl: "https://api-seller.ozon.ru",
+      fetchImplementation: (async () => new Response(JSON.stringify({ result: false }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch,
+      maxAttempts: 1,
+    });
+    await expect(rejectedClient.archiveProducts(["123"])).rejects.toThrow("Ozon 未确认商品归档");
+  });
+
   it("queries product cards by seller SKU using the current v3 contract", async () => {
     let requestUrl = "";
     let requestBody: Record<string, unknown> = {};

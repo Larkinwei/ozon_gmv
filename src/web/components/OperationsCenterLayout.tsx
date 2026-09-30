@@ -1,4 +1,4 @@
-import { BarChart3, Bot, Calculator, ChevronDown, CircleDollarSign, ClipboardCheck, ClipboardList, Download, Menu, PackageCheck, PackagePlus, Workflow } from "lucide-react";
+import { BarChart3, Bot, Calculator, ChevronDown, CircleDollarSign, ClipboardCheck, ClipboardList, Download, Menu, PackageCheck, PackagePlus, Workflow, Boxes, Share2 } from "lucide-react";
 import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
@@ -18,9 +18,12 @@ const operationsNavGroups: Array<{ label: string; items: OperationsNavLink[] }> 
   {
     label: "商品发布",
     items: [
+      { label: "在线商品", to: "/operations/publish/online", icon: Boxes },
       { label: "采集箱", to: "/operations/publish/collection", icon: PackageCheck },
       { label: "加工箱", to: "/operations/publish/processing", icon: Workflow },
       { label: "待上架", to: "/operations/publish/ready", icon: ClipboardCheck },
+      { label: "上架记录", to: "/operations/publish/uploaded", icon: ClipboardList },
+      { label: "分发中心", to: "/operations/publish/distribution", icon: Share2 },
       { label: "采集插件", to: "/operations/publish/extension", icon: Download },
       { label: "商品上架", to: "/operations/publish/workbench", icon: PackagePlus },
       { label: "发布任务", to: "/operations/publish/tasks", icon: ClipboardList },

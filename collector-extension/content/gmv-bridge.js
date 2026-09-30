@@ -49,7 +49,7 @@
       sendExtensionMessage({ action: "startBatchCollection", batchId: event.data.batchId, urls: event.data.urls }, (response, error) => {
         if (error || !response?.ok) {
           const message = /context invalidated/i.test(error) ? "插件刚更新，请刷新当前 GMV 页面后重试" : error || response?.error || "未检测到采集插件";
-          window.postMessage({ type: "OZON_GMV_BATCH_COMPLETE", batchId: event.data.batchId, summary: { success: 0, failed: 0 }, error: message }, window.location.origin);
+          window.postMessage({ type: "OZON_GMV_BATCH_COMPLETE", batchId: event.data.batchId, summary: { saved: 0, complete: 0, incomplete: 0, failed: 0 }, error: message }, window.location.origin);
         } else {
           window.postMessage({ type: "OZON_GMV_BATCH_ACCEPTED", batchId: event.data.batchId, accepted: response.accepted }, window.location.origin);
         }
@@ -59,7 +59,7 @@
       sendExtensionMessage({ action: "ackPending", requestId: event.data.requestId });
     }
     if (event.data?.type === "OZON_GMV_SOURCE_COLLECT_RESULT" && event.data.requestId && pendingImports.has(event.data.requestId)) {
-      pendingImports.get(event.data.requestId)?.({ ok: Boolean(event.data.ok), error: event.data.error });
+      pendingImports.get(event.data.requestId)?.({ ok: Boolean(event.data.ok), error: event.data.error, incompleteFields: event.data.incompleteFields || [] });
       pendingImports.delete(event.data.requestId);
     }
   });

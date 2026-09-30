@@ -5,7 +5,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { ProductImage } from "../components/ProductImage";
 import type { FulfillmentMode, PublishSourceType, PublishVariantDraft, ResellImageView, ResellMode, ResellPackageDimensions, ResellPreflightInput, ResellPreflightView, ResellSourceView, ResellStatus } from "../../shared/contracts";
-import { ApiRequestError, createPublishTask, createPublishDraft, enrichPublishSource, fetchPublishDraft, fetchResellSource, fetchResellTask, fetchStores, preflightPublish, previewPublishPackage, retryResellTask, setResellTaskStock, updatePublishDraft, uploadResellImage } from "../api";
+import { ApiRequestError, createPublishTask, createPublishDraft, enrichPublishSource, fetchPublishDraft, fetchPublishProductModels, fetchResellSource, fetchResellTask, fetchStores, preflightPublish, previewPublishPackage, retryResellTask, setResellTaskStock, updatePublishDraft, updatePublishProductModels, uploadResellImage } from "../api";
 import { hasPublishAttributeValue } from "../../shared/publish-attributes";
 import { formatMoney } from "../format";
 import { mergeSellerSource } from "../../shared/publish-source";
@@ -218,6 +218,7 @@ function getPublishCompleteness(input: {
   title: string;
   images: ResellImageView[];
   price: string;
+  stock: string;
   currency: string;
   typeId: string;
   storeId: string;
@@ -231,6 +232,7 @@ function getPublishCompleteness(input: {
     [Boolean(input.title.trim()), "商品标题"],
     [input.images.length > 0, "商品图片"],
     [Boolean(input.price.trim()), "销售价"],
+    [input.stock.trim() !== "" && Number.isInteger(Number(input.stock)) && Number(input.stock) >= 0, "库存数量"],
     [Boolean(input.currency.trim()), "币种"],
     [Boolean(parsePositiveId(input.typeId)), "商品类型 ID"],
     [Boolean(input.storeId), "目标店铺"],
@@ -352,7 +354,7 @@ function inputFromState(state: {
     ...(state.oldPrice.trim() ? { oldPrice: state.oldPrice.trim() } : {}),
     currency: state.currency.trim().toUpperCase(),
     vat: state.vat.trim(),
-    stock: Number(state.stock),
+    stock: state.stock.trim() ? Number(state.stock) : -1,
     fulfillmentMode: state.fulfillmentMode,
     warehouseId: state.warehouseId,
     ...(state.title.trim() ? { title: state.title.trim() } : {}),
@@ -379,6 +381,9 @@ export default function ResellPage(): React.JSX.Element {
   const sourceQuery = useQuery({ queryKey: ["resell-source", sku], queryFn: () => fetchResellSource(sku), enabled: Boolean(sku) });
   const storesQuery = useQuery({ queryKey: ["stores"], queryFn: fetchStores });
   const draftQuery = useQuery({ queryKey: ["publish-draft", routeDraftId], queryFn: () => fetchPublishDraft(routeDraftId!), enabled: Boolean(routeDraftId) });
+  const modelQuery = useQuery({ queryKey: ["publish-product-models"], queryFn: fetchPublishProductModels });
+  const modelMutation = useMutation({ mutationFn: updatePublishProductModels, onSuccess: () => setDraftMessage("生成模型设置已保存；本期模型调用尚未启用") });
+  const [models, setModels] = useState({ textModel: "", imageModel: "" });
   const [sourceType, setSourceType] = useState<PublishSourceType>(sku ? "follow_sell" : "normal_publish");
   const [sourceOverride, setSourceOverride] = useState<ResellSourceView | null>(null);
   const [storeId, setStoreId] = useState(() => readLastPublishStoreId());
@@ -389,7 +394,7 @@ export default function ResellPage(): React.JSX.Element {
   const [oldPrice, setOldPrice] = useState("");
   const [currency, setCurrency] = useState("RUB");
   const [vat, setVat] = useState("0");
-  const [stock, setStock] = useState("2");
+  const [stock, setStock] = useState("");
   const [fulfillmentMode, setFulfillmentMode] = useState<FulfillmentMode>("FBS");
   const [warehouseId, setWarehouseId] = useState("");
   const [title, setTitle] = useState("");
@@ -472,6 +477,10 @@ export default function ResellPage(): React.JSX.Element {
   }, [source, sourceType]);
 
   useEffect(() => {
+    if (modelQuery.data) setModels(modelQuery.data);
+  }, [modelQuery.data]);
+
+  useEffect(() => {
     const draft = draftQuery.data;
     if (!draft || loadedDraftRef.current === draft.id) return;
     loadedDraftRef.current = draft.id;
@@ -494,11 +503,10 @@ export default function ResellPage(): React.JSX.Element {
     setOldPrice(String(overrides.oldPrice ?? ""));
     setCurrency(String(overrides.currency ?? "RUB"));
     setVat(String(overrides.vat ?? "0"));
-    setStock(String(overrides.stock ?? "2"));
+    setStock(overrides.stock === undefined || overrides.stock === null ? "" : String(overrides.stock));
     setFulfillmentMode((overrides.fulfillmentMode as FulfillmentMode) ?? "FBS");
     setWarehouseId(String(overrides.warehouseId ?? ""));
     setOfferId(String(overrides.offerId ?? `OZON-${draft.sourceSku}`));
-    setVariants(draft.variants);
     setVariants(draft.variants);
     if (draft.workflowStage === "collected") void updatePublishDraft(draft.id, { workflowStage: "processing" });
   }, [draftQuery.data]);
@@ -538,6 +546,7 @@ export default function ResellPage(): React.JSX.Element {
     title,
     images,
     price,
+    stock,
     currency,
     typeId,
     storeId,
@@ -545,7 +554,7 @@ export default function ResellPage(): React.JSX.Element {
     packageDimensions,
     requiredAttributes: preflight?.requiredAttributes ?? [],
     attributes: parsedAttributeValues,
-  }), [title, images, price, currency, typeId, storeId, warehouseId, packageDimensions, preflight?.requiredAttributes, parsedAttributeValues]);
+  }), [title, images, price, stock, currency, typeId, storeId, warehouseId, packageDimensions, preflight?.requiredAttributes, parsedAttributeValues]);
 
   useEffect(() => {
     // Reconcile server validation with the values currently visible in the
@@ -690,7 +699,7 @@ export default function ResellPage(): React.JSX.Element {
     },
   });
   const saveDraftMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (requestedStage?: "processing" | "ready") => {
       const snapshot: ResellSourceView = {
         ...source,
         sourceType,
@@ -706,13 +715,13 @@ export default function ResellPage(): React.JSX.Element {
         barcode: barcode.trim(),
         images,
       };
-      let allVariantsReady = sourceType !== "1688_collector";
-      if (sourceType === "1688_collector") {
+      let allVariantsReady = sourceType !== "1688_collector" && sourceType !== "public_page";
+      if (sourceType === "1688_collector" || sourceType === "public_page") {
         allVariantsReady = variants.length > 0;
         const baseInput = inputFromState(formState);
         for (const variant of variants) {
           const positiveDimensions = [variant.packageDimensions.depth, variant.packageDimensions.width, variant.packageDimensions.height, variant.packageDimensions.weight].every((value) => Number(value) > 0);
-          if (!variant.offerId.trim() || !variant.price.trim() || !variant.imageUrl.trim() || variant.stock === null || !positiveDimensions) { allVariantsReady = false; continue; }
+          if (!variant.offerId.trim() || !variant.price.trim() || (!variant.imageUrl.trim() && images.length === 0) || variant.stock === null || !positiveDimensions) { allVariantsReady = false; continue; }
           const variantInput = { ...baseInput, sourceSku: variant.sourceSkuId || source.sku, sourceSnapshot: { ...snapshot, packageDimensions: variant.packageDimensions }, offerId: variant.offerId, price: variant.price, ...(variant.oldPrice ? { oldPrice: variant.oldPrice } : {}), currency: variant.currency, stock: variant.stock, packageDimensions: variant.packageDimensions, attributes: { ...(baseInput.attributes ?? {}), ...variant.attributes, 9048: title.trim() }, images: [{ sourceUrl: variant.imageUrl, position: 0 }, ...images.filter((image) => image.url !== variant.imageUrl).map((image, position) => image.source === "uploaded" ? { assetId: image.id, position: position + 1 } : { sourceUrl: image.url, position: position + 1 })] };
           const result = await preflightMutation.mutateAsync(variantInput);
           if (!result.valid) allVariantsReady = false;
@@ -725,13 +734,17 @@ export default function ResellPage(): React.JSX.Element {
         sourceSnapshot: snapshot,
         fieldOverrides: { ...(draftQuery.data?.fieldOverrides ?? {}), storeId, offerId, price, oldPrice, currency, vat, stock, fulfillmentMode, warehouseId },
         variants,
-        workflowStage: allVariantsReady && (sourceType === "1688_collector" || (preflight && preflight.errors.length === 0)) ? "ready" as const : "processing" as const,
+        workflowStage: requestedStage === "ready"
+          ? allVariantsReady && (sourceType === "1688_collector" || sourceType === "public_page" || (preflight && preflight.errors.length === 0)) ? "ready" as const : "processing" as const
+          : requestedStage ?? (allVariantsReady && (sourceType === "1688_collector" || sourceType === "public_page" || (preflight && preflight.errors.length === 0)) ? "ready" as const : "processing" as const),
       };
       return draftId ? updatePublishDraft(draftId, input) : createPublishDraft(input);
     },
-    onSuccess: (draft) => {
+    onSuccess: (draft, requestedStage) => {
       setDraftId(draft.id);
-      setDraftMessage("草稿已保存");
+      setDraftMessage(requestedStage === "ready" && draft.workflowStage !== "ready"
+        ? "预检未通过，商品仍保留在加工箱；请补齐变体和类目必填信息。"
+        : draft.workflowStage === "ready" ? "预检完成，商品组已加入待上架" : draft.workflowStage === "processing" ? "草稿已保存并加入加工箱" : "草稿已保存");
       setFormError(null);
     },
     onError: (error) => setDraftMessage(error.message),
@@ -1119,6 +1132,10 @@ export default function ResellPage(): React.JSX.Element {
   if (sku && (sourceQuery.error || !sourceQuery.data)) return <section className="page-error resell-error"><h1>无法读取跟卖来源</h1><p>{sourceQuery.error?.message ?? "MY 数据中不存在该 SKU"}</p><button className="secondary-button" type="button" onClick={() => navigate(returnPath)}>返回 MY 数据</button></section>;
 
   const task = taskQuery.data;
+  /** Applies one focused edit to a SKU row without replacing its other source data. */
+  function updateVariant(id: string, update: (variant: PublishVariantDraft) => PublishVariantDraft): void {
+    setVariants((rows) => rows.map((row) => row.id === id ? update(row) : row));
+  }
   const productUrl = safeProductUrl(source.productUrl);
   const sourceDisplayPrice = numberPrice(source.currentPrice.amount) > 0
     ? source.currentPrice
@@ -1131,31 +1148,31 @@ export default function ResellPage(): React.JSX.Element {
         <section className="publish-source-toolbar" aria-label="商品来源"><div><strong>选择来源</strong><span>跟卖入口会自动带入 MY SKU；普通商品可从标准商品包开始。</span></div><input ref={packageInputRef} className="visually-hidden" type="file" multiple accept="application/json,image/jpeg,image/png,image/webp" onChange={(event) => void handlePackageFiles(event)} {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)} /><button className="secondary-button" type="button" onClick={() => packageInputRef.current?.click()}><FileJson size={16} />从文件夹导入</button><button className="secondary-button" type="button" onClick={() => void requestSellerEnrichment()} disabled={!source.sku || ["reading", "merging", "resolving", "checking"].includes(sellerSyncPhase)}><RefreshCw size={16} className={sellerSyncPhase === "reading" || sellerSyncPhase === "merging" || sellerSyncPhase === "resolving" || sellerSyncPhase === "checking" ? "is-spinning" : undefined} />{sellerSyncPhaseLabel(sellerSyncPhase)}</button>{sellerSyncPhase !== "idle" && <div className={`seller-sync-status seller-sync-status--${sellerSyncPhase === "success" ? "success" : sellerSyncPhase === "error" ? "error" : "active"}`} role="status" aria-live="polite">{sellerSyncPhase === "success" ? <CheckCircle2 size={15} /> : sellerSyncPhase === "error" ? <CircleAlert size={15} /> : <RefreshCw size={15} className="is-spinning" />}{sellerSyncMessage}</div>}</section>
         <section className="resell-source-card resell-source-card--top" aria-label="来源商品摘要">
             <p className="eyebrow">SOURCE SUMMARY</p>
-            <div className="resell-source-product"><span className="resell-source-image">{source.images[0] ? <ProductImage key={source.images[0].url} src={source.images[0].url} alt={`${source.productName || "商品"} 主图`} fallbackLabel="暂无主图" /> : <PackagePlus size={24} aria-label="无商品主图" />}</span><div><h2 title={source.productName}>{source.productName || "待填写商品标题"}</h2><p>Ozon SKU：<strong>{source.sku || "待填写"}</strong></p>{productUrl && <a href={productUrl} target="_blank" rel="noreferrer">打开原商品 <ExternalLink size={14} /></a>}</div></div>
+            <div className="resell-source-product"><span className="resell-source-image">{source.images[0] ? <img src={source.images[0].url} alt={`${source.productName || "商品"} 主图`} referrerPolicy="no-referrer" /> : <PackagePlus size={24} aria-label="无商品主图" />}</span><div><h2 title={source.productName}>{source.productName || "待填写商品标题"}</h2><p>{sourceType === "1688_collector" ? "1688 商品编号" : "来源商品编号"}：<strong>{source.sku || "待填写"}</strong></p>{productUrl && <a href={productUrl} target="_blank" rel="noreferrer">打开原商品 <ExternalLink size={14} /></a>}</div></div>
             <dl className="resell-source-metrics"><div><dt>来源类型</dt><dd>{sourceLabel(sourceType)}</dd></div><div><dt>图片数量</dt><dd>{source.images.length} 张</dd></div><div><dt>来源日期</dt><dd>{source.captureDay || "—"}</dd></div></dl>
             <div className="publish-source-facts"><span>类目：{source.category || "待补充"}</span><span>品牌：{source.brand || "待补充"}</span><span>商品类型：{source.typeId ? "已自动匹配" : "待补充"}</span><span>属性：{preflight ? `${preflight.requiredAttributes.filter((attribute) => hasPublishAttributeValue(readAttributeValue(parsedAttributeValues, attribute.id))).length}/${preflight.requiredAttributes.length} 项已完成` : "等待预检"}</span><span>价格：{sourceDisplayPrice.amount ? formatMoney(sourceDisplayPrice) : "待补充"}</span><span>月销量：{source.monthlyUnits.toLocaleString("zh-CN")}</span></div>
-            {sourceType === "1688_collector" && <details className="publish-collapsible-section publish-supplier-details"><summary><span><span className="eyebrow">SOURCE REFERENCE</span><strong>1688 供货信息</strong><small>{Array.isArray(draftQuery.data?.fieldOverrides.supplierVariants) ? `${(draftQuery.data.fieldOverrides.supplierVariants as unknown[]).length} 个规格记录` : "等待规格数据"}</small></span><span className="publish-summary-action">查看采集内容</span></summary><div className="publish-supplier-details__body"><p>供货价：{String(draftQuery.data?.fieldOverrides.supplierPriceRange || draftQuery.data?.fieldOverrides.supplierPrice || "未采集")} CNY</p><p>店铺：{String(draftQuery.data?.fieldOverrides.supplierName || "未采集")}</p>{Array.isArray(draftQuery.data?.fieldOverrides.supplierAttributes) && <dl>{(draftQuery.data.fieldOverrides.supplierAttributes as Array<{ name?: string; value?: string }>).slice(0, 24).map((attribute, index) => <div key={`${attribute.name}-${index}`}><dt>{attribute.name || "属性"}</dt><dd>{attribute.value || "—"}</dd></div>)}</dl>}{Array.isArray(draftQuery.data?.fieldOverrides.supplierVariants) && <div className="publish-supplier-variants">{(draftQuery.data.fieldOverrides.supplierVariants as Array<{ name?: string; imageUrl?: string; price?: string }>).slice(0, 40).map((variant, index) => <article key={`${variant.name}-${index}`}>{variant.imageUrl && <ProductImage key={variant.imageUrl} src={variant.imageUrl} alt={`${variant.name || "商品规格"} 图片`} fallbackLabel="图片加载失败" />}<span>{variant.name || `规格 ${index + 1}`}</span><strong>{variant.price ? `${variant.price} CNY` : "价格待确认"}</strong></article>)}</div>}</div></details>}
+            {(sourceType === "1688_collector" || sourceType === "public_page") && <details className="publish-collapsible-section publish-supplier-details"><summary><span><span className="eyebrow">SOURCE REFERENCE</span><strong>{sourceType === "1688_collector" ? "1688 供货信息" : "Ozon 来源商品"}</strong><small>{Array.isArray(draftQuery.data?.fieldOverrides.supplierVariants) ? `${(draftQuery.data.fieldOverrides.supplierVariants as unknown[]).length} 个规格记录` : `${variants.length} 个 SKU 规格`}</small></span><span className="publish-summary-action">查看采集内容</span></summary><div className="publish-supplier-details__body"><p>来源价格：{String(draftQuery.data?.fieldOverrides.supplierPriceRange || draftQuery.data?.fieldOverrides.supplierPrice || source.currentPrice.amount || "未采集")} {sourceType === "1688_collector" ? "CNY" : source.currentPrice.currency}</p><p>店铺：{String(draftQuery.data?.fieldOverrides.supplierName || "未采集")}</p>{source.descriptionImages?.length ? <div className="publish-supplier-variants">{source.descriptionImages.slice(0, 30).map((url, index) => <article key={`${url}-${index}`}><img src={url} alt={`详情图 ${index + 1}`} referrerPolicy="no-referrer" /><span>详情图 {index + 1}</span></article>)}</div> : null}{source.sourceVideos?.map((url, index) => <p key={`${url}-${index}`}><a href={url} target="_blank" rel="noreferrer">打开来源视频 {index + 1}</a></p>)}{Array.isArray(draftQuery.data?.fieldOverrides.supplierAttributes) && <dl>{(draftQuery.data.fieldOverrides.supplierAttributes as Array<{ name?: string; value?: string }>).slice(0, 24).map((attribute, index) => <div key={`${attribute.name}-${index}`}><dt>{attribute.name || "属性"}</dt><dd>{attribute.value || "—"}</dd></div>)}</dl>}{Array.isArray(draftQuery.data?.fieldOverrides.supplierVariants) && <div className="publish-supplier-variants">{(draftQuery.data.fieldOverrides.supplierVariants as Array<{ name?: string; imageUrl?: string; price?: string }>).slice(0, 40).map((variant, index) => <article key={`${variant.name}-${index}`}>{variant.imageUrl && <img src={variant.imageUrl} alt="" referrerPolicy="no-referrer" />}<span>{variant.name || `规格 ${index + 1}`}</span><strong>{variant.price ? `${variant.price} CNY` : "价格待确认"}</strong></article>)}</div>}</div></details>}
             {(source.missingFields?.length ?? 0) > 0 && <div className="publish-missing-fields"><CircleAlert size={15} />缺失：{source.missingFields?.join("、")}</div>}
+            {source.sourceDiagnostics && <details className="publish-collapsible-section"><summary><span><span className="eyebrow">COLLECTOR DIAGNOSTICS</span><strong>采集诊断</strong><small>{source.sourceDiagnostics.extractor} · {new Date(source.sourceDiagnostics.collectedAt).toLocaleString("zh-CN")}</small></span><span className="publish-summary-action">查看提取结果</span></summary><div className="publish-supplier-details__body"><p>主图 {source.images.length} 张 · 详情图 {source.descriptionImages?.length ?? 0} 张 · 视频 {source.sourceVideos?.length ?? 0} 个 · 变体 {variants.length} 行</p>{source.sourceDiagnostics.warnings.map((warning) => <p className="resell-warning" key={warning}>{warning}</p>)}</div></details>}
         </section>
-        {sourceType === "1688_collector" && <section className="publish-variant-editor" aria-labelledby="publish-variants-heading">
-          <div className="publish-section-heading"><p className="eyebrow">1688 SKU GROUP</p><h3 id="publish-variants-heading">变体设置 <span>{variants.length} 个变体</span></h3><span>供货价仅作成本参考；每个变体需单独填写 Ozon 售价。</span></div>
-          <div className="publish-variant-toolbar"><button className="secondary-button" type="button" onClick={() => setVariants((rows) => [...rows, { id: crypto.randomUUID(), sourceSkuId: "", label: "", imageUrl: "", richContent: "", videoUrl: "", offerId: `${source.sku}-${rows.length + 1}`.slice(0, 80), purchasePrice: "", price: "", oldPrice: "", currency, stock: null, packageDimensions: { depth: "", width: "", height: "", dimensionUnit: "mm", weight: "", weightUnit: "g" }, attributes: {} }])}><PackagePlus size={16} />新增变体</button><button className="secondary-button" type="button" disabled={!selectedVariantIds.length} onClick={() => { setVariants((rows) => rows.filter((row) => !selectedVariantIds.includes(row.id))); setSelectedVariantIds([]); }}>批量删除所选</button><button className="secondary-button" type="button" disabled>模型生成（暂未启用）</button></div>
-          {variants.length === 0 ? <p className="publish-variant-empty">采集未识别到 SKU 规格，可手动新增变体。</p> : <div className="publish-variant-list">{variants.map((variant, index) => <article className="publish-variant-card" key={variant.id}>
-            <header><label><input type="checkbox" checked={selectedVariantIds.includes(variant.id)} onChange={(event) => setSelectedVariantIds((ids) => event.target.checked ? [...ids, variant.id] : ids.filter((id) => id !== variant.id))} />变体 {index + 1}</label><span>1688 SKU {variant.sourceSkuId || "未识别"} · 供货价 {variant.purchasePrice || "未采集"} CNY</span><button className="secondary-button compact-button" type="button" onClick={() => setVariants((rows) => [...rows.slice(0, index + 1), { ...variant, id: crypto.randomUUID(), offerId: `${variant.offerId}-COPY`.slice(0, 80), task: null }, ...rows.slice(index + 1)])}>复制</button><button className="icon-button icon-button--danger" type="button" aria-label={`删除变体 ${index + 1}`} onClick={() => setVariants((rows) => rows.filter((row) => row.id !== variant.id))}><Trash2 size={15} /></button></header>
-            <div className="publish-variant-grid">
-              <label className="field"><span>规格区分词</span><input value={variant.label} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, label: event.target.value } : row))} placeholder="例如：黑色 / 2 件装" /></label>
-              <label className="field"><span>来源 SKU 编号</span><input value={variant.sourceSkuId} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, sourceSkuId: event.target.value } : row))} /></label>
-              <label className="field"><span>1688 规格图片 URL</span><input value={variant.imageUrl} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, imageUrl: event.target.value } : row))} placeholder="未采集时填写图片 URL" /></label>
-              <label className="field"><span>采购价 CNY</span><input inputMode="decimal" value={variant.purchasePrice} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, purchasePrice: event.target.value } : row))} /></label>
-              <label className="field"><span>Offer ID *</span><input value={variant.offerId} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, offerId: event.target.value } : row))} /></label>
-              <label className="field"><span>Ozon 售价 *</span><input inputMode="decimal" value={variant.price} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, price: event.target.value } : row))} placeholder="逐变体填写" /></label>
-              <label className="field"><span>库存 *</span><input type="number" min="0" value={variant.stock ?? ""} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, stock: event.target.value === "" ? null : Number(event.target.value) } : row))} /></label>
-              {(["depth", "width", "height", "weight"] as const).map((key) => <label className="field" key={key}><span>{{ depth: "长度 mm", width: "宽度 mm", height: "高度 mm", weight: "重量 g" }[key]}</span><input inputMode="decimal" value={variant.packageDimensions[key]} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, packageDimensions: { ...row.packageDimensions, [key]: event.target.value } } : row))} /></label>)}
-              <label className="field field--wide"><span>变体属性 JSON <small>按目标类目填写随规格变化的颜色、尺码属性 ID</small></span><textarea key={`${variant.id}-${JSON.stringify(variant.attributes)}`} defaultValue={`${JSON.stringify(variant.attributes, null, 2)}\n`} rows={3} onBlur={(event) => { try { const parsed: unknown = JSON.parse(event.target.value); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(); setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, attributes: parsed as Record<string, unknown> } : row)); } catch { setFormError(`变体 ${index + 1} 属性必须是 JSON 对象`); } }} /></label>
-              <label className="field field--wide"><span>富内容入口 <small>模型生成暂未启用</small></span><textarea value={variant.richContent} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, richContent: event.target.value } : row))} rows={2} placeholder="预留 Ozon 富内容字段" /></label>
-              <label className="field field--wide"><span>视频 URL <small>模型生成暂未启用</small></span><input value={variant.videoUrl} onChange={(event) => setVariants((rows) => rows.map((row) => row.id === variant.id ? { ...row, videoUrl: event.target.value } : row))} placeholder="可选" /></label>
-            </div>
-          </article>)}</div>}
+        {(sourceType === "1688_collector" || sourceType === "public_page") && <section className="publish-variant-editor" aria-labelledby="publish-variants-heading">
+          <div className="publish-section-heading"><p className="eyebrow">PRODUCT VARIANTS</p><h3 id="publish-variants-heading">变体设置 <span>{variants.length} 个变体</span></h3><span>来源售价仅作参考；Ozon 售价由运营逐变体确认。</span></div>
+          <div className="publish-variant-toolbar publish-variant-toolbar--models"><label className="field"><span>文案模型 <small>选择设置只保存偏好，不会发起生成调用</small></span><input value={models.textModel} onChange={(event) => setModels((current) => ({ ...current, textModel: event.target.value }))} placeholder="填写已配置的模型名称" /></label><label className="field"><span>图片模型</span><input value={models.imageModel} onChange={(event) => setModels((current) => ({ ...current, imageModel: event.target.value }))} placeholder="填写已配置的模型名称" /></label><button className="secondary-button" type="button" disabled={modelMutation.isPending} onClick={() => modelMutation.mutate(models)}>保存模型选择</button><span className="field-hint">模型生成暂未接通；不会生成或保存虚假结果。</span></div>
+          <div className="publish-variant-toolbar publish-variant-toolbar--actions"><button className="secondary-button" type="button" onClick={() => setVariants((rows) => [...rows, { id: crypto.randomUUID(), sourceSkuId: "", label: "", imageUrl: "", richContent: "", videoUrl: "", offerId: "", purchasePrice: "", price: "", oldPrice: "", currency, stock: null, packageDimensions: { depth: "", width: "", height: "", dimensionUnit: "mm", weight: "", weightUnit: "g" }, attributes: {} }])}><PackagePlus size={16} />添加变体</button><button className="secondary-button" type="button" disabled={!selectedVariantIds.length} onClick={() => { setVariants((rows) => rows.filter((row) => !selectedVariantIds.includes(row.id))); setSelectedVariantIds([]); }}>批量删除变体</button><button className="secondary-button" type="button" disabled={variants.length < 2} onClick={() => setVariants((rows) => { const first = rows[0]; return first ? rows.map((row, index) => index === 0 ? row : { ...row, purchasePrice: row.purchasePrice || first.purchasePrice, packageDimensions: { ...row.packageDimensions, depth: row.packageDimensions.depth || first.packageDimensions.depth, width: row.packageDimensions.width || first.packageDimensions.width, height: row.packageDimensions.height || first.packageDimensions.height, weight: row.packageDimensions.weight || first.packageDimensions.weight } }) : rows; })}>从首行填充</button><button className="secondary-button" type="button" disabled={variants.length === 0} onClick={() => setVariants((rows) => rows.map((row, index) => ({ ...row, offerId: row.offerId || `GMV-${source.sku || "ITEM"}-${index + 1}`.slice(0, 80) })))}>批量生成货号</button><button className="secondary-button" type="button" disabled>AI 文案 / 图片（暂未启用）</button></div>
+          {variants.length === 0 ? <p className="publish-variant-empty">采集未识别到 SKU 规格，可手动新增变体。</p> : <div className="publish-variant-table-wrap"><table className="publish-variant-table"><thead><tr><th><input type="checkbox" aria-label="全选 SKU" checked={variants.length > 0 && variants.every((variant) => selectedVariantIds.includes(variant.id))} onChange={(event) => setSelectedVariantIds(event.target.checked ? variants.map((variant) => variant.id) : [])} /></th><th>序号</th><th>SKU 区分词</th><th>图片</th><th>富内容</th><th>视频</th><th>货号</th><th>采购价 CNY</th><th>Ozon 售价</th><th>尺寸 mm</th><th>重量 g</th><th>库存</th><th>操作</th></tr></thead><tbody>{variants.map((variant, index) => <tr key={variant.id}>
+            <td><input type="checkbox" aria-label={`选择变体 ${index + 1}`} checked={selectedVariantIds.includes(variant.id)} onChange={(event) => setSelectedVariantIds((ids) => event.target.checked ? [...ids, variant.id] : ids.filter((id) => id !== variant.id))} /></td><td>{index + 1}</td>
+            <td><input aria-label={`SKU 区分词 ${index + 1}`} value={variant.label} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, label: event.target.value }))} placeholder="颜色 / 尺码" /></td>
+            <td><div className="publish-variant-image-cell"><ProductImage key={variant.imageUrl} src={variant.imageUrl} alt={`SKU ${index + 1} 图片`} fallbackLabel="待补图" /><input aria-label={`图片地址 ${index + 1}`} value={variant.imageUrl} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, imageUrl: event.target.value }))} placeholder="图片 URL" /></div></td>
+            <td><textarea aria-label={`富内容 ${index + 1}`} value={variant.richContent} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, richContent: event.target.value }))} rows={2} placeholder="暂未启用" /></td>
+            <td><div className="publish-variant-video-cell"><input aria-label={`视频 URL ${index + 1}`} value={variant.videoUrl} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, videoUrl: event.target.value }))} placeholder="视频 URL" /><span aria-hidden="true">▶</span></div></td>
+            <td><input aria-label={`货号 ${index + 1}`} value={variant.offerId} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, offerId: event.target.value }))} /></td>
+            <td><input aria-label={`采购价 ${index + 1}`} inputMode="decimal" value={variant.purchasePrice} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, purchasePrice: event.target.value }))} /></td>
+            <td><input aria-label={`Ozon 售价 ${index + 1}`} inputMode="decimal" value={variant.price} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, price: event.target.value }))} placeholder="必填" /></td>
+            <td><div className="publish-variant-dimensions"><input aria-label={`长度 ${index + 1}`} inputMode="decimal" value={variant.packageDimensions.depth} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, packageDimensions: { ...row.packageDimensions, depth: event.target.value } }))} placeholder="长" /><input aria-label={`宽度 ${index + 1}`} inputMode="decimal" value={variant.packageDimensions.width} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, packageDimensions: { ...row.packageDimensions, width: event.target.value } }))} placeholder="宽" /><input aria-label={`高度 ${index + 1}`} inputMode="decimal" value={variant.packageDimensions.height} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, packageDimensions: { ...row.packageDimensions, height: event.target.value } }))} placeholder="高" /></div></td>
+            <td><input aria-label={`重量 ${index + 1}`} inputMode="decimal" value={variant.packageDimensions.weight} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, packageDimensions: { ...row.packageDimensions, weight: event.target.value } }))} /></td>
+            <td><input aria-label={`库存 ${index + 1}`} type="number" min="0" value={variant.stock ?? ""} onChange={(event) => updateVariant(variant.id, (row) => ({ ...row, stock: event.target.value === "" ? null : Number(event.target.value) }))} /></td>
+            <td><div className="publish-variant-row-actions"><button className="secondary-button compact-button" type="button" onClick={() => setVariants((rows) => [...rows.slice(0, index + 1), { ...variant, id: crypto.randomUUID(), offerId: `${variant.offerId}-COPY`.slice(0, 80), task: null }, ...rows.slice(index + 1)])}>复制</button><button className="icon-button icon-button--danger" type="button" aria-label={`删除变体 ${index + 1}`} onClick={() => setVariants((rows) => rows.filter((row) => row.id !== variant.id))}><Trash2 size={15} /></button></div></td>
+          </tr>)}</tbody></table></div>}
         </section>}
         <div className="resell-layout">
           <section className="resell-form-card">
@@ -1171,7 +1188,7 @@ export default function ResellPage(): React.JSX.Element {
               <label className="field" id="publish-price-field"><span>销售价 *</span><input inputMode="decimal" value={price} onChange={(event) => { markEditedField(editedFieldsRef.current, "price"); setPrice(event.target.value); }} placeholder="例如 1299" /></label>
               <label className="field"><span>币种 * {preflight?.contractCurrency && <small>目标店铺合同：{preflight.contractCurrency}</small>}</span><input value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} maxLength={3} /></label>
               <label className="field"><span>VAT *</span><input value={vat} onChange={(event) => setVat(event.target.value)} placeholder="例如 0 或 0.2" /><small>当前默认按中国店铺规则填写 0；其他国家请以目标店铺 Ozon 规则为准。</small>{vat.trim() && validateVat(vat) === null && Number(vat.replace(",", ".")) !== 0 && <small className="resell-vat-warning">当前 VAT 非 0，请确认与目标店铺国家税率一致。</small>}</label>
-              <label className="field"><span>库存数量 *</span><input type="number" min="0" step="1" value={stock} onChange={(event) => setStock(event.target.value)} /><small>默认库存为 2，可按目标店铺实际库存修改。</small></label>
+              <label className="field"><span>库存数量 *</span><input type="number" min="0" step="1" value={stock} onChange={(event) => setStock(event.target.value)} placeholder="填写实际库存" /><small>留空时不会自动提交为 0 或默认库存。</small></label>
               <label className="field" id="publish-warehouse-field"><span>仓库 <small>库存可稍后设置</small></span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">未选择仓库（可稍后设置库存）</option>{(preflight?.warehouses ?? []).map((warehouse) => <option value={warehouse.id} key={warehouse.id}>{warehouse.name} · {warehouse.status}</option>)}</select></label>
               <section className="field field--wide publish-package-fields" aria-labelledby="package-fields-heading"><span id="package-fields-heading">包装尺寸与重量 * <small>必须填写真实包装数据</small></span><div className="publish-package-grid">{([['depth', '长度'], ['width', '宽度'], ['height', '高度'], ['weight', '重量']] as const).map(([key, label]) => <label className="field" key={key}><span>{label}</span><input inputMode="decimal" value={packageDimensions[key]} onChange={(event) => updatePackageDimension(key, event.target.value)} placeholder="必须大于 0" /></label>)}<label className="field"><span>尺寸单位</span><select value={packageDimensions.dimensionUnit} onChange={(event) => updatePackageDimension("dimensionUnit", event.target.value)}><option value="mm">mm</option><option value="cm">cm</option></select></label><label className="field"><span>重量单位</span><select value={packageDimensions.weightUnit} onChange={(event) => updatePackageDimension("weightUnit", event.target.value)}><option value="g">g</option><option value="kg">kg</option></select></label></div><small>Ozon 会按包装后的长度、宽度、高度和重量校验，不能填 0。</small></section>
               <label className="field field--wide" id="publish-title-field"><span>商品标题</span><input value={title} onChange={(event) => { markEditedField(editedFieldsRef.current, "title"); setTitle(event.target.value); }} maxLength={500} placeholder="请输入可售商品标题" /></label>
@@ -1191,7 +1208,7 @@ export default function ResellPage(): React.JSX.Element {
               {mode === "edit" && preflight && preflight.requiredAttributes.length > 0 && <section className="field field--wide publish-required-attributes" aria-labelledby="required-attributes-heading"><span id="required-attributes-heading">目标类目必填属性</span>{preflight.requiredAttributes.map((attribute) => { const values = attribute.dictionaryValues ?? []; const currentValue = readAttributeValue(parsedAttributeValues, attribute.id) ?? attribute.value; const selectedValues = attributeSelectionValues(currentValue, values); return <label className="field" key={attribute.id}><span>{translatedAttributeName(attribute.name, attribute.id)} * <small>ID {attribute.id}{attribute.dictionaryId ? ` · 字典 ${attribute.dictionaryId}` : ""}</small></span>{values.length > 0 ? <select multiple={attribute.isCollection} value={attribute.isCollection ? selectedValues : selectedValues[0] ?? ""} onChange={(event) => updateRequiredAttribute(attribute.id, attribute.isCollection ? Array.from(event.target.selectedOptions, (option) => option.value) : event.target.value)}>{!attribute.isCollection && <option value="">请选择</option>}{values.map((option) => <option key={option.id} value={option.id}>{displayDictionaryValueName(option.name)}</option>)}</select> : <input value={typeof currentValue === "string" ? currentValue : ""} onChange={(event) => updateRequiredAttribute(attribute.id, event.target.value)} placeholder="请填写属性值" />}</label>; })}</section>}
             </div>
             <section className="publish-health-card" aria-labelledby="publish-health-heading"><div><p className="eyebrow">CONTENT CHECK</p><h3 id="publish-health-heading"><ClipboardCheck size={17} />内容体检 <span>{completeness.completed}/{completeness.total} 项</span></h3></div>{completeness.missing.length > 0 ? <div className="publish-health-list" role="status">{completeness.missing.slice(0, 4).map((item) => <button type="button" key={item} onClick={() => focusMissingField(item)}>{item}待补充</button>)}{completeness.missing.length > 4 && <span>另有 {completeness.missing.length - 4} 项待补充</span>}</div> : <p className="publish-health-success"><CheckCircle2 size={15} />核心字段已完成，提交时会再次自动检查</p>}</section>
-            <div className="resell-actions"><button className="secondary-button" type="button" onClick={() => saveDraftMutation.mutate()} disabled={saveDraftMutation.isPending}>{saveDraftMutation.isPending ? "保存中…" : "保存草稿"}</button><button className="primary-button" type="button" onClick={() => void openConfirmation()} disabled={createMutation.isPending || preflightMutation.isPending || Boolean(taskId)}><Rocket size={17} />{preflightMutation.isPending ? "正在自动检查…" : "提交发布"}</button></div>
+            <div className="resell-actions"><button className="secondary-button" type="button" onClick={() => saveDraftMutation.mutate(undefined)} disabled={saveDraftMutation.isPending}>{saveDraftMutation.isPending ? "保存中…" : "保存草稿"}</button><button className="secondary-button" type="button" onClick={() => saveDraftMutation.mutate("processing")} disabled={saveDraftMutation.isPending}>{saveDraftMutation.isPending ? "保存中…" : "保存并加入加工箱"}</button><button className="primary-button" type="button" onClick={() => saveDraftMutation.mutate("ready")} disabled={saveDraftMutation.isPending || preflightMutation.isPending}>{saveDraftMutation.isPending ? "校验并保存中…" : "保存并预检到待上架"}</button><button className="primary-button" type="button" onClick={() => void openConfirmation()} disabled={createMutation.isPending || preflightMutation.isPending || Boolean(taskId)}><Rocket size={17} />{preflightMutation.isPending ? "正在自动检查…" : "提交发布"}</button></div>
             {draftMessage && <p className="publish-draft-message" role="status">{draftMessage}</p>}
             {formError && <div className="field-error" role="alert"><CircleAlert size={17} />{formError}</div>}
             {preflight && <PreflightSummary result={preflight} completeness={completeness} />}

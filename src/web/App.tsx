@@ -11,6 +11,7 @@ const SelectionPage = lazy(() => import("./pages/SelectionPage"));
 const OperationsCenterLayout = lazy(() => import("./components/OperationsCenterLayout"));
 const PublishTasksPage = lazy(() => import("./pages/PublishTasksPage"));
 const PublishCollectionPage = lazy(() => import("./pages/PublishCollectionPage"));
+const PublishRecordsPage = lazy(() => import("./pages/PublishRecordsPage"));
 const CollectorExtensionPage = lazy(() => import("./pages/CollectorExtensionPage"));
 const FinanceAnalysisPage = lazy(() => import("./pages/FinanceAnalysisPage"));
 const AiPage = lazy(() => import("./pages/AiPage"));
@@ -128,6 +129,9 @@ export function App(): React.JSX.Element {
           <Route path="publish/collection" element={<PublishCollectionPage />} />
           <Route path="publish/processing" element={<PublishCollectionPage />} />
           <Route path="publish/ready" element={<PublishCollectionPage />} />
+          <Route path="publish/online" element={<PublishRecordsPage mode="online" />} />
+          <Route path="publish/uploaded" element={<PublishRecordsPage mode="uploaded" />} />
+          <Route path="publish/distribution" element={<PublishRecordsPage mode="distribution" />} />
           <Route path="publish/extension" element={<CollectorExtensionPage />} />
           <Route path="publish/workbench" element={<ResellPage />} />
           <Route path="publish/drafts/:draftId" element={<ResellPage />} />

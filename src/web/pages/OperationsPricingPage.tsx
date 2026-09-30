@@ -26,7 +26,7 @@ import {
   validateProfitInputs,
   validateShippingInputs,
   validateTargetPriceInputs,
-} from "../operations-pricing-calculations";
+} from "../../shared/operations-pricing-calculations";
 import type { ExchangeRateSnapshot, PricingScenarioView } from "../../shared/contracts";
 
 type ToolTab = "pricing" | "shipping";

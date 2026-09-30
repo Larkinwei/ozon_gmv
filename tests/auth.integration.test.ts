@@ -41,6 +41,11 @@ describe("administrator setup and session API", () => {
     });
 
     try {
+      const rootPage = await app.inject({ method: "GET", url: "/" });
+      expect(rootPage.statusCode).toBe(200);
+      expect(rootPage.headers["content-type"]).toContain("text/html");
+      expect(rootPage.headers["cache-control"]).toBe("no-store");
+
       const builtHtml = readFileSync("dist/web/index.html", "utf8");
       const modulePath = builtHtml.match(/src="([^"]+\.js)"/)?.[1] ?? "";
       const moduleResponse = await app.inject({ method: "GET", url: modulePath });

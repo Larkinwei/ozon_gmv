@@ -1,6 +1,6 @@
 import { setTimeout as wait } from "node:timers/promises";
 
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
 
 import {
   postingListResponseSchema,
@@ -72,6 +72,28 @@ export interface OzonWarehouse {
 export interface OzonProductInfoLimit {
   dailyCreateRemaining: number | null;
   totalProductLimit: number | null;
+}
+
+export interface OzonListedProduct {
+  productId: string;
+  offerId: string;
+  productName: string | null;
+  imageUrl: string | null;
+  sku: string | null;
+  status: string | null;
+  archived: boolean | null;
+  price: string | null;
+  oldPrice: string | null;
+  minimumPrice: string | null;
+  currencyCode: string | null;
+  vat: string | null;
+  sourceUrl: string | null;
+  volumeWeight: number | null;
+  createdAt: string | null;
+  statusFailed: string | null;
+  validationStatus: string | null;
+  hasFboStocks: boolean | null;
+  hasFbsStocks: boolean | null;
 }
 
 export interface OzonSellerInfo {
@@ -454,6 +476,57 @@ export class OzonClient {
     return response.items;
   }
 
+  /** Reads one page of seller products; this endpoint is read-only. */
+  public async listProductPage(input: { visibility?: string; lastId?: string; limit?: number } = {}): Promise<{ items: OzonListedProduct[]; lastId: string; hasNext: boolean }> {
+    const raw = await this.request("/v3/product/list", {
+      filter: { visibility: input.visibility ?? "ALL" },
+      last_id: input.lastId ?? "",
+      limit: input.limit ?? 100,
+    }, z.unknown());
+    const root = asRecord(raw);
+    const result = asRecord(root?.result) ?? root;
+    const items = Array.isArray(result?.items) ? result.items.flatMap((value): OzonListedProduct[] => {
+      const item = asRecord(value);
+      if (!item) return [];
+      const productId = String(item.product_id ?? item.id ?? "").trim();
+      const offerId = String(item.offer_id ?? "").trim();
+      if (!productId || !offerId) return [];
+      return [{
+        productId,
+        offerId,
+        productName: null,
+        imageUrl: null,
+        sku: null,
+        status: null,
+        archived: typeof item.archived === "boolean" ? item.archived : null,
+        price: null,
+        oldPrice: null,
+        minimumPrice: null,
+        currencyCode: null,
+        vat: null,
+        sourceUrl: null,
+        volumeWeight: null,
+        createdAt: null,
+        statusFailed: null,
+        validationStatus: null,
+        hasFboStocks: typeof item.has_fbo_stocks === "boolean" ? item.has_fbo_stocks : null,
+        hasFbsStocks: typeof item.has_fbs_stocks === "boolean" ? item.has_fbs_stocks : null,
+      }];
+    }) : [];
+    return {
+      items,
+      lastId: String(result?.last_id ?? ""),
+      hasNext: result?.has_next === true,
+    };
+  }
+
+  /** Reads product names and seller SKUs for identifiers returned by product/list. */
+  public async getProductInfoByProductIds(productIds: string[]): Promise<OzonProductInfo[]> {
+    if (productIds.length === 0 || productIds.length > 1000) throw new RangeError("Ozon product info requests require between 1 and 1000 product IDs");
+    const response = await this.request("/v3/product/info/list", { product_id: productIds }, productInfoListResponseSchema);
+    return response.items;
+  }
+
   /** Returns the official product category/type tree for the target seller account. */
   public async getDescriptionCategoryTree(language = "DEFAULT"): Promise<OzonDescriptionCategoryNode[]> {
     const response = await this.request("/v1/description-category/tree", { language }, descriptionCategoryTreeResponseSchema);
@@ -600,6 +673,7 @@ export class OzonClient {
     offerId: string;
     price: string;
     oldPrice?: string | undefined;
+    minimumPrice?: string | undefined;
     currency: string;
     vat: string;
   }): Promise<void> {
@@ -608,10 +682,18 @@ export class OzonClient {
         offer_id: input.offerId,
         price: input.price,
         ...(input.oldPrice ? { old_price: input.oldPrice } : {}),
+        ...(input.minimumPrice ? { min_price: input.minimumPrice } : {}),
         currency_code: input.currency,
         vat: input.vat,
       }],
     }, null);
+  }
+
+  /** Archives existing seller cards without deleting their product data. */
+  public async archiveProducts(productIds: string[]): Promise<void> {
+    if (productIds.length === 0 || productIds.length > 1000) throw new RangeError("Archive requests require between 1 and 1000 product IDs");
+    const response = await this.request("/v1/product/archive", { product_id: productIds }, z.object({ result: z.boolean() }).passthrough());
+    if (!response.result) throw new Error("Ozon 未确认商品归档");
   }
 
   /** Sets target-store stock only after Ozon reports a product ID. */

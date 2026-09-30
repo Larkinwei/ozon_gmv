@@ -1109,6 +1109,10 @@ export interface ResellSourceView {
   barcode?: string;
   fieldSources?: Record<string, PublishSourceType | "manual" | "ozon_category_tree">;
   missingFields?: string[];
+  /** Capture diagnostics explain which source fields were unavailable to the collector. */
+  sourceDiagnostics?: { extractor: string; collectedAt: string; warnings: string[] };
+  descriptionImages?: string[];
+  sourceVideos?: string[];
   sourceType?: PublishSourceType;
   /** Ozon leaf product type required by product import APIs. */
   typeId: number | null;
@@ -1241,6 +1245,7 @@ export interface ResellTaskView {
 
 export interface ResellTaskListItem extends ResellTaskView {
   productTitle: string | null;
+  imageUrl: string | null;
 }
 
 export interface ResellTaskEventView {

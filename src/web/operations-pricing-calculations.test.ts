@@ -7,7 +7,7 @@ import {
   calculateTargetPrice,
   defaultPricingFeeRates,
   validateTargetPriceInputs,
-} from "./operations-pricing-calculations";
+} from "../shared/operations-pricing-calculations";
 
 const normalUncertainty = { enabled: true as const, preset: "normal" as const, weightPercent: "10", lengthCm: "2", widthCm: "2", heightCm: "2" };
 

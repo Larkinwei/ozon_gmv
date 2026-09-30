@@ -140,6 +140,29 @@ const cloudSync: SelectionDiscoverySyncJob = {
 };
 
 describe("DiscoverySyncBanner", () => {
+  it("shows a completed collector sync and confirms the cloud snapshot was published", () => {
+    render(<DiscoverySyncBanner
+      sync={{
+        ...cloudSync,
+        id: "collector-sync-1",
+        source: "collector",
+        status: "completed",
+        stage: "publishing",
+        totalSteps: 64,
+        completedSteps: 64,
+        cloudPublished: true,
+        finishedAt: "2026-09-29T07:20:40.607Z",
+      }}
+      retrying={false}
+      onRetry={noOp}
+      onOpenSources={noOp}
+    />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Ozon 市场数据同步成功");
+    expect(screen.getByRole("status")).toHaveTextContent("完整快照已发布到云端");
+    expect(screen.getByRole("status")).toHaveTextContent("64 / 64 步已完成");
+  });
+
   it("identifies a cloud download and explains the automatic refresh", () => {
     render(<DiscoverySyncBanner sync={cloudSync} retrying={false} onRetry={noOp} onOpenSources={noOp} />);
 

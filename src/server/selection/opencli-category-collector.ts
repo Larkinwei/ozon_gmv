@@ -42,6 +42,8 @@ export interface OpenCliCategoryCollectorOptions {
 interface BootstrapResult {
   companyId: string;
   categories: OzonCategoryLevel1[];
+  status: number;
+  message?: string;
 }
 
 interface RawCategoryMetric {
@@ -66,6 +68,11 @@ interface FetchResult {
   status: number;
   items?: RawCategoryMetric[];
   message?: string;
+}
+
+/** Identifies transient Seller failures that may succeed on a later attempt. */
+function isRetryableStatus(status: number): boolean {
+  return status === 0 || status === 429 || status >= 500;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -127,15 +134,7 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
     await this.run(["browser", this.options.sessionName, "open", CATEGORY_URL]);
     await this.run(["browser", this.options.sessionName, "wait", "time", "5"]);
     try {
-      const matches = this.parseJson<{ entries?: Array<{ ref: number }> }>(await this.run([
-        "browser", this.options.sessionName, "find", "--role", "button", "--name", "类目",
-      ]));
-      const categoryButton = matches.entries?.at(-1);
-      if (!categoryButton) {
-        throw new Error("Ozon 类目选择器结构已变化，无法定位筛选按钮");
-      }
-      await this.run(["browser", this.options.sessionName, "click", String(categoryButton.ref)]);
-      const bootstrap = await this.runJson<BootstrapResult>(this.bootstrapScript());
+      const bootstrap = await this.fetchBootstrapWithRetry();
       const completed = new Map(input.resumeMetrics.map((metric) => [metricKey(metric), metric]));
       const completedKeys = new Set(input.resumeCompletedKeys);
       const totalSteps = bootstrap.categories.length * 2;
@@ -185,7 +184,7 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
       if (result.status === 401 || result.status === 403) {
         throw new Error("Ozon 登录已失效，请在 Chrome 重新登录 Seller 后再同步");
       }
-      if (result.status !== 429 || attempt === REQUEST_DELAYS_MS.length) {
+      if (!isRetryableStatus(result.status) || attempt === REQUEST_DELAYS_MS.length) {
         throw new Error(result.message ?? `Ozon 类目接口返回 ${result.status}`);
       }
       await this.sleep(REQUEST_DELAYS_MS[attempt]!);
@@ -193,21 +192,50 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
     throw new Error("Ozon 类目接口重试失败");
   }
 
+  /** Reads root categories from Seller's category tree instead of page markup. */
+  private async fetchBootstrapWithRetry(): Promise<BootstrapResult> {
+    for (let attempt = 0; attempt <= REQUEST_DELAYS_MS.length; attempt += 1) {
+      const result = await this.runJson<BootstrapResult>(this.bootstrapScript());
+      if (!result.companyId) {
+        throw new Error("Chrome 中未找到 Ozon Seller 登录状态，请重新登录");
+      }
+      if (result.status === 401 || result.status === 403) {
+        throw new Error("Ozon 登录或类目读取权限已失效，请重新登录 Seller 并确认账号可访问类目分析");
+      }
+      if (result.status === 200) {
+        if (result.categories.length === 0) {
+          throw new Error("Ozon 类目树接口未返回一级类目，请检查 Seller 类目权限或接口响应");
+        }
+        return result;
+      }
+      if (!isRetryableStatus(result.status) || attempt === REQUEST_DELAYS_MS.length) {
+        throw new Error(result.message ?? `Ozon 类目树接口返回 ${result.status}`);
+      }
+      await this.sleep(REQUEST_DELAYS_MS[attempt]!);
+    }
+    throw new Error("Ozon 类目树接口重试失败");
+  }
+
   private bootstrapScript(): string {
     return `(async () => {
       const state = JSON.parse(localStorage.getItem("vuex") || "{}");
-      const companyId = state && state.user && state.user.contentId;
-      if (!companyId) return { companyId: "", categories: [] };
-      const read = () => [...document.querySelectorAll('input[name="category"]')]
-        .map((input) => { try { return JSON.parse(input.value); } catch { return null; } })
-        .filter((item) => item && item.level === 1)
-        .map((item) => ({ id: String(item.id), name: String(item.name) }));
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        const categories = read();
-        if (categories.length > 0) return { companyId: String(companyId), categories };
+      const companyId = String(state && state.user && state.user.contentId || "");
+      if (!companyId) return { companyId, categories: [], status: 0 };
+      const headers = { Accept: "application/json, text/plain, */*", "Content-Type": "application/json",
+        "accept-language": "ru", "x-o3-app-name": "seller-ui", "x-o3-company-id": companyId, "x-o3-language": "ru" };
+      try {
+        const response = await fetch("/api/v1/seller-tree/get", { method: "POST", headers, body: "{}" });
+        const payload = await response.json().catch(() => ({})) || {};
+        const categories = Object.values(payload.result || {}).flatMap((item) => {
+          const id = String(item?.descriptionCategoryId || "");
+          const name = String(item?.descriptionCategoryName || "");
+          return /^\\d+$/.test(id) && name ? [{ id, name }] : [];
+        });
+        return { companyId, categories, status: response.status,
+          message: payload.error && (payload.error.detail || payload.error.message) };
+      } catch (error) {
+        return { companyId, categories: [], status: 0, message: String(error) };
       }
-      return { companyId: String(companyId), categories: [] };
     })()`;
   }
 
@@ -221,32 +249,27 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
         group: "group_category3", period_slice: "slice_day", period: ${JSON.stringify(period)},
         sort: { direction: "direction_desc", metric: "metric_gmv" }, is_premium: false
       };
-      const response = await fetch("/api/site/exar-api/v2/gb/seller/metrics", {
-        method: "POST", headers: {
-          Accept: "application/json, text/plain, */*", "Content-Type": "application/json",
-          "accept-language": "zh-Hans", "x-o3-app-name": "seller-ui",
-          "x-o3-company-id": ${JSON.stringify(companyId)}, "x-o3-language": "zh-Hans",
-          "x-o3-page-type": "analytics_other_domain"
-        }, body: JSON.stringify(body)
-      });
-      let payload = {};
-      try { payload = await response.json(); } catch {}
-      return { status: response.status, items: payload.items,
-        message: payload.error && (payload.error.detail || payload.error.message) };
+      try {
+        const response = await fetch("/api/site/exar-api/v2/gb/seller/metrics", {
+          method: "POST", headers: {
+            Accept: "application/json, text/plain, */*", "Content-Type": "application/json",
+            "accept-language": "zh-Hans", "x-o3-app-name": "seller-ui",
+            "x-o3-company-id": ${JSON.stringify(companyId)}, "x-o3-language": "zh-Hans",
+            "x-o3-page-type": "analytics_other_domain"
+          }, body: JSON.stringify(body)
+        });
+        const payload = await response.json().catch(() => ({}));
+        return { status: response.status, items: payload.items,
+          message: payload.error && (payload.error.detail || payload.error.message) };
+      } catch (error) {
+        return { status: 0, message: String(error) };
+      }
     })()`;
   }
 
   private runJson<T>(script: string): Promise<T> {
-    return this.run(["browser", this.options.sessionName, "eval", script]).then((output) => {
-      const parsed = this.parseJson<T>(output);
-      if ((parsed as BootstrapResult).companyId === "") {
-        throw new Error("Chrome 中未找到 Ozon Seller 登录状态，请重新登录");
-      }
-      if (Array.isArray((parsed as BootstrapResult).categories) && (parsed as BootstrapResult).categories.length === 0) {
-        throw new Error("Ozon 类目选择器结构已变化，无法读取一级类目");
-      }
-      return parsed;
-    });
+    return this.run(["browser", this.options.sessionName, "eval", script])
+      .then((output) => this.parseJson<T>(output));
   }
 
   private parseJson<T>(output: string): T {

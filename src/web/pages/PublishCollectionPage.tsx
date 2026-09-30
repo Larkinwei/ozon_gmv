@@ -20,6 +20,14 @@ function isSupportedProductUrl(value: string): boolean {
   } catch { return false; }
 }
 
+/** Returns source fields that must be present before collection counts as complete. */
+function captureMissingFields(source: ResellSourceView): string[] {
+  const requiredFields = new Set([
+    "商品标题", "商品编号", "商品图片", "商品属性", "SKU 规格/价格/库存", "SKU 价格", "SKU 库存", "SKU 尺寸/重量",
+  ]);
+  return (source.missingFields ?? []).filter((field) => requiredFields.has(field));
+}
+
 /** Converts a browser extension snapshot into the GMV draft contract. */
 function collectedSource(rawValue: unknown): { sourceSku: string; title: string; sourceSnapshot: ResellSourceView; fieldOverrides: Record<string, unknown>; variants: PublishVariantDraft[] } {
   const raw = rawValue && typeof rawValue === "object" ? rawValue as Record<string, unknown> : {};
@@ -31,14 +39,21 @@ function collectedSource(rawValue: unknown): { sourceSku: string; title: string;
     id: crypto.randomUUID(), url, fileName: `${sourceType === "public_page" ? "ozon" : "1688"}-${sourceSku}-${index + 1}.jpg`, mimeType: "image/jpeg", byteSize: 0, width: 1, height: 1, source: "source" as const,
   }));
   const supplier = raw.seller && typeof raw.seller === "object" ? raw.seller as Record<string, unknown> : {};
-  const sourceVariants = Array.isArray(raw.skuVariants) && raw.skuVariants.length ? raw.skuVariants : sourceType === "public_page" ? [{ label: title, price: "", stock: null }] : [];
+  const sourceVariants = Array.isArray(raw.skuVariants) ? raw.skuVariants : [];
   const variants = sourceVariants.slice(0, 100).map((item, index) => {
     const variant = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const dimensions = variant.packageDimensions && typeof variant.packageDimensions === "object"
+      ? variant.packageDimensions as Record<string, unknown>
+      : {};
     return {
-      id: crypto.randomUUID(), sourceSkuId: String(variant.sourceSkuId ?? `dom-${index + 1}`), label: String(variant.label ?? ""),
-      imageUrl: String(variant.imageUrl ?? ""), richContent: "", videoUrl: "", offerId: `${sourceSku}-${index + 1}`.slice(0, 80),
+      id: crypto.randomUUID(), sourceSkuId: String(variant.sourceSkuId ?? ""), label: String(variant.label ?? ""),
+      imageUrl: String(variant.imageUrl ?? ""), richContent: "", videoUrl: "", offerId: "",
       purchasePrice: sourceType === "1688_collector" ? String(variant.price ?? "") : "", price: "", oldPrice: "", currency: "RUB", stock: Number.isInteger(variant.stock) ? Number(variant.stock) : null,
-      packageDimensions: { depth: "", width: "", height: "", dimensionUnit: "mm", weight: "", weightUnit: "g" },
+      packageDimensions: {
+        depth: String(dimensions.depth ?? ""), width: String(dimensions.width ?? ""), height: String(dimensions.height ?? ""),
+        dimensionUnit: dimensions.dimensionUnit === "cm" ? "cm" : "mm",
+        weight: String(dimensions.weight ?? ""), weightUnit: dimensions.weightUnit === "kg" ? "kg" : "g",
+      },
       attributes: variant.variantProps && typeof variant.variantProps === "object" ? variant.variantProps as Record<string, unknown> : {},
     };
   });
@@ -61,8 +76,17 @@ function collectedSource(rawValue: unknown): { sourceSku: string; title: string;
     missingFields: [
       ...(title ? [] : ["商品标题"]),
       ...(images.length ? [] : ["商品图片"]),
+      ...(sourceVariants.length ? [] : ["SKU 规格/价格/库存"]),
+      ...(sourceVariants.some((item) => item && typeof item === "object" && String((item as Record<string, unknown>).price ?? "").trim()) ? [] : ["SKU 价格"]),
+      ...(sourceVariants.some((item) => item && typeof item === "object" && Number.isInteger((item as Record<string, unknown>).stock)) ? [] : ["SKU 库存"]),
       ...(sourceType === "1688_collector" ? ["包装尺寸与重量"] : []), "Ozon 类目", "目标类目属性",
+      ...(Array.isArray(raw.missingFields) ? raw.missingFields.map(String) : []),
     ],
+    ...(raw.sourceDiagnostics && typeof raw.sourceDiagnostics === "object"
+      ? { sourceDiagnostics: raw.sourceDiagnostics as NonNullable<ResellSourceView["sourceDiagnostics"]> }
+      : {}),
+    descriptionImages: Array.isArray(raw.descriptionImages) ? raw.descriptionImages.filter((item): item is string => typeof item === "string" && /^https?:\/\//i.test(item)) : [],
+    sourceVideos: Array.isArray(raw.videos) ? raw.videos.filter((item): item is string => typeof item === "string" && /^https?:\/\//i.test(item)) : [],
   };
   return {
     sourceSku,
@@ -95,6 +119,8 @@ export default function PublishCollectionPage(): React.JSX.Element {
   const [collecting, setCollecting] = useState(false);
   const collectionAccepted = useRef(false);
   const [searchText, setSearchText] = useState("");
+  const [submittedSearch, setSubmittedSearch] = useState("");
+  const [collectionPlatform, setCollectionPlatform] = useState("all");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [confirmBatch, setConfirmBatch] = useState(false);
   const [batchResult, setBatchResult] = useState<PublishBatchSubmitResult | null>(null);
@@ -122,7 +148,8 @@ export default function PublishCollectionPage(): React.JSX.Element {
   });
   const drafts = draftsQuery.data ?? [];
   const visibleDrafts = drafts.filter((draft) => draft.workflowStage === activeStage)
-    .filter((draft) => `${draft.title || draft.sourceSnapshot.productName} ${draft.sourceSku}`.toLowerCase().includes(searchText.trim().toLowerCase()));
+    .filter((draft) => `${draft.title || draft.sourceSnapshot.productName} ${draft.sourceSku}`.toLowerCase().includes(submittedSearch.trim().toLowerCase()))
+    .filter((draft) => collectionPlatform === "all" || (collectionPlatform === "ozon" && draft.sourceType === "public_page") || (collectionPlatform === "1688" && draft.sourceType === "1688_collector") || (collectionPlatform === "manual" && draft.sourceType !== "public_page" && draft.sourceType !== "1688_collector"));
   const counts = {
     collected: drafts.filter((draft) => draft.workflowStage === "collected").length,
     processing: drafts.filter((draft) => draft.workflowStage === "processing").length,
@@ -133,19 +160,25 @@ export default function PublishCollectionPage(): React.JSX.Element {
   useEffect(() => {
     const onCollected = async (event: MessageEvent): Promise<void> => {
       if (event.source !== window || event.origin !== window.location.origin) return;
-      const message = event.data as { type?: string; requestId?: string; raw?: unknown; batchId?: string; index?: number; total?: number; accepted?: number; result?: { ok: boolean; error?: string }; summary?: { success: number; failed: number }; error?: string };
+      const message = event.data as { type?: string; requestId?: string; raw?: unknown; batchId?: string; index?: number; total?: number; accepted?: number; result?: { ok: boolean; error?: string; incompleteFields?: string[] }; summary?: { saved: number; complete: number; incomplete: number; failed: number }; error?: string; incompleteFields?: string[] };
       if (message.type === "OZON_GMV_BATCH_ACCEPTED" && message.batchId) {
         collectionAccepted.current = true;
         setCollectMessage(`插件已接收 ${message.accepted ?? 0} 个链接，开始逐条采集…`);
         return;
       }
       if (message.type === "OZON_GMV_BATCH_PROGRESS" && message.batchId) {
-        setCollectMessage(`正在采集第 ${message.index ?? 0}/${message.total ?? 0} 个链接${message.result?.ok ? "，已加入采集箱" : `，失败：${message.result?.error || "读取商品信息失败"}`}`);
+        const progress = message.result?.ok
+          ? message.result.incompleteFields?.length
+            ? `，已保存，待补全：${message.result.incompleteFields.join("、")}`
+            : "，已保存到采集箱"
+          : `，失败：${message.result?.error || "读取商品信息失败"}`;
+        setCollectMessage(`正在采集第 ${message.index ?? 0}/${message.total ?? 0} 个链接${progress}`);
         return;
       }
       if (message.type === "OZON_GMV_BATCH_COMPLETE" && message.batchId) {
         setCollecting(false);
-        setCollectMessage(message.error || `采集完成：成功 ${message.summary?.success ?? 0} 个，失败 ${message.summary?.failed ?? 0} 个`);
+        const summary = message.summary ?? { saved: 0, complete: 0, incomplete: 0, failed: 0 };
+        setCollectMessage(message.error || `采集完成：已保存 ${summary.saved} 个（完整 ${summary.complete} 个，待补全 ${summary.incomplete} 个），失败 ${summary.failed} 个`);
         void queryClient.invalidateQueries({ queryKey: ["publish-drafts"] });
         return;
       }
@@ -153,6 +186,7 @@ export default function PublishCollectionPage(): React.JSX.Element {
       try {
         const product = collectedSource(message.raw);
         if (!product.sourceSku) throw new Error("采集数据缺少商品编号");
+        const incompleteFields = captureMissingFields(product.sourceSnapshot);
         const existing = await fetchPublishDrafts();
         const sourceType = product.sourceSnapshot.sourceType || "1688_collector";
         const duplicate = existing.find((draft) => draft.sourceType === sourceType && draft.sourceSku === product.sourceSku);
@@ -164,7 +198,7 @@ export default function PublishCollectionPage(): React.JSX.Element {
           setImportMessage(`已加入采集箱：${product.title || product.sourceSku}`);
         }
         await queryClient.invalidateQueries({ queryKey: ["publish-drafts"] });
-        window.postMessage({ type: "OZON_GMV_SOURCE_COLLECT_RESULT", requestId: message.requestId, ok: true }, window.location.origin);
+        window.postMessage({ type: "OZON_GMV_SOURCE_COLLECT_RESULT", requestId: message.requestId, ok: true, incompleteFields }, window.location.origin);
       } catch (error) {
         setImportMessage(error instanceof Error ? `采集导入失败：${error.message}` : "采集导入失败");
         window.postMessage({ type: "OZON_GMV_SOURCE_COLLECT_RESULT", requestId: message.requestId, ok: false, error: error instanceof Error ? error.message : "采集导入失败" }, window.location.origin);
@@ -199,7 +233,7 @@ export default function PublishCollectionPage(): React.JSX.Element {
     <main className="publish-collection-page">
       <header className="publish-collection-heading">
         <div><p className="eyebrow">PRODUCT PIPELINE</p><h1>商品采集与加工</h1><p>把来源商品收进采集箱，完善上架信息后进入发布任务。</p></div>
-        <div className="publish-collection-heading__actions"><button className="secondary-button" type="button" onClick={() => { setCollectModal(true); setCollectMessage(""); }}><Link2 size={16} />一键采集</button><Link className="primary-button" to="/operations/publish/workbench"><Plus size={17} />新建商品</Link></div>
+        <div className="publish-collection-heading__actions"><button className="secondary-button" type="button" onClick={() => { setCollectModal(true); setCollectMessage(""); }}><Link2 size={16} />一键采集</button><Link className="primary-button" to="/operations/publish/workbench"><Plus size={17} />自建链接</Link></div>
       </header>
       {importMessage && <p className="publish-import-message" role="status">{importMessage}</p>}
       <section className="publish-pipeline-stats" aria-label="商品流程统计">
@@ -210,20 +244,25 @@ export default function PublishCollectionPage(): React.JSX.Element {
       </section>
       <section className="publish-draft-panel">
         <div className="publish-draft-panel__heading"><div><p className="eyebrow">{activeStage === "collected" ? "COLLECTION INBOX" : activeStage === "processing" ? "PROCESSING BOX" : "READY TO LIST"}</p><h2>{activeStage === "collected" ? "采集箱" : activeStage === "processing" ? "加工箱" : "待上架"}</h2></div><span>{visibleDrafts.length} 件商品</span></div>
-        <div className="publish-draft-toolbar"><label><span className="visually-hidden">搜索商品</span><input value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="搜索商品名称 / SKU" /></label><label className="publish-select-all"><input type="checkbox" checked={visibleDrafts.length > 0 && visibleDrafts.every((draft) => selectedIds.includes(draft.id))} onChange={(event) => setSelectedIds(event.target.checked ? visibleDrafts.map((draft) => draft.id) : [])} />全选</label>{selectedIds.length > 0 && <div className="publish-bulk-actions"><span>已选 {selectedIds.length} 件商品组</span>{activeStage === "ready" && <button className="primary-button" type="button" onClick={() => setConfirmBatch(true)}>批量确认发布</button>}<button className="secondary-button" type="button" disabled={bulkMoveMutation.isPending} onClick={() => bulkMoveMutation.mutate({ ids: selectedIds, workflowStage: bulkReturnStage })}>{activeStage === "collected" ? "批量加入加工箱" : activeStage === "ready" ? "退回加工箱" : "移回采集箱"}</button><button className="secondary-button" type="button" disabled={bulkDeleteMutation.isPending} onClick={() => bulkDeleteMutation.mutate(selectedIds)}>批量删除</button></div>}</div>
+        <div className="publish-draft-toolbar"><label><span className="visually-hidden">搜索商品</span><input value={searchText} onChange={(event) => setSearchText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setSubmittedSearch(searchText); }} placeholder="搜索商品名称 / SKU" /></label>{activeStage === "collected" && <select aria-label="来源平台" value={collectionPlatform} onChange={(event) => setCollectionPlatform(event.target.value)}><option value="all">全部平台</option><option value="1688">1688</option><option value="ozon">Ozon</option><option value="manual">自建</option></select>}<button className="secondary-button" type="button" onClick={() => setSubmittedSearch(searchText)}>搜索</button><label className="publish-select-all"><input type="checkbox" checked={visibleDrafts.length > 0 && visibleDrafts.every((draft) => selectedIds.includes(draft.id))} onChange={(event) => setSelectedIds(event.target.checked ? visibleDrafts.map((draft) => draft.id) : [])} />全选</label>{selectedIds.length > 0 && <div className="publish-bulk-actions"><span>已选 {selectedIds.length} 件商品组</span>{activeStage === "ready" && <button className="primary-button" type="button" onClick={() => setConfirmBatch(true)}>批量确认发布</button>}<button className="secondary-button" type="button" disabled={bulkMoveMutation.isPending} onClick={() => bulkMoveMutation.mutate({ ids: selectedIds, workflowStage: bulkReturnStage })}>{activeStage === "collected" ? "批量加入加工箱" : activeStage === "ready" ? "退回加工箱" : "移回采集箱"}</button><button className="secondary-button" type="button" disabled={bulkDeleteMutation.isPending} onClick={() => bulkDeleteMutation.mutate(selectedIds)}>批量删除</button></div>}</div>
         {draftsQuery.isLoading ? <div className="publish-draft-empty"><RefreshCw className="is-spinning" size={20} />正在读取商品草稿…</div> : visibleDrafts.length === 0 ? <div className="publish-draft-empty"><PackageCheck size={24} /><strong>{activeStage === "collected" ? "采集箱还是空的" : activeStage === "processing" ? "暂时没有待加工商品" : "当前没有待上架商品"}</strong><span>{activeStage === "ready" ? "商品完成预检并保存后会出现在这里。" : "粘贴 Ozon 或 1688 商品链接即可批量采集并创建商品草稿。"}</span>{activeStage !== "ready" && <><button className="link-button" type="button" onClick={() => { setCollectModal(true); setCollectMessage(""); }}><Link2 size={15} />粘贴商品链接并采集</button><Link to="/operations/publish/extension">查看浏览器插件状态 <ArrowRight size={15} /></Link></>}</div> : (
-          <div className="publish-draft-list">
+          <div className="publish-draft-table-wrap"><table className="publish-draft-table"><thead><tr><th>选择</th><th>图片</th><th>产品名称</th><th>采集价</th><th>SKU 数量</th><th>来源</th><th>采集时间</th><th>操作</th></tr></thead><tbody>
             {visibleDrafts.map((draft) => {
               const source = draft.sourceSnapshot;
               const image = source.images[0]?.url || source.imageUrl;
-              return <article className="publish-draft-row" key={draft.id}>
-                <label className="publish-row-select"><input type="checkbox" aria-label={`选择 ${draft.title || source.productName || draft.sourceSku}`} checked={selectedIds.includes(draft.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, draft.id] : current.filter((id) => id !== draft.id))} /></label>
-                <div className="publish-draft-row__image">{image ? <ProductImage key={image} src={image} alt={`${draft.title || source.productName} 商品图`} fallbackLabel="暂无图片" /> : <PackageCheck size={22} aria-hidden="true" />}</div>
-                <div className="publish-draft-row__content"><div className="publish-draft-row__title"><strong>{draft.title || source.productName || "未命名商品"}</strong><span>{stageLabels[draft.workflowStage]}</span></div><p>{draft.sourceType === "1688_collector" ? "1688 采集" : draft.sourceType === "public_page" ? "Ozon 链接采集" : draft.sourceType === "json_import" ? "商品包导入" : draft.sourceType} · SKU {draft.sourceSku || "待填写"} · {draft.variants.length} 个变体</p><small>{source.images.length} 张图片 · {draft.sourceType === "public_page" ? "来源售价" : "供货价"} {String(draft.sourceType === "public_page" ? source.currentPrice.amount || "未识别" : draft.fieldOverrides.supplierPriceRange || draft.fieldOverrides.supplierPrice || "待补充")} {draft.fieldOverrides.supplierPlatform === "1688" ? "CNY" : source.currentPrice.currency} · 更新于 {new Date(draft.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</small></div>
-                <div className="publish-draft-row__actions">{activeStage === "collected" ? <button className="secondary-button" type="button" disabled={moveMutation.isPending} onClick={() => moveMutation.mutate({ id: draft.id, workflowStage: "processing" })}>加入加工箱 <ArrowRight size={15} /></button> : <button className="primary-button" type="button" onClick={() => navigate(`/operations/publish/drafts/${encodeURIComponent(draft.id)}`)}>{activeStage === "ready" ? "去上架" : "编辑商品"} <ArrowRight size={15} /></button>}<button className="icon-button" type="button" aria-label="删除草稿" title="删除草稿" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(draft.id)}><Trash2 size={16} /></button></div>
-              </article>;
+              const sourceName = draft.sourceType === "1688_collector" ? "1688" : draft.sourceType === "public_page" ? "Ozon" : draft.sourceType === "json_import" ? "商品包" : draft.sourceType;
+              const sourcePrice = String(draft.sourceType === "public_page" ? source.currentPrice.amount || "—" : draft.fieldOverrides.supplierPriceRange || draft.fieldOverrides.supplierPrice || "—");
+              return <tr key={draft.id}>
+                <td><input type="checkbox" aria-label={`选择 ${draft.title || source.productName || draft.sourceSku}`} checked={selectedIds.includes(draft.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, draft.id] : current.filter((id) => id !== draft.id))} /></td>
+                <td><span className="publish-draft-table__image">{image ? <ProductImage key={image} src={image} alt={`${draft.title} 商品图`} fallbackLabel="暂无图片" /> : <PackageCheck size={20} aria-hidden="true" />}</span></td>
+                <td><strong>{draft.title || source.productName || "未命名商品"}</strong><small>{draft.sourceSku || "SKU 待填写"} · {source.images.length} 张图片</small></td>
+                <td>{sourcePrice} <small>{draft.fieldOverrides.supplierPlatform === "1688" ? "CNY" : source.currentPrice.currency}</small></td>
+                <td>{draft.variants.length}</td><td>{sourceName}</td>
+                <td>{new Date(draft.createdAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</td>
+                <td><div className="publish-draft-table__actions">{activeStage === "collected" ? <button className="secondary-button" type="button" disabled={moveMutation.isPending} onClick={() => moveMutation.mutate({ id: draft.id, workflowStage: "processing" })}>加入加工箱 <ArrowRight size={14} /></button> : <button className="primary-button" type="button" onClick={() => navigate(`/operations/publish/drafts/${encodeURIComponent(draft.id)}`)}>{activeStage === "ready" ? "去上架" : "编辑加工信息"} <ArrowRight size={14} /></button>}<button className="icon-button" type="button" aria-label="删除草稿" title="删除草稿" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(draft.id)}><Trash2 size={15} /></button></div></td>
+              </tr>;
             })}
-          </div>
+          </tbody></table></div>
         )}
       </section>
       {collectModal && <div className="dialog-backdrop" role="presentation"><section className="dialog collect-links-dialog" role="dialog" aria-modal="true" aria-labelledby="collect-links-title"><div className="dialog-heading"><div><p className="eyebrow">COLLECT PRODUCTS</p><h2 id="collect-links-title">一键采集</h2></div><button className="icon-button" type="button" onClick={() => setCollectModal(false)} aria-label="关闭">×</button></div><p>粘贴 Ozon 或 1688 商品详情页链接，每行一个，最多提交 50 条。浏览器插件会逐条读取商品信息并加入采集箱。</p><label className="collect-links-label" htmlFor="collect-links-input">采集链接 <small>已识别 {new Set(collectUrls.split(/[\n\r\t ,]+/).map((value) => value.trim()).filter(isSupportedProductUrl)).size} 条有效链接</small></label><textarea id="collect-links-input" value={collectUrls} onChange={(event) => setCollectUrls(event.target.value)} placeholder={"https://www.ozon.ru/product/...\nhttps://detail.1688.com/offer/..."} rows={8} disabled={collecting} />{collectMessage && <p className="collect-links-status" role="status">{collectMessage}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setCollectModal(false)}>取消</button><button className="primary-button" type="button" disabled={collecting || !collectUrls.trim()} onClick={submitCollection}>{collecting ? "正在采集…" : "提交采集"}</button></div></section></div>}

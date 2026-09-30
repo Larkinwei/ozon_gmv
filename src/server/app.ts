@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 
 import cookie from "@fastify/cookie";
@@ -24,6 +24,7 @@ import { WallboardPairingsRepository } from "./db/wallboard-pairings-repository"
 import type { DashboardEventBus } from "./realtime/event-bus";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerAiRoutes } from "./routes/ai";
+import { registerAgentPricingRoutes } from "./routes/agent-pricing";
 import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerFinanceRoutes } from "./routes/finance";
 import { registerNotificationRoutes } from "./routes/notifications";
@@ -31,6 +32,7 @@ import { registerInventoryRoutes } from "./routes/inventory";
 import { registerOrderSearchRoutes } from "./routes/order-search";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSelectionRoutes } from "./routes/selection";
+import { registerPublishModelRoutes } from "./routes/publish-models";
 import { registerSelectionCategoryRoutes } from "./routes/selection-categories";
 import { registerSelectionDiscoveryRoutes } from "./routes/selection-discovery";
 import { registerSetupRoutes } from "./routes/setup";
@@ -118,6 +120,7 @@ async function registerWebAssets(app: FastifyInstance): Promise<void> {
   if (!existsSync(webRoot)) {
     return;
   }
+  app.get("/", async (_request, reply) => reply.header("Cache-Control", "no-store").type("text/html; charset=utf-8").send(readFileSync(resolve(webRoot, "index.html"))));
   await app.register(fastifyStatic, {
     root: webRoot,
     wildcard: true,
@@ -223,11 +226,13 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
   registerFinanceRoutes(app, finance);
+  if (exchangeRate) registerAgentPricingRoutes(app, exchangeRate);
   if (exchangeRate && pricingScenarios) registerToolsRoutes(app, exchangeRate, pricingScenarios);
   const dashboardRepository = new DashboardRepository(database);
   registerOrderSearchRoutes(app, dashboardRepository);
   registerDashboardRoutes(app, dashboardRepository, events);
   registerSelectionRoutes(app, selection, myData, resell, resellImages, publishDrafts);
+  registerPublishModelRoutes(app, settings);
   registerSelectionCategoryRoutes(app, categories);
   registerSelectionDiscoveryRoutes(app, discovery);
   registerSettingsRoutes(app, proxySettings, updates, imageStorage, aiRelaySettings);

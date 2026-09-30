@@ -38,6 +38,7 @@ const COLLECTOR_ENABLED_KEY = "selection.categories.collector_enabled";
 const OPENCLI_PATH_KEY = "selection.categories.opencli_path";
 const CLOUD_BASE_URL_KEY = "selection.categories.cloud_base_url";
 const UPLOAD_TOKEN_KEY = "selection.categories.upload_token_ciphertext";
+const RESUMABLE_STAGE_PAGE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 interface DiscoveryModuleOptions {
   categoryCollectorFactory?: (executable: string, sessionName: string) => CategoryCollectorPort;
@@ -223,7 +224,7 @@ export class DiscoveryModule {
       stageProgress: parseProgress(row.stage_progress_json),
       error: row.error_message,
       cloudPublished: row.cloud_published === 1,
-      resumable: row.status === "failed" && this.stagePageCount(row.id) > 0,
+      resumable: row.status === "failed" && this.hasRecentStagePages(row.id),
       startedAt: iso(row.created_at_ms),
       finishedAt: iso(row.finished_at_ms),
     };
@@ -234,7 +235,8 @@ export class DiscoveryModule {
     const settings = this.viewSettings();
     if (!settings.collectorEnabled) throw new Error("当前设备是只读客户端，请在主采集机发起同步");
     this.cloudSync = null;
-    const previous = this.latestResumableJob();
+    const resumeAfter = Date.now() - RESUMABLE_STAGE_PAGE_MAX_AGE_MS;
+    const previous = this.latestResumableJob(resumeAfter);
     const jobId = randomUUID();
     this.database.prepare(
       `INSERT INTO selection_discovery_jobs
@@ -243,11 +245,12 @@ export class DiscoveryModule {
        VALUES (?, 'running', 'categories', 0, 0, NULL, '{}', NULL, 0, ?, NULL)`,
     ).run(jobId, Date.now());
     if (previous) {
+      // 只续用一天内实际采集的页面，避免失败任务把更早继承的缓存继续传递。
       this.database.prepare(
         `INSERT INTO selection_discovery_stage_pages (job_id, page_key, stage, payload_json, created_at_ms)
          SELECT ?, page_key, stage, payload_json, created_at_ms
-         FROM selection_discovery_stage_pages WHERE job_id = ?`,
-      ).run(jobId, previous.id);
+         FROM selection_discovery_stage_pages WHERE job_id = ? AND created_at_ms >= ?`,
+      ).run(jobId, previous.id, resumeAfter);
     }
     this.activeTask = this.runSync(jobId, settings).finally(() => { this.activeTask = null; });
     return this.getSync();
@@ -723,16 +726,20 @@ export class DiscoveryModule {
     return (this.database.prepare("SELECT * FROM selection_discovery_jobs WHERE id = ?").get(jobId) as DiscoveryJobRow | undefined) ?? null;
   }
 
-  private stagePageCount(jobId: string): number {
-    return (this.database.prepare("SELECT COUNT(*) AS count FROM selection_discovery_stage_pages WHERE job_id = ?").get(jobId) as { count: number }).count;
+  /** Reports whether a failed job has checkpoint pages fresh enough to resume. */
+  private hasRecentStagePages(jobId: string): boolean {
+    const resumeAfter = Date.now() - RESUMABLE_STAGE_PAGE_MAX_AGE_MS;
+    return Boolean(this.database.prepare(
+      "SELECT 1 FROM selection_discovery_stage_pages WHERE job_id = ? AND created_at_ms >= ? LIMIT 1",
+    ).get(jobId, resumeAfter));
   }
 
-  private latestResumableJob(): DiscoveryJobRow | null {
+  private latestResumableJob(resumeAfter: number): DiscoveryJobRow | null {
     return (this.database.prepare(
       `SELECT j.* FROM selection_discovery_jobs j WHERE j.status = 'failed'
-       AND EXISTS (SELECT 1 FROM selection_discovery_stage_pages p WHERE p.job_id = j.id)
+       AND EXISTS (SELECT 1 FROM selection_discovery_stage_pages p WHERE p.job_id = j.id AND p.created_at_ms >= ?)
        ORDER BY j.created_at_ms DESC LIMIT 1`,
-    ).get() as DiscoveryJobRow | undefined) ?? null;
+    ).get(resumeAfter) as DiscoveryJobRow | undefined) ?? null;
   }
 
   private latestBatch(): DiscoveryBatchRow | null {

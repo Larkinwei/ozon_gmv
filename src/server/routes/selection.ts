@@ -87,6 +87,9 @@ const resellInputSchema = z.object({
     barcode: z.string().trim().max(100).optional(),
     fieldSources: z.record(z.string(), z.string()).optional(),
     missingFields: z.array(z.string()).optional(),
+    sourceDiagnostics: z.object({ extractor: z.string(), collectedAt: z.string(), warnings: z.array(z.string()) }).optional(),
+    descriptionImages: z.array(z.string().url()).max(100).optional(),
+    sourceVideos: z.array(z.string().url()).max(20).optional(),
     sourceType: z.enum(publishSourceTypes).optional(),
     typeId: z.number().int().positive().nullable().default(null),
     descriptionCategoryId: z.number().int().positive().nullable().default(null),
@@ -109,7 +112,7 @@ const resellInputSchema = z.object({
   oldPrice: z.string().trim().max(50).optional(),
   currency: z.string().trim().length(3).transform((value) => value.toUpperCase()),
   vat: z.string().trim().min(1).max(30),
-  stock: z.coerce.number().int().min(0).max(1_000_000).default(2),
+  stock: z.coerce.number().int().min(0).max(1_000_000),
   fulfillmentMode: z.enum(["FBO", "FBS", "RFBS"]),
   warehouseId: z.string().trim().max(100).default(""),
   title: z.string().trim().max(500).optional(),
@@ -432,6 +435,73 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
       return reply.code(isFileTooLarge(error) ? 413 : 400).send({ error: "PUBLISH_SOURCE_PREVIEW_FAILED", message: error instanceof Error ? error.message : "无法预览商品包" });
     }
   });
+  app.get("/api/selection/publish/online-products", { preHandler: requireSession }, async (request, reply) => {
+    const query = z.object({ storeId: z.string().uuid(), visibility: z.enum(["ALL", "VISIBLE", "INVISIBLE", "ARCHIVED"]).default("ALL"), productIds: z.string().optional() }).parse(request.query);
+    try {
+      const productIds = query.productIds ? [...new Set(query.productIds.split(",").map((id) => id.trim()).filter(Boolean))] : undefined;
+      if (productIds && (productIds.length > 1000 || productIds.some((id) => !/^\d+$/.test(id)))) return reply.code(400).send({ error: "ONLINE_PRODUCTS_READ_FAILED", message: "所选商品编号无效或超过 1000 个" });
+      const items = await resell.listOnlineProducts({ storeId: query.storeId, visibility: query.visibility, ...(productIds ? { productIds } : {}) });
+      return { storeId: query.storeId, visibility: query.visibility, items, count: items.length, readAt: new Date().toISOString() };
+    } catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(422).send({ error: "ONLINE_PRODUCTS_READ_FAILED", message: error.message });
+      throw error;
+    }
+  });
+  app.post("/api/selection/publish/online-products/prices", { preHandler: requireSession }, async (request, reply) => {
+    const body = z.object({ storeId: z.string().uuid(), edits: z.array(z.object({ productId: z.string().regex(/^\d+$/), price: z.string().trim().min(1).max(50), oldPrice: z.string().trim().max(50).optional(), minimumPrice: z.string().trim().max(50).optional() })).min(1).max(1000) }).parse(request.body);
+    try { return await resell.updateOnlineProductPrices({ storeId: body.storeId, edits: body.edits.map(({ productId, price, oldPrice, minimumPrice }) => ({ productId, price, ...(oldPrice === undefined ? {} : { oldPrice }), ...(minimumPrice === undefined ? {} : { minimumPrice }) })) }); }
+    catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(422).send({ error: "ONLINE_PRODUCT_PRICE_UPDATE_FAILED", message: error.message });
+      throw error;
+    }
+  });
+  app.get("/api/selection/publish/online-products/warehouses", { preHandler: requireSession }, async (request, reply) => {
+    const query = z.object({ storeId: z.string().uuid() }).parse(request.query);
+    try { return { items: await resell.listOnlineProductWarehouses(query.storeId) }; }
+    catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(422).send({ error: "ONLINE_PRODUCT_WAREHOUSES_READ_FAILED", message: error.message });
+      throw error;
+    }
+  });
+  app.post("/api/selection/publish/online-products/stocks", { preHandler: requireSession }, async (request, reply) => {
+    const body = z.object({ storeId: z.string().uuid(), warehouseId: z.string().min(1).max(50), items: z.array(z.object({ productId: z.string().regex(/^\d+$/), stock: z.number().int().min(0).max(1_000_000) })).min(1).max(1000) }).parse(request.body);
+    try { return await resell.updateOnlineProductStocks(body); }
+    catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(422).send({ error: "ONLINE_PRODUCT_STOCK_UPDATE_FAILED", message: error.message });
+      throw error;
+    }
+  });
+  app.post("/api/selection/publish/online-products/archive", { preHandler: requireSession }, async (request, reply) => {
+    const body = z.object({ storeId: z.string().uuid(), productIds: z.array(z.string().regex(/^\d+$/)).min(1).max(1000) }).parse(request.body);
+    try { return await resell.archiveOnlineProducts(body); }
+    catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(422).send({ error: "ONLINE_PRODUCT_ARCHIVE_FAILED", message: error.message });
+      throw error;
+    }
+  });
+  app.post("/api/selection/publish/online-products/source-links", { preHandler: requireSession }, async (request, reply) => {
+    const body = z.object({ storeId: z.string().uuid(), edits: z.array(z.object({ productId: z.string().regex(/^\d+$/), sourceUrl: z.string().trim().max(2000).refine((value) => !value || /^https?:\/\//i.test(value), "链接需以 http:// 或 https:// 开头") })).min(1).max(1000) }).parse(request.body);
+    try { return resell.updateOnlineProductSourceLinks(body); }
+    catch (error) {
+      if (error instanceof ResellValidationError) return reply.code(422).send({ error: "ONLINE_PRODUCT_SOURCE_LINK_UPDATE_FAILED", message: error.message });
+      throw error;
+    }
+  });
+  app.post("/api/selection/publish/distribution/submit", { preHandler: requireSession }, async (request, reply) => {
+    const body = z.object({ sourceTaskIds: z.array(z.string().uuid()).min(1).max(100), targetStoreIds: z.array(z.string().uuid()).min(1).max(20) }).parse(request.body);
+    const submitted: Array<{ sourceTaskId: string; targetStoreId: string; taskId: string; status: string }> = [];
+    const skipped: Array<{ sourceTaskId: string; targetStoreId: string; reason: string }> = [];
+    for (const sourceTaskId of [...new Set(body.sourceTaskIds)]) for (const targetStoreId of [...new Set(body.targetStoreIds)]) {
+      try {
+        const task = await resell.distributeTask({ sourceTaskId, targetStoreId });
+        submitted.push({ sourceTaskId, targetStoreId, taskId: task.id, status: task.status });
+      } catch (error) {
+        if (error instanceof ResellValidationError) skipped.push({ sourceTaskId, targetStoreId, reason: error.message });
+        else throw error;
+      }
+    }
+    return reply.code(202).send({ submitted, skipped });
+  });
   app.post("/api/selection/publish/sources/import", { preHandler: requireSession }, async (request, reply) => {
     const body = publishDraftSchema.parse(request.body);
     return reply.code(201).send(publishDrafts.create(body as Parameters<PublishDraftsModule["create"]>[0]));
@@ -479,7 +549,7 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
       const draft = publishDrafts.get(draftId);
       if (!draft) { skipped.push({ draftId, title: null, reason: "商品草稿不存在" }); continue; }
       if (draft.workflowStage !== "ready") { skipped.push({ draftId, title: draft.title, reason: "商品组尚未完成预检" }); continue; }
-      if (draft.sourceType !== "1688_collector" || draft.variants.length === 0) { skipped.push({ draftId, title: draft.title, reason: "当前仅支持包含变体的 1688 商品组" }); continue; }
+      if (!(["1688_collector", "public_page"] as string[]).includes(draft.sourceType) || draft.variants.length === 0) { skipped.push({ draftId, title: draft.title, reason: "当前仅支持包含变体的 1688 或 Ozon 商品组" }); continue; }
       const overrides = draft.fieldOverrides;
       const source = draft.sourceSnapshot;
       const storeId = String(overrides.storeId ?? "");

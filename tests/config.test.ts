@@ -16,6 +16,7 @@ describe("runtime configuration", () => {
       expect(first.ENCRYPTION_KEY).toBe(second.ENCRYPTION_KEY);
       expect(first.ADMIN_HOST).toBe("127.0.0.1");
       expect(first.ADMIN_PORT).toBe(3001);
+      expect(first.OZON_API_BASE_URL).toBe("https://api-seller.ozon.ru");
       expect(existsSync(join(dataDir, "config", "runtime-secrets.json"))).toBe(true);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

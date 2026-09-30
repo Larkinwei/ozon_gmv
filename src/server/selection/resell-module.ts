@@ -21,13 +21,13 @@ import type { AppConfig } from "../config";
 import type { AppDatabase } from "../db/database";
 import { StoresRepository, type StoreRecord } from "../db/stores-repository";
 import { decryptSecret } from "../security/encryption";
-import { OzonClient, type OzonCategoryAttribute, type OzonProductImportItemResult } from "../ozon/client";
+import { OzonClient, type OzonCategoryAttribute, type OzonListedProduct, type OzonProductImportItemResult } from "../ozon/client";
+import type { OzonProductInfo } from "../ozon/schemas";
 import type { OzonDescriptionCategoryNode } from "../ozon/schemas";
 import type { MyDataModule } from "./my-data-module";
 import { ResellImageService } from "./resell-image-service";
 import { hasPublishAttributeValue } from "../../shared/publish-attributes";
 
-const DEFAULT_STOCK = 2;
 const PENDING_IMPORT_POLL_INTERVAL_MS = 30_000;
 const MAX_STOCK_POLLS = 6;
 const STOCK_POLL_INTERVAL_MS = 2_000;
@@ -525,6 +525,236 @@ export class ResellModule {
     };
   }
 
+  /** Reads a bounded set of products from one connected Ozon seller store. */
+  public async listOnlineProducts(input: { storeId: string; visibility?: string; productIds?: string[] }): Promise<OzonListedProduct[]> {
+    const store = await this.stores.findById(input.storeId);
+    if (!store || !store.enabled || store.platform !== "ozon") {
+      throw new ResellValidationError(["目标 Ozon 店铺不存在或已停用"]);
+    }
+    const client = this.clientFor(store, 1);
+    if (input.productIds?.length) {
+      const products = await client.getProductInfoByProductIds(input.productIds);
+      return products.flatMap((product): OzonListedProduct[] => {
+        const productId = product.product_id ?? product.id;
+        const offerId = product.offer_id.trim();
+        if (!productId || !offerId) return [];
+        return [{
+          productId,
+          offerId,
+          productName: product.product_name ?? product.name ?? null,
+          imageUrl: product.primary_image[0] ?? product.images[0] ?? null,
+          sku: product.sku ?? product.sources[0]?.sku?.toString() ?? null,
+          status: product.statuses?.status_name ?? product.status_name ?? product.statuses?.status ?? product.status ?? null,
+          archived: product.is_archived ?? null,
+          price: product.price ?? null,
+          oldPrice: product.old_price ?? null,
+          minimumPrice: product.min_price ?? null,
+          currencyCode: product.currency_code ?? null,
+          vat: product.vat ?? null,
+          sourceUrl: this.getOnlineProductSourceUrl(input.storeId, productId),
+          volumeWeight: product.volume_weight ?? null,
+          createdAt: product.created_at ?? null,
+          statusFailed: product.statuses?.status_failed ?? null,
+          validationStatus: product.statuses?.validation_status ?? null,
+          hasFboStocks: null,
+          hasFbsStocks: null,
+        }];
+      });
+    }
+    const items: OzonListedProduct[] = [];
+    let lastId = "";
+    for (let page = 0; page < 20; page += 1) {
+      const result = await client.listProductPage({ visibility: input.visibility ?? "ALL", lastId, limit: 1000 });
+      items.push(...result.items);
+      if (!result.hasNext || !result.lastId || result.lastId === lastId) break;
+      lastId = result.lastId;
+    }
+    const metadata = new Map<string, OzonProductInfo>();
+    for (let offset = 0; offset < items.length; offset += 1000) {
+      const products = await client.getProductInfoByProductIds(items.slice(offset, offset + 1000).map((item) => item.productId));
+      products.forEach((product) => {
+        const id = product.product_id ?? product.id;
+        if (id) metadata.set(id, product);
+      });
+    }
+    const sourceUrls = this.listOnlineProductSourceUrls(input.storeId);
+    return items.map((item) => {
+      const product = metadata.get(item.productId);
+      return {
+        ...item,
+        productName: product?.product_name ?? product?.name ?? null,
+        imageUrl: product?.primary_image[0] ?? product?.images[0] ?? null,
+        sku: product?.sku ?? product?.sources[0]?.sku?.toString() ?? null,
+        status: product?.statuses?.status_name ?? product?.status_name ?? product?.statuses?.status ?? product?.status ?? null,
+        archived: product?.is_archived ?? item.archived,
+        price: product?.price ?? null,
+        oldPrice: product?.old_price ?? null,
+        minimumPrice: product?.min_price ?? null,
+        currencyCode: product?.currency_code ?? null,
+        vat: product?.vat ?? null,
+        sourceUrl: sourceUrls.get(item.productId) ?? null,
+        volumeWeight: product?.volume_weight ?? null,
+        createdAt: product?.created_at ?? null,
+        statusFailed: product?.statuses?.status_failed ?? null,
+        validationStatus: product?.statuses?.validation_status ?? null,
+      };
+    });
+  }
+
+  /** Returns the GMV-only source URL stored for an online product card. */
+  private getOnlineProductSourceUrl(storeId: string, productId: string): string | null {
+    return this.database.prepare<[string, string], { source_url: string }>(
+      "SELECT source_url FROM online_product_source_links WHERE store_id = ? AND product_id = ?",
+    ).get(storeId, productId)?.source_url ?? null;
+  }
+
+  /** Reads local source-link metadata once for the complete online-products result. */
+  private listOnlineProductSourceUrls(storeId: string): Map<string, string> {
+    const rows = this.database.prepare<[string], { product_id: string; source_url: string }>(
+      "SELECT product_id, source_url FROM online_product_source_links WHERE store_id = ?",
+    ).all(storeId);
+    return new Map(rows.map((row) => [row.product_id, row.source_url]));
+  }
+
+  /** Saves source navigation URLs locally without changing the Ozon product card. */
+  public updateOnlineProductSourceLinks(input: { storeId: string; edits: Array<{ productId: string; sourceUrl: string }> }): { updated: string[] } {
+    const store = this.database.prepare<[string], { id: string; enabled: number; platform: string }>(
+      "SELECT id, enabled, platform FROM stores WHERE id = ?",
+    ).get(input.storeId);
+    if (!store || store.enabled !== 1 || store.platform !== "ozon") throw new ResellValidationError(["目标 Ozon 店铺不存在或已停用"]);
+    const statement = this.database.prepare("INSERT INTO online_product_source_links (store_id, product_id, source_url, updated_at_ms) VALUES (?, ?, ?, ?) ON CONFLICT(store_id, product_id) DO UPDATE SET source_url = excluded.source_url, updated_at_ms = excluded.updated_at_ms");
+    const deleteStatement = this.database.prepare("DELETE FROM online_product_source_links WHERE store_id = ? AND product_id = ?");
+    const updated = [...new Set(input.edits.map((edit) => edit.productId))];
+    this.database.transaction(() => {
+      for (const edit of input.edits) {
+        if (edit.sourceUrl.trim()) statement.run(input.storeId, edit.productId, edit.sourceUrl, Date.now());
+        else deleteStatement.run(input.storeId, edit.productId);
+      }
+    })();
+    return { updated };
+  }
+
+  /** Applies confirmed price edits one card at a time, preserving per-card errors. */
+  public async updateOnlineProductPrices(input: { storeId: string; edits: Array<{ productId: string; price: string; oldPrice?: string; minimumPrice?: string }> }): Promise<{ updated: string[]; skipped: Array<{ productId: string; reason: string }> }> {
+    const store = await this.stores.findById(input.storeId);
+    if (!store || !store.enabled || store.platform !== "ozon") throw new ResellValidationError(["目标 Ozon 店铺不存在或已停用"]);
+    const client = this.clientFor(store, 1);
+    const productIds = [...new Set(input.edits.map((edit) => edit.productId))];
+    const products = await client.getProductInfoByProductIds(productIds);
+    const metadata = new Map(products.flatMap((product) => {
+      const id = product.product_id ?? product.id;
+      return id ? [[id, product] as const] : [];
+    }));
+    const sellerCurrency = (await client.getSellerInfo()).currency;
+    const updated: string[] = [];
+    const skipped: Array<{ productId: string; reason: string }> = [];
+    for (const edit of input.edits) {
+      const product = metadata.get(edit.productId);
+      const offerId = product?.offer_id.trim();
+      const vat = product?.vat?.trim();
+      const currency = product?.currency_code?.trim() || sellerCurrency;
+      if (!product || !offerId) { skipped.push({ productId: edit.productId, reason: "商品信息中没有可更新的 Offer ID" }); continue; }
+      if (!vat || !currency) { skipped.push({ productId: edit.productId, reason: "Ozon 未返回该商品的 VAT 或店铺币种，无法安全提交价格" }); continue; }
+      try {
+        await client.updateProductPrice({ offerId, price: edit.price, ...(edit.oldPrice ? { oldPrice: edit.oldPrice } : {}), ...(edit.minimumPrice ? { minimumPrice: edit.minimumPrice } : {}), currency, vat });
+        updated.push(edit.productId);
+      } catch (error) {
+        skipped.push({ productId: edit.productId, reason: error instanceof Error ? error.message : "更新价格失败" });
+      }
+    }
+    return { updated, skipped };
+  }
+
+  /** Applies confirmed warehouse quantities to selected online cards. */
+  public async updateOnlineProductStocks(input: { storeId: string; warehouseId: string; items: Array<{ productId: string; stock: number }> }): Promise<{ updated: string[]; skipped: Array<{ productId: string; reason: string }> }> {
+    const store = await this.stores.findById(input.storeId);
+    if (!store || !store.enabled || store.platform !== "ozon") throw new ResellValidationError(["目标 Ozon 店铺不存在或已停用"]);
+    const client = this.clientFor(store, 1);
+    const warehouses = await client.getWarehouses();
+    if (!warehouses.some((warehouse) => warehouse.id === input.warehouseId)) throw new ResellValidationError(["所选仓库不属于当前店铺"]);
+    const products = await this.listOnlineProducts({ storeId: input.storeId, productIds: input.items.map((item) => item.productId) });
+    const byId = new Map(products.map((product) => [product.productId, product]));
+    const updated: string[] = [];
+    const skipped: Array<{ productId: string; reason: string }> = [];
+    for (const item of input.items) {
+      const product = byId.get(item.productId);
+      if (!product) { skipped.push({ productId: item.productId, reason: "商品不属于当前店铺或无法读取" }); continue; }
+      try {
+        const result = await client.updateProductStock({ offerId: product.offerId, productId: product.productId, warehouseId: input.warehouseId, stock: item.stock });
+        if (!result.updated) { skipped.push({ productId: item.productId, reason: result.errors.join("；") || "Ozon 未确认库存更新" }); continue; }
+        updated.push(item.productId);
+      } catch (error) {
+        skipped.push({ productId: item.productId, reason: error instanceof Error ? error.message : "更新库存失败" });
+      }
+    }
+    return { updated, skipped };
+  }
+
+  /** Lists warehouses for a selected online-products store. */
+  public async listOnlineProductWarehouses(storeId: string): Promise<Array<{ id: string; name: string }>> {
+    const store = await this.stores.findById(storeId);
+    if (!store || !store.enabled || store.platform !== "ozon") throw new ResellValidationError(["目标 Ozon 店铺不存在或已停用"]);
+    return (await this.clientFor(store, 1).getWarehouses()).map(({ id, name }) => ({ id, name }));
+  }
+
+  /** Archives confirmed online cards and returns item-level outcomes. */
+  public async archiveOnlineProducts(input: { storeId: string; productIds: string[] }): Promise<{ archived: string[]; skipped: Array<{ productId: string; reason: string }> }> {
+    const products = await this.listOnlineProducts({ storeId: input.storeId, productIds: [...new Set(input.productIds)] });
+    const archived: string[] = [];
+    const skipped: Array<{ productId: string; reason: string }> = [];
+    const byId = new Map(products.map((product) => [product.productId, product]));
+    const store = await this.stores.findById(input.storeId);
+    if (!store || !store.enabled || store.platform !== "ozon") throw new ResellValidationError(["目标 Ozon 店铺不存在或已停用"]);
+    const client = this.clientFor(store, 1);
+    for (const productId of [...new Set(input.productIds)]) {
+      const product = byId.get(productId);
+      if (!product) { skipped.push({ productId, reason: "商品不属于当前店铺或无法读取" }); continue; }
+      try { await client.archiveProducts([product.productId]); archived.push(product.productId); }
+      catch (error) { skipped.push({ productId, reason: error instanceof Error ? error.message : "归档失败" }); }
+    }
+    return { archived, skipped };
+  }
+
+  /** Reuses a successfully published task as read-only source data for a confirmed target-store submission. */
+  public async distributeTask(input: { sourceTaskId: string; targetStoreId: string }): Promise<ResellTaskView> {
+    const row = this.readTaskOrNull(input.sourceTaskId);
+    if (!row || !row.product_id || !["created", "moderating", "sellable"].includes(row.status)) {
+      throw new ResellValidationError(["只能分发已在 Ozon 创建的商品"]);
+    }
+    if (row.store_id === input.targetStoreId) throw new ResellValidationError(["目标店铺不能与来源店铺相同"]);
+    const source = row.source_snapshot_json ? JSON.parse(row.source_snapshot_json) as ResellSourceView : this.getSource(row.source_sku);
+    if (!source) throw new ResellValidationError(["来源商品数据已不存在"]);
+    const attributes = row.attributes_json ? JSON.parse(row.attributes_json) as Record<string, unknown> : undefined;
+    const taskInput: ResellTaskInput = {
+      sourceSku: row.source_sku,
+      sourceType: row.source_type,
+      sourceSnapshot: source,
+      idempotencyKey: `distribution:${input.sourceTaskId}:${input.targetStoreId}`,
+      storeId: input.targetStoreId,
+      mode: row.mode,
+      offerId: row.target_offer_id,
+      price: row.price,
+      ...(row.old_price ? { oldPrice: row.old_price } : {}),
+      currency: row.currency,
+      vat: row.vat,
+      stock: row.stock,
+      fulfillmentMode: row.fulfillment_mode,
+      warehouseId: "",
+      ...(row.title ? { title: row.title } : {}),
+      ...(row.description ? { description: row.description } : {}),
+      ...(attributes ? { attributes } : {}),
+      ...(source.packageDimensions ? { packageDimensions: source.packageDimensions } : {}),
+      images: this.images.listTaskImageUrls(input.sourceTaskId).map((url, position) => ({ sourceUrl: url, position })),
+    };
+    let preflight = await this.preflight(taskInput);
+    if (!taskInput.warehouseId && preflight.warehouses[0]?.id) {
+      taskInput.warehouseId = preflight.warehouses[0].id;
+      preflight = await this.preflight(taskInput);
+    }
+    if (!preflight.valid) throw new ResellValidationError(preflight.errors);
+    return this.createTask(taskInput);
+  }
+
   /** Resolves a Seller snapshot using the selected target store's official type tree. */
   public async enrichSource(input: {
     storeId: string;
@@ -908,7 +1138,7 @@ export class ResellModule {
       const source = row.source_snapshot_json
         ? JSON.parse(row.source_snapshot_json) as ResellSourceView
         : this.getSource(row.source_sku);
-      return [{ ...taskView(row, store), productTitle: row.title ?? source?.productName ?? null }];
+      return [{ ...taskView(row, store), productTitle: row.title ?? source?.productName ?? null, imageUrl: source?.images[0]?.url ?? source?.imageUrl ?? null }];
     });
     return { items, page: query.page, pageSize: query.pageSize, total };
   }
@@ -1390,5 +1620,3 @@ export class ResellModule {
       .run(randomUUID(), taskId, status, message, Date.now());
   }
 }
-
-export { DEFAULT_STOCK };
