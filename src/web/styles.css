@@ -6339,6 +6339,7 @@ td {
 .publish-variant-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .publish-variant-grid .field { min-width: 0; }
 .publish-variant-empty { padding: 16px; border-radius: 9px; color: var(--muted, #718096); background: #f7f9fc; }
+.product-image-fallback { display: grid; min-width: 0; min-height: 40px; place-items: center; border: 1px dashed var(--border, #334155); border-radius: 6px; background: var(--surface-raised, #172033); color: var(--muted, #94a3b8); font-size: 11px; text-align: center; }
 .publish-batch-result { margin: 14px 0; border: 1px solid var(--line, #e3e8ef); border-radius: 12px; padding: 14px 18px; background: #fff; }
 .publish-batch-result p { margin: 7px 0 0; }
 @media (max-width: 800px) { .publish-variant-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

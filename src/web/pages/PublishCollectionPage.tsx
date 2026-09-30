@@ -3,6 +3,7 @@ import { ArrowRight, CheckCircle2, Clock3, Link2, PackageCheck, Plus, RefreshCw,
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
+import { ProductImage } from "../components/ProductImage";
 import type { PublishVariantDraft, ResellSourceView } from "../../shared/contracts";
 import { createPublishDraft, deletePublishDraft, fetchPublishDrafts, submitPublishDraftsBatch, updatePublishDraft, type PublishBatchSubmitResult } from "../api";
 import "./PublishCollectionPage.css";
@@ -217,7 +218,7 @@ export default function PublishCollectionPage(): React.JSX.Element {
               const image = source.images[0]?.url || source.imageUrl;
               return <article className="publish-draft-row" key={draft.id}>
                 <label className="publish-row-select"><input type="checkbox" aria-label={`选择 ${draft.title || source.productName || draft.sourceSku}`} checked={selectedIds.includes(draft.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, draft.id] : current.filter((id) => id !== draft.id))} /></label>
-                <div className="publish-draft-row__image">{image ? <img src={image} alt="" /> : <PackageCheck size={22} aria-hidden="true" />}</div>
+                <div className="publish-draft-row__image">{image ? <ProductImage key={image} src={image} alt={`${draft.title || source.productName} 商品图`} fallbackLabel="暂无图片" /> : <PackageCheck size={22} aria-hidden="true" />}</div>
                 <div className="publish-draft-row__content"><div className="publish-draft-row__title"><strong>{draft.title || source.productName || "未命名商品"}</strong><span>{stageLabels[draft.workflowStage]}</span></div><p>{draft.sourceType === "1688_collector" ? "1688 采集" : draft.sourceType === "public_page" ? "Ozon 链接采集" : draft.sourceType === "json_import" ? "商品包导入" : draft.sourceType} · SKU {draft.sourceSku || "待填写"} · {draft.variants.length} 个变体</p><small>{source.images.length} 张图片 · {draft.sourceType === "public_page" ? "来源售价" : "供货价"} {String(draft.sourceType === "public_page" ? source.currentPrice.amount || "未识别" : draft.fieldOverrides.supplierPriceRange || draft.fieldOverrides.supplierPrice || "待补充")} {draft.fieldOverrides.supplierPlatform === "1688" ? "CNY" : source.currentPrice.currency} · 更新于 {new Date(draft.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</small></div>
                 <div className="publish-draft-row__actions">{activeStage === "collected" ? <button className="secondary-button" type="button" disabled={moveMutation.isPending} onClick={() => moveMutation.mutate({ id: draft.id, workflowStage: "processing" })}>加入加工箱 <ArrowRight size={15} /></button> : <button className="primary-button" type="button" onClick={() => navigate(`/operations/publish/drafts/${encodeURIComponent(draft.id)}`)}>{activeStage === "ready" ? "去上架" : "编辑商品"} <ArrowRight size={15} /></button>}<button className="icon-button" type="button" aria-label="删除草稿" title="删除草稿" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(draft.id)}><Trash2 size={16} /></button></div>
               </article>;
