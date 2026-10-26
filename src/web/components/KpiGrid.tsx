@@ -1,25 +1,44 @@
 import { Ban, PackageCheck, ReceiptText, RussianRuble } from "lucide-react";
 
-import type { DashboardKpis } from "../../shared/contracts";
+import type { DashboardComparison, DashboardKpis } from "../../shared/contracts";
 import { formatMoneyList } from "../format";
 
 interface KpiGridProps {
   kpis: DashboardKpis;
+  comparison: DashboardComparison;
 }
 
-export function KpiGrid({ kpis }: KpiGridProps): React.JSX.Element {
+function percentChange(current: number, previous: number): string {
+  if (previous === 0) return current > 0 ? "新增" : "持平";
+  const change = ((current - previous) / previous) * 100;
+  const direction = change > 0 ? "↑" : change < 0 ? "↓" : "→";
+  return `${direction} ${Math.abs(change).toFixed(1)}%`;
+}
+
+function gmvComparison(kpis: DashboardKpis, comparison: DashboardComparison): string {
+  const rows = kpis.gmv.flatMap((current) => {
+    const previous = comparison.previousGmv.find((item) => item.currency === current.currency);
+    if (!previous) return [];
+    const currentAmount = Number(current.amount);
+    const previousAmount = Number(previous.amount);
+    return [`${current.currency} ${percentChange(currentAmount, previousAmount)}`];
+  });
+  return rows.length > 0 ? `${comparison.label} · ${rows.join(" / ")}` : `${comparison.label} · 暂无可比数据`;
+}
+
+export function KpiGrid({ kpis, comparison }: KpiGridProps): React.JSX.Element {
   const cards = [
     {
       label: "下单数量",
       value: new Intl.NumberFormat("zh-CN").format(kpis.orders),
-      footnote: "当前筛选区间内的发货单",
+      footnote: `${comparison.label} · ${percentChange(kpis.orders, comparison.previousOrders)}`,
       icon: PackageCheck,
       tone: "blue",
     },
     {
       label: "下单 GMV",
       value: formatMoneyList(kpis.gmv),
-      footnote: "取消金额不会静默扣除",
+      footnote: gmvComparison(kpis, comparison),
       icon: RussianRuble,
       tone: "cyan",
     },

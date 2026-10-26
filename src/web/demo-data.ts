@@ -174,7 +174,7 @@ function makeRecentOrders(): RecentOrder[] {
 }
 
 function makeBreakdown(selectedStoreId: string): StoreBreakdown[] {
-  return demoStores
+  const rows = demoStores
     .map((store, index) => ({
       storeId: store.id,
       storeName: store.name,
@@ -182,8 +182,12 @@ function makeBreakdown(selectedStoreId: string): StoreBreakdown[] {
       platform: store.platform,
       orders: storeTotals[index]?.orders ?? 0,
       gmv: [{ amount: (storeTotals[index]?.gmv ?? 0).toFixed(2), currency: "RUB" }],
+      orderSharePercent: 0,
+      gmvChangePercent: index % 2 === 0 ? 8.4 - index * 2 : -4.2 + index,
     }))
     .filter((store) => selectedStoreId === "all" || store.storeId === selectedStoreId);
+  const totalOrders = rows.reduce((sum, store) => sum + store.orders, 0);
+  return rows.map((store) => ({ ...store, orderSharePercent: totalOrders > 0 ? Number(((store.orders / totalOrders) * 100).toFixed(1)) : 0 }));
 }
 
 /** Keeps demo chart buckets aligned with the production dashboard ranges. */
@@ -222,6 +226,25 @@ export function createDemoSnapshot(range: DashboardRange, selectedStoreId: strin
       cancelledOrders: 11,
       cancelledGmv: [{ amount: "32760.00", currency: "RUB" }],
     },
+    comparison: {
+      label: range === "today" ? "较昨日同期" : "较上一周期",
+      previousOrders: Math.max(0, orders - 13),
+      previousGmv: [{ amount: gmv.minus(5320).toFixed(2), currency: "RUB" }],
+    },
+    orderStatuses: [
+      { status: "awaiting_shipment", count: 12 },
+      { status: "in_transit", count: 18 },
+      { status: "delivered", count: 42 },
+      { status: "cancelled", count: 5 },
+      { status: "other", count: 2 },
+    ],
+    hourlyOrders: Array.from({ length: 24 }, (_, hour) => ({ hour, orders: [1, 3, 7, 11, 8, 5, 12, 18, 24, 16, 12, 21, 28, 31, 24, 20, 17, 13, 11, 7, 4, 3, 2, 1][hour] ?? 0 })),
+    topProducts: [
+      { sku: "SKU-TRAVEL-01", name: "轻量防水旅行收纳包", quantity: 38, gmv: [{ amount: "18420.00", currency: "RUB" }] },
+      { sku: "SKU-ORGANIZER-02", name: "便携行李整理袋组合", quantity: 24, gmv: [{ amount: "12600.00", currency: "RUB" }] },
+      { sku: "SKU-BOTTLE-03", name: "户外保温水壶", quantity: 17, gmv: [{ amount: "8950.00", currency: "RUB" }] },
+    ],
+    overdueShipments: { count: 1, thresholdHours: 12, oldestOrderAt: new Date(Date.now() - 14 * 60 * 60 * 1000).toISOString() },
     platforms: [{ platform: "ozon", orders, gmv: [{ amount: gmv.toFixed(2), currency: "RUB" }] }],
     timeSeries: makeSeries(selectedStoreId),
     stores,

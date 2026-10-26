@@ -35,12 +35,15 @@ export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreB
                 <div className="ranking-content">
                   <div className="ranking-label">
                     <strong>{privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}</strong>
-                    <span>{store.orders} 单</span>
+                    <span>{store.orders} 单 · 占 {store.orderSharePercent.toFixed(1)}%</span>
                     <b>{formatMoneyList(store.gmv)}</b>
                   </div>
                   <div className="ranking-track" aria-hidden="true">
                     <span style={{ width: `${Math.max((barValue / maximum) * 100, 2)}%`, background: store.color }} />
                   </div>
+                  <span className={`ranking-change${store.gmvChangePercent === null ? " is-unavailable" : store.gmvChangePercent >= 0 ? " is-positive" : " is-negative"}`}>
+                    {store.gmvChangePercent === null ? "暂无同期比较" : `GMV ${store.gmvChangePercent > 0 ? "↑" : store.gmvChangePercent < 0 ? "↓" : "→"} ${Math.abs(store.gmvChangePercent).toFixed(1)}%`}
+                  </span>
                 </div>
               </li>
             );

@@ -15,6 +15,7 @@ import { SyncStrip } from "../components/SyncStrip";
 import { StoreOperationsPanel } from "../components/StoreOperationsPanel";
 import { LowStockWarning } from "../components/LowStockWarning";
 import { TrendPanel } from "../components/TrendPanel";
+import { DashboardInsights } from "../components/DashboardInsights";
 import { useDashboardStream } from "../hooks/use-dashboard-stream";
 import { soundPlayer } from "../sound-player";
 
@@ -182,7 +183,7 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
         </main>
       ) : dashboardQuery.data ? (
         <main className="dashboard-main" id="dashboard-main">
-          <KpiGrid kpis={dashboardQuery.data.kpis} />
+          <KpiGrid kpis={dashboardQuery.data.kpis} comparison={dashboardQuery.data.comparison} />
           <div className={privacyHidden ? "dashboard-content-grid is-privacy-hidden" : "dashboard-content-grid"}>
             <div className="dashboard-left-column">
               <TrendPanel points={dashboardQuery.data.timeSeries} privacyHidden={privacyHidden} />
@@ -198,6 +199,13 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
               privacyHidden={privacyHidden}
             />
           </div>
+          <DashboardInsights
+            orderStatuses={dashboardQuery.data.orderStatuses}
+            hourlyOrders={dashboardQuery.data.hourlyOrders}
+            topProducts={dashboardQuery.data.topProducts}
+            overdueShipments={dashboardQuery.data.overdueShipments}
+            range={range}
+          />
           <SyncStrip stores={dashboardQuery.data.sync} privacyHidden={privacyHidden} />
           <StoreOperationsPanel
             snapshot={operationsQuery.data}

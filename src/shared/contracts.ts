@@ -60,6 +60,37 @@ export interface DashboardKpis {
   cancelledGmv: Money[];
 }
 
+export interface DashboardComparison {
+  label: string;
+  previousOrders: number;
+  previousGmv: Money[];
+}
+
+export type DashboardOrderStatus = "awaiting_shipment" | "in_transit" | "delivered" | "cancelled" | "other";
+
+export interface DashboardOrderStatusCount {
+  status: DashboardOrderStatus;
+  count: number;
+}
+
+export interface DashboardHourlyOrders {
+  hour: number;
+  orders: number;
+}
+
+export interface DashboardTopProduct {
+  sku: string;
+  name: string;
+  quantity: number;
+  gmv: Money[];
+}
+
+export interface DashboardOverdueShipments {
+  count: number;
+  thresholdHours: number;
+  oldestOrderAt: string | null;
+}
+
 export interface TimeSeriesPoint {
   bucket: string;
   label: string;
@@ -83,6 +114,8 @@ export interface StoreBreakdown {
   platform: StorePlatform;
   orders: number;
   gmv: Money[];
+  orderSharePercent: number;
+  gmvChangePercent: number | null;
 }
 
 export interface PlatformBreakdown {
@@ -174,6 +207,11 @@ export interface DashboardSnapshot {
   to: string;
   granularity: "15m" | "hour" | "day";
   kpis: DashboardKpis;
+  comparison: DashboardComparison;
+  orderStatuses: DashboardOrderStatusCount[];
+  hourlyOrders: DashboardHourlyOrders[];
+  topProducts: DashboardTopProduct[];
+  overdueShipments: DashboardOverdueShipments;
   platforms: PlatformBreakdown[];
   timeSeries: TimeSeriesPoint[];
   stores: StoreBreakdown[];
