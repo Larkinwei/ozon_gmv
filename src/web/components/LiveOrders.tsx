@@ -1,8 +1,10 @@
-import { CirclePause, CirclePlay, ChevronDown, PackageOpen } from "lucide-react";
+import { CirclePause, CirclePlay, PackageOpen } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import type { RecentOrder } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatBeijingTime, formatDashboardMoney } from "../format";
+import { OrderImagePreview } from "./OrderImagePreview";
 
 interface LiveOrdersProps {
   orders: RecentOrder[];
@@ -15,9 +17,17 @@ interface LiveOrdersProps {
 }
 
 export function LiveOrders({ orders, totalOrders, onLoadMore, paused, onPausedChange, onOrderSelect, privacyHidden = false }: LiveOrdersProps): React.JSX.Element | null {
-  if (privacyHidden) {
-    return null;
-  }
+  const loadMoreRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (privacyHidden || orders.length >= totalOrders || !loadMoreRef.current) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) onLoadMore();
+    }, { rootMargin: "120px" });
+    observer.observe(loadMoreRef.current);
+    return () => observer.disconnect();
+  }, [onLoadMore, orders.length, privacyHidden, totalOrders]);
+
+  if (privacyHidden) return null;
 
   return (
     <section className="panel live-panel" aria-labelledby="live-title">
@@ -43,13 +53,9 @@ export function LiveOrders({ orders, totalOrders, onLoadMore, paused, onPausedCh
           orders.map((order) => {
             const productLabel = order.productNames.join("、") || "商品名称暂不可用";
             return (
-              <button
-                className={order.cancelled ? "order-row is-cancelled" : "order-row"}
-                key={order.id}
-                type="button"
-                onClick={() => onOrderSelect(order.id)}
-                aria-label={`查看订单 ${order.postingNumber} 详情`}
-              >
+              <article className={order.cancelled ? "order-row is-cancelled" : "order-row"} key={order.id}>
+                <OrderImagePreview src={order.imageUrl} alt={`${order.productNames[0] || "商品"} 主图`} fallbackLabel="商品暂无主图" width={52} height={52} className="order-row__image" />
+                <button className="order-row__details" type="button" onClick={() => onOrderSelect(order.id)} aria-label={`查看订单 ${order.postingNumber} 详情`}>
                 <div className="order-row__top">
                   <span className="store-chip" style={{ "--store-color": order.storeColor } as React.CSSProperties}>
                     <span className="store-dot" aria-hidden="true" />
@@ -75,16 +81,13 @@ export function LiveOrders({ orders, totalOrders, onLoadMore, paused, onPausedCh
                   <span>#{order.postingNumber}</span>
                   {order.cancelled && <span className="danger-label">已取消</span>}
                 </div>
-              </button>
+                </button>
+              </article>
             );
           })
         )}
+        {totalOrders > orders.length && <div className="live-feed-sentinel" ref={loadMoreRef} aria-label="继续向下滚动加载更多订单" />}
       </div>
-      {totalOrders > orders.length && (
-        <button className="secondary-button compact-button live-load-more" type="button" onClick={onLoadMore}>
-          <ChevronDown size={16} aria-hidden="true" />查看更多订单（还有 {totalOrders - orders.length} 条）
-        </button>
-      )}
     </section>
   );
 }

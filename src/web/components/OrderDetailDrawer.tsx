@@ -1,20 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PackageOpen, RefreshCw, X } from "lucide-react";
 
-import type { OrderDetailItem } from "../../shared/contracts";
 import { fetchOrderDetail } from "../api";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatBeijingTime, formatDashboardMoney } from "../format";
+import { OrderImagePreview } from "./OrderImagePreview";
 
 interface OrderDetailDrawerProps {
   orderId: string;
   onClose: () => void;
   privacyHidden?: boolean;
-}
-
-interface ProductImageProps {
-  item: OrderDetailItem;
 }
 
 const FOCUSABLE_SELECTOR = [
@@ -25,29 +21,6 @@ const FOCUSABLE_SELECTOR = [
   "textarea:not([disabled])",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
-
-function ProductImage({ item }: ProductImageProps): React.JSX.Element {
-  const [failed, setFailed] = useState(false);
-  if (!item.imageUrl || failed) {
-    return (
-      <span className="order-product-image is-placeholder" aria-label="商品暂无主图">
-        <PackageOpen size={26} aria-hidden="true" />
-      </span>
-    );
-  }
-  return (
-    <img
-      className="order-product-image"
-      src={item.imageUrl}
-      alt={`${item.name} 主图`}
-      width="80"
-      height="80"
-      loading="lazy"
-      referrerPolicy="no-referrer"
-      onError={() => setFailed(true)}
-    />
-  );
-}
 
 function DrawerSkeleton(): React.JSX.Element {
   return (
@@ -165,7 +138,7 @@ export function OrderDetailDrawer({ orderId, onClose, privacyHidden = false }: O
               <div className="order-product-list">
                 {order.items.map((item) => (
                   <article className="order-product-card" key={item.id}>
-                    <ProductImage item={item} />
+                    <OrderImagePreview src={item.imageUrl} alt={`${item.name || item.sku} 主图`} fallbackLabel="商品暂无主图" width={80} height={80} className="order-product-image" placeholderClassName="order-product-image is-placeholder" />
                     <div className="order-product-info">
                       <h4>{item.name || "商品名称暂不可用"}</h4>
                       <p>SKU：{item.sku}</p>

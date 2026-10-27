@@ -1,9 +1,11 @@
 import Decimal from "decimal.js";
-import { subDays } from "date-fns";
+import { addDays, format, startOfDay, subDays } from "date-fns";
+import { fromZonedTime, toZonedTime } from "date-fns-tz";
 
 import type {
   DashboardKpis,
   DashboardOrderStatus,
+  DashboardDailyOrders,
   DashboardRange,
   DashboardSnapshot,
   Money,
@@ -61,6 +63,7 @@ interface RecentOrderRow {
   currency: string;
   item_count: number;
   product_names_json: string;
+  image_url: string | null;
   fulfillment_mode: RecentOrder["fulfillment"];
   status: string;
   cancelled_at_ms: number | null;
@@ -112,6 +115,38 @@ interface ProductMetricRow {
 interface StatusCountRow {
   status: DashboardOrderStatus;
   count: number;
+}
+
+const DASHBOARD_TIMEZONE = "Asia/Shanghai";
+
+/** Treats partial first and last days as occurrences for multi-day ranges. */
+function isSingleBeijingDay(window: DashboardWindow): boolean {
+  const firstDay = startOfDay(toZonedTime(window.from, DASHBOARD_TIMEZONE)).getTime();
+  const lastInstant = new Date(window.to.getTime() - 1);
+  const lastDay = startOfDay(toZonedTime(lastInstant, DASHBOARD_TIMEZONE)).getTime();
+  return firstDay === lastDay;
+}
+
+/** Returns every Beijing calendar date intersecting the selected window. */
+function getBeijingDays(window: DashboardWindow): Date[] {
+  const days: Date[] = [];
+  let day = startOfDay(toZonedTime(window.from, DASHBOARD_TIMEZONE));
+  while (fromZonedTime(day, DASHBOARD_TIMEZONE) < window.to) {
+    if (fromZonedTime(addDays(day, 1), DASHBOARD_TIMEZONE) > window.from) days.push(day);
+    day = addDays(day, 1);
+  }
+  return days;
+}
+
+function rangeLabel(range: DashboardRange): string {
+  const labels: Record<DashboardRange, string> = {
+    today: "今天",
+    yesterday: "昨天",
+    "7d": "近 7 天",
+    "30d": "近 30 天",
+    custom: "自定义范围",
+  };
+  return labels[range];
 }
 
 function comparisonWindow(range: DashboardRange, window: DashboardWindow): DashboardWindow {
@@ -691,9 +726,7 @@ export class DashboardRepository {
        ) GROUP BY store_id, store_name, color, platform, currency`,
     ).all(previous.from.getTime(), previous.to.getTime(), ...marketplaceStoreParams, previous.from.getTime(), previous.to.getTime(), ...marketplaceStoreParams) as BreakdownRow[];
 
-    const statusNow = new Date();
-    const statusWindow = resolveDashboardWindow("30d", statusNow);
-    const statusFilter = createFilter(statusWindow, storeIds, platform);
+    const statusFilter = filter;
     const ozonStatusRows = platform === "wildberries" ? [] : this.database.prepare(
       `SELECT ${statusCase("p.status", "p.cancelled_at_ms")} AS status, COUNT(*) AS count
        FROM postings p WHERE ${statusFilter.sql}
@@ -703,38 +736,14 @@ export class DashboardRepository {
       `SELECT ${statusCase("mo.status", "mo.cancelled_at_ms")} AS status, COUNT(DISTINCT mo.external_order_id) AS count
        FROM marketplace_orders mo WHERE mo.order_at_ms >= ? AND mo.order_at_ms < ?${marketplaceStoreFilter}
        GROUP BY status`,
-    ).all(statusWindow.from.getTime(), statusWindow.to.getTime(), ...marketplaceStoreParams) as StatusCountRow[];
+    ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as StatusCountRow[];
     const statusTotals = new Map<DashboardOrderStatus, number>();
     for (const row of [...ozonStatusRows, ...wbStatusRows]) {
       statusTotals.set(row.status, (statusTotals.get(row.status) ?? 0) + row.count);
     }
 
-    const overdueRow = platform === "wildberries" ? undefined : this.database.prepare(
-      `SELECT SUM(CASE WHEN p.shipment_deadline_at_ms < ? THEN 1 ELSE 0 END) AS count,
-              MIN(CASE WHEN p.shipment_deadline_at_ms < ? THEN p.shipment_deadline_at_ms END) AS oldest_deadline_at_ms,
-              SUM(CASE WHEN p.shipment_deadline_at_ms IS NULL THEN 1 ELSE 0 END) AS missing_deadline_count
-       FROM postings p
-       WHERE p.fulfillment_mode IN ('FBS', 'RFBS')
-         AND p.cancelled_at_ms IS NULL
-         AND LOWER(p.status) IN ('awaiting_packaging', 'awaiting_deliver')
-         AND p.order_at_ms >= ? AND p.order_at_ms < ?
-         AND p.store_id IN (SELECT id FROM stores WHERE platform = 'ozon')
-         ${storeIds.length ? `AND p.store_id IN (${storeIds.map(() => "?").join(", ")})` : ""}`,
-    ).get(statusNow.getTime(), statusNow.getTime(), statusWindow.from.getTime(), statusWindow.to.getTime(), ...storeIds) as {
-      count: number | null;
-      oldest_deadline_at_ms: number | null;
-      missing_deadline_count: number | null;
-    };
-
-    const backfillStatus = platform === "wildberries" ? { pending: 0 } : this.database.prepare(
-      `SELECT COUNT(*) AS pending
-       FROM stores s
-       LEFT JOIN dashboard_shipment_deadline_backfills b ON b.store_id = s.id
-       WHERE s.enabled = 1 AND s.platform = 'ozon' AND b.store_id IS NULL
-         ${storeIds.length ? `AND s.id IN (${storeIds.map(() => "?").join(", ")})` : ""}`,
-    ).get(...storeIds) as { pending: number };
-
-    const hourlyRows = range !== "today" ? [] : [
+    const isSingleDay = isSingleBeijingDay(window);
+    const hourlyRows = isSingleDay ? [
       ...(platform === "wildberries" ? [] : this.database.prepare(
         `SELECT CAST(strftime('%H', datetime(p.order_at_ms / 1000 + 28800, 'unixepoch')) AS INTEGER) AS hour,
                 COUNT(*) AS orders
@@ -748,7 +757,7 @@ export class DashboardRepository {
          WHERE mo.order_at_ms >= ? AND mo.order_at_ms < ?${marketplaceStoreFilter}
          GROUP BY hour ORDER BY hour`,
       ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as Array<{ hour: number; orders: number }>),
-    ];
+    ] : [];
     const hourlyTotals = new Map<number, number>();
     for (const row of hourlyRows) {
       hourlyTotals.set(row.hour, (hourlyTotals.get(row.hour) ?? 0) + row.orders);
@@ -757,6 +766,29 @@ export class DashboardRepository {
       hour,
       orders: hourlyTotals.get(hour) ?? 0,
     }));
+    const dailyRows = isSingleDay ? [] : [
+      ...(platform === "wildberries" ? [] : this.database.prepare(
+        `SELECT strftime('%Y-%m-%d', datetime(p.order_at_ms / 1000 + 28800, 'unixepoch')) AS day,
+                COUNT(*) AS orders
+         FROM postings p WHERE ${filter.sql}
+         GROUP BY day`,
+      ).all(...filter.parameters) as Array<{ day: string; orders: number }>),
+      ...(platform === "ozon" ? [] : this.database.prepare(
+        `SELECT strftime('%Y-%m-%d', datetime(mo.order_at_ms / 1000 + 28800, 'unixepoch')) AS day,
+                COUNT(DISTINCT mo.external_order_id) AS orders
+         FROM marketplace_orders mo
+         WHERE mo.order_at_ms >= ? AND mo.order_at_ms < ?${marketplaceStoreFilter}
+         GROUP BY day`,
+      ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as Array<{ day: string; orders: number }>),
+    ];
+    const dailyTotals = new Map<string, number>();
+    for (const row of dailyRows) {
+      dailyTotals.set(row.day, (dailyTotals.get(row.day) ?? 0) + row.orders);
+    }
+    const dailyOrders: DashboardDailyOrders[] = isSingleDay ? [] : getBeijingDays(window).map((day) => {
+      const key = format(day, "yyyy-MM-dd");
+      return { day: key, orders: dailyTotals.get(key) ?? 0 };
+    });
 
     const ozonProducts = platform === "wildberries" ? [] : this.database.prepare(
       `SELECT p.store_id, item.sku, item.offer_id, item.name, image.primary_image_url AS image_url,
@@ -804,7 +836,7 @@ export class DashboardRepository {
     }
     const topProducts = [...productTotals.values()]
       .sort((left, right) => right.quantity - left.quantity || left.name.localeCompare(right.name))
-      .slice(0, 5)
+      .slice(0, 20)
       .map((product) => {
         const imageStore = [...product.storeImages.values()]
           .filter((store) => store.imageUrl)
@@ -835,6 +867,11 @@ export class DashboardRepository {
                   ORDER BY name
                 )
               ), '[]') AS product_names_json,
+              (SELECT image.primary_image_url
+               FROM posting_items image_item
+               JOIN product_images image ON image.store_id = p.store_id AND image.sku = image_item.sku
+               WHERE image_item.posting_id = p.id AND image.primary_image_url IS NOT NULL
+               ORDER BY image_item.id LIMIT 1) AS image_url,
               p.fulfillment_mode, p.status, p.cancelled_at_ms
        FROM postings p
        JOIN stores s ON s.id = p.store_id
@@ -847,6 +884,7 @@ export class DashboardRepository {
               COALESCE((SELECT json_group_array(name) FROM (
                 SELECT DISTINCT name FROM marketplace_order_items WHERE order_id = mo.id AND name <> '' ORDER BY name
               )), '[]') AS product_names_json,
+              NULL AS image_url,
               mo.fulfillment_mode, mo.status, mo.cancelled_at_ms
        FROM marketplace_orders mo
        JOIN stores s ON s.id = mo.store_id
@@ -873,20 +911,12 @@ export class DashboardRepository {
         previousOrders: totalComparisonOrders,
         previousGmv: comparisonGmv,
       },
-      statusRange: {
-        from: statusWindow.from.toISOString(),
-        to: statusWindow.to.toISOString(),
-        label: "最近30天",
-      },
+      statusRange: { from: window.from.toISOString(), to: window.to.toISOString(), label: rangeLabel(range) },
       orderStatuses: [...statusTotals.entries()].map(([status, count]) => ({ status, count })),
       hourlyOrders,
+      dailyOrders,
+      timeDistributionMode: isSingleDay ? "hourly" : "daily",
       topProducts,
-      overdueShipments: {
-        count: overdueRow?.count ?? 0,
-        oldestDeadlineAt: overdueRow?.oldest_deadline_at_ms ? new Date(overdueRow.oldest_deadline_at_ms).toISOString() : null,
-        missingDeadlineCount: overdueRow?.missing_deadline_count ?? 0,
-        backfillInProgress: backfillStatus.pending > 0,
-      },
       platforms: buildPlatformBreakdown(platformSummaryRows),
       timeSeries: buildDashboardSeries(seriesRows, window),
       stores: buildBreakdown(breakdownRows, [...previousOzonBreakdown, ...previousWbBreakdown]),
@@ -902,6 +932,7 @@ export class DashboardRepository {
         amount: moneyFromMinorUnits(row.gross_amount_minor, row.currency),
         itemCount: row.item_count,
         productNames: JSON.parse(row.product_names_json) as string[],
+        imageUrl: row.image_url,
         fulfillment: row.fulfillment_mode,
         status: row.status,
         cancelled: row.cancelled_at_ms !== null,

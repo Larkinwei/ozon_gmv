@@ -37,7 +37,7 @@ function posting(number: string, orderAt: string, amount: string, currency: stri
 }
 
 describe("Dashboard store time series", () => {
-  it("compares today with the same Beijing-time window and keeps status/overdue metrics on the last 30 days", async () => {
+  it("compares today with the same Beijing-time window and scopes status counts to the selected range", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-02T04:00:00.000Z")); // Beijing noon.
     const context = createTestDatabase();
@@ -93,12 +93,13 @@ describe("Dashboard store time series", () => {
       expect(snapshot.kpis.orders).toBe(2);
       expect(snapshot.comparison).toMatchObject({ label: "较昨日同期", previousOrders: 1 });
       expect(snapshot.statusRange).toMatchObject({
-        from: "2026-07-03T16:00:00.000Z",
+        from: "2026-08-01T16:00:00.000Z",
         to: "2026-08-02T04:00:00.000Z",
-        label: "最近30天",
+        label: "今天",
       });
-      expect(snapshot.orderStatuses.reduce((total, row) => total + row.count, 0)).toBe(7);
-      expect(snapshot.overdueShipments).toMatchObject({ count: 1, missingDeadlineCount: 5, backfillInProgress: true });
+      expect(snapshot.orderStatuses.reduce((total, row) => total + row.count, 0)).toBe(2);
+      expect(snapshot.timeDistributionMode).toBe("hourly");
+      expect(snapshot.dailyOrders).toEqual([]);
       expect(snapshot.topProducts[0]).toMatchObject({
         sku: "popular-sku",
         imageUrl: "https://cdn.example.com/popular.jpg",
@@ -108,6 +109,39 @@ describe("Dashboard store time series", () => {
     } finally {
       context.cleanup();
       vi.useRealTimers();
+    }
+  });
+
+  it("returns one total-order bar per Beijing date for a multi-day range", async () => {
+    const context = createTestDatabase();
+    try {
+      await new StoresRepository(context.database).create({
+        id: STORE_A_ID,
+        name: "店铺 A",
+        clientId: "client-a",
+        apiKeyCiphertext: "cipher-a",
+        color: "#3B82F6",
+        fulfillmentModes: ["FBS"],
+        apiKeyExpiresAt: null,
+      });
+      const postings = new PostingsRepository(context.database);
+      await postings.upsert(STORE_A_ID, posting("monday-order", "2026-08-03T02:00:00.000Z", "10.00", "RUB"));
+      await postings.upsert(STORE_A_ID, posting("tuesday-order", "2026-08-04T03:00:00.000Z", "12.00", "RUB"));
+
+      const snapshot = await new DashboardRepository(context.database).getSnapshot("custom", {
+        from: new Date("2026-08-02T16:00:00.000Z"),
+        to: new Date("2026-08-05T16:00:00.000Z"),
+        granularity: "day",
+      }, []);
+
+      expect(snapshot.timeDistributionMode).toBe("daily");
+      expect(snapshot.dailyOrders).toEqual([
+        { day: "2026-08-03", orders: 1 },
+        { day: "2026-08-04", orders: 1 },
+        { day: "2026-08-05", orders: 0 },
+      ]);
+    } finally {
+      context.cleanup();
     }
   });
 

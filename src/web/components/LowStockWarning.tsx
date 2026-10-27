@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { InventoryLowStockAlert } from "../../shared/contracts";
 import { acknowledgeInventoryAlerts, fetchInventoryAlerts, snoozeInventorySku } from "../api";
+import { OrderImagePreview } from "./OrderImagePreview";
 
 interface LowStockWarningProps {
   incomingAlert?: InventoryLowStockAlert | null;
@@ -61,7 +62,7 @@ export function LowStockWarning({ incomingAlert, previewAlerts, onPreviewClose }
         <div className="low-stock-warning__list">
           {visibleAlerts.map((alert) => (
             <div className="low-stock-warning__item" key={alert.id}>
-              {alert.imageUrl ? <img src={alert.imageUrl} alt="" /> : <div className="low-stock-warning__placeholder" aria-hidden="true"><Package size={19} /></div>}
+              {alert.imageUrl ? <OrderImagePreview src={alert.imageUrl} alt={`${alert.productName} 主图`} fallbackLabel="商品暂无主图" width={44} height={44} className="low-stock-warning__image" placeholderClassName="low-stock-warning__placeholder" /> : <div className="low-stock-warning__placeholder" aria-hidden="true"><Package size={19} /></div>}
               <div className="low-stock-warning__item-main">
                 <strong>{alert.productName}</strong>
                 <span>{alert.storeName} · {alert.fulfillment} · SKU {alert.sku}</span>

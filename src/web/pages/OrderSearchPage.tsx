@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 import type { OrderSearchFilters } from "../api";
 import { fetchOrderSearch } from "../api";
 import { OrderDetailDrawer } from "../components/OrderDetailDrawer";
+import { OrderImagePreview } from "../components/OrderImagePreview";
 import { formatBeijingTime, formatMoney } from "../format";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -47,14 +48,6 @@ function statusLabel(status: string, cancelled: boolean): string {
     posting_canceled: "已取消",
   };
   return labels[status] ?? status;
-}
-
-function SearchProductImage({ imageUrl, productName }: { imageUrl: string | null; productName: string }): React.JSX.Element {
-  const [failed, setFailed] = useState(false);
-  if (!imageUrl || failed) {
-    return <span className="order-search-image order-search-image--placeholder" aria-label="商品暂无主图"><PackageOpen size={20} aria-hidden="true" /></span>;
-  }
-  return <img className="order-search-image" src={imageUrl} alt={`${productName || "商品"} 主图`} width="54" height="54" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }
 
 function SearchPagination({ page, pageSize, total, onPageChange }: { page: number; pageSize: number; total: number; onPageChange: (page: number) => void }): React.JSX.Element {
@@ -185,7 +178,7 @@ export default function OrderSearchPage({ wallboard = false }: { wallboard?: boo
                 <tbody>
                   {searchQuery.data.items.map((order) => (
                     <tr key={order.id}>
-                      <td><SearchProductImage imageUrl={order.imageUrl} productName={order.productNames[0] ?? ""} /></td>
+                      <td><OrderImagePreview src={order.imageUrl} alt={`${order.productNames[0] || "商品"} 主图`} fallbackLabel="商品暂无主图" width={54} height={54} className="order-search-image" placeholderClassName="order-search-image--placeholder" objectFit="cover" /></td>
                       <td><span className="order-search-store"><i style={{ background: order.storeColor }} />{order.storeName}</span></td>
                       <td><strong>{order.postingNumber}</strong><small>订单号 {order.orderNumber}</small></td>
                       <td>{formatBeijingTime(order.orderAt, "yyyy-MM-dd HH:mm:ss")}</td>

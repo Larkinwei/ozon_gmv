@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RecentOrder } from "../../shared/contracts";
 import { LiveOrders } from "./LiveOrders";
@@ -16,6 +16,7 @@ const order: RecentOrder = {
   storeName: "YOGOLD",
   storeColor: "#3B82F6",
   orderAt: "2026-08-05T06:00:00.000Z",
+  imageUrl: null,
   amount: { amount: "42.00", currency: "CNY" },
   itemCount: 2,
   productNames: ["轻量防水旅行收纳包", "便携行李整理袋"],
@@ -25,6 +26,8 @@ const order: RecentOrder = {
 };
 
 describe("LiveOrders", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("hides the entire live order feed in privacy mode", () => {
     render(
       <LiveOrders
@@ -63,8 +66,17 @@ describe("LiveOrders", () => {
     expect(onOrderSelect).toHaveBeenCalledWith("order-1");
   });
 
-  it("shows a load-more action when more orders are available", () => {
+  it("loads more orders when the feed reaches its scroll sentinel", () => {
     const onLoadMore = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: IntersectionObserverCallback) {
+        callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      }
+      observe(): void {}
+      disconnect(): void {}
+      unobserve(): void {}
+      takeRecords(): IntersectionObserverEntry[] { return []; }
+    });
     render(
       <LiveOrders
         orders={[order]}
@@ -76,7 +88,8 @@ describe("LiveOrders", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "查看更多订单（还有 10 条）" }));
+    expect(screen.queryByRole("button", { name: /查看更多订单/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("继续向下滚动加载更多订单")).toBeInTheDocument();
     expect(onLoadMore).toHaveBeenCalledTimes(1);
   });
 });

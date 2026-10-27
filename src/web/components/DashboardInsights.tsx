@@ -1,29 +1,30 @@
-import { AlertTriangle, Clock3, ImageOff, Package, Timer } from "lucide-react";
+import { Clock3, ImageOff, Package } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-import type { DashboardHourlyOrders, DashboardOrderStatus, DashboardOrderStatusCount, DashboardOverdueShipments, DashboardStatusRange, DashboardTopProduct } from "../../shared/contracts";
-import { formatBeijingTime, formatDashboardMoneyList } from "../format";
+import type { DashboardDailyOrders, DashboardHourlyOrders, DashboardOrderStatus, DashboardOrderStatusCount, DashboardStatusRange, DashboardTopProduct } from "../../shared/contracts";
+import { formatDashboardMoneyList } from "../format";
+import { OrderImagePreview } from "./OrderImagePreview";
 
 interface DashboardInsightsProps {
   orderStatuses: DashboardOrderStatusCount[];
   hourlyOrders: DashboardHourlyOrders[];
+  dailyOrders: DashboardDailyOrders[];
+  timeDistributionMode: "hourly" | "daily";
   topProducts: DashboardTopProduct[];
-  overdueShipments: DashboardOverdueShipments;
   statusRange: DashboardStatusRange;
-  range: string;
 }
 
 const statusPresentation: Record<DashboardOrderStatus, { label: string; color: string }> = {
   awaiting_shipment: { label: "待发货", color: "#F59E0B" },
   in_transit: { label: "运输中", color: "#3B82F6" },
-  delivered: { label: "已送达", color: "#22C55E" },
+  delivered: { label: "已签收", color: "#22C55E" },
   cancelled: { label: "已取消", color: "#F87171" },
   other: { label: "其他状态", color: "#94A3B8" },
 };
 
 const statusOrder: DashboardOrderStatus[] = ["awaiting_shipment", "in_transit", "delivered", "cancelled", "other"];
 
-function StatusDistribution({ orderStatuses, overdueShipments, statusRange }: Pick<DashboardInsightsProps, "orderStatuses" | "overdueShipments" | "statusRange">): React.JSX.Element {
+function StatusDistribution({ orderStatuses, statusRange }: Pick<DashboardInsightsProps, "orderStatuses" | "statusRange">): React.JSX.Element {
   const counts = new Map(orderStatuses.map((entry) => [entry.status, entry.count]));
   const data = statusOrder.map((status) => ({
     status,
@@ -60,36 +61,26 @@ function StatusDistribution({ orderStatuses, overdueShipments, statusRange }: Pi
           ))}
         </ul>
       </div>
-      <div className={`overdue-alert${overdueShipments.count > 0 && !overdueShipments.backfillInProgress ? " is-warning" : ""}`} role="status">
-        {overdueShipments.backfillInProgress ? <Timer size={17} aria-hidden="true" /> : overdueShipments.count > 0 ? <AlertTriangle size={17} aria-hidden="true" /> : <Timer size={17} aria-hidden="true" />}
-        <span className="overdue-alert__messages">
-          {overdueShipments.backfillInProgress
-            ? "计划发货时间补齐中，完成前暂不显示超时判断"
-            : overdueShipments.count > 0
-              ? `${overdueShipments.count} 笔订单已超过 Ozon 计划发货时间${overdueShipments.oldestDeadlineAt ? ` · 最早 ${formatBeijingTime(overdueShipments.oldestDeadlineAt)}` : ""}`
-              : "最近 30 天没有超过 Ozon 计划发货时间的待发货订单"}
-          {!overdueShipments.backfillInProgress && overdueShipments.missingDeadlineCount > 0 && (
-            <small>{overdueShipments.missingDeadlineCount} 笔待发货订单缺少计划发货时间，暂不计入超时</small>
-          )}
-        </span>
-      </div>
     </section>
   );
 }
 
-function HourlyDistribution({ hourlyOrders, range }: Pick<DashboardInsightsProps, "hourlyOrders" | "range">): React.JSX.Element {
-  const total = hourlyOrders.reduce((sum, entry) => sum + entry.orders, 0);
-  const peak = hourlyOrders.reduce<DashboardHourlyOrders | null>((highest, entry) => entry.orders > (highest?.orders ?? 0) ? entry : highest, null);
-  const isToday = range === "today";
+function HourlyDistribution({ hourlyOrders, dailyOrders, timeDistributionMode }: Pick<DashboardInsightsProps, "hourlyOrders" | "dailyOrders" | "timeDistributionMode">): React.JSX.Element {
+  const isHourly = timeDistributionMode === "hourly";
+  const total = isHourly
+    ? hourlyOrders.reduce((sum, entry) => sum + entry.orders, 0)
+    : dailyOrders.reduce((sum, entry) => sum + entry.orders, 0);
+  const peakHour = hourlyOrders.reduce<DashboardHourlyOrders | null>((highest, entry) => entry.orders > (highest?.orders ?? 0) ? entry : highest, null);
+  const peakDay = dailyOrders.reduce<DashboardDailyOrders | null>((highest, entry) => entry.orders > (highest?.orders ?? 0) ? entry : highest, null);
   return (
     <section className="panel insight-panel" aria-labelledby="hourly-distribution-title">
       <div className="panel-heading">
-        <div><p className="eyebrow">TODAY BY HOUR</p><h2 id="hourly-distribution-title">今日时段分布</h2></div>
-        <span className="panel-count">{total} 单</span>
+        <div><p className="eyebrow">ORDER TIME DISTRIBUTION</p><h2 id="hourly-distribution-title">{isHourly ? "今日每小时订单" : "每日订单量"}</h2></div>
+        <span className="panel-count">{isHourly ? `${total} 单` : `${dailyOrders.length} 天 · ${total} 单`}</span>
       </div>
-      {isToday ? (
+      {isHourly ? (
         <>
-          <div className="hourly-chart" role="img" aria-label={`今日每小时订单量，共 ${total} 单`}>
+          <div className="hourly-chart" role="img" aria-label={`所选单日每小时订单量，共 ${total} 单`}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={hourlyOrders} margin={{ top: 8, right: 4, bottom: 0, left: -18 }} accessibilityLayer>
                 <CartesianGrid stroke="var(--border-soft)" strokeDasharray="3 4" vertical={false} />
@@ -100,11 +91,22 @@ function HourlyDistribution({ hourlyOrders, range }: Pick<DashboardInsightsProps
               </BarChart>
             </ResponsiveContainer>
           </div>
-          <p className="insight-summary"><Clock3 size={14} aria-hidden="true" />{peak && peak.orders > 0 ? `高峰时段 ${peak.hour}:00–${peak.hour + 1}:00 · ${peak.orders} 单` : "今日暂未收到订单"}</p>
+          <p className="insight-summary"><Clock3 size={14} aria-hidden="true" />{peakHour && peakHour.orders > 0 ? `高峰时段 ${peakHour.hour}:00–${peakHour.hour + 1}:00 · ${peakHour.orders} 单` : "所选日期暂未收到订单"}</p>
         </>
       ) : (
-        <div className="insight-empty"><Clock3 size={20} aria-hidden="true" /><span>切换到“今天”查看按小时分布</span></div>
+        <div className="hourly-chart daily-orders-chart" role="img" aria-label={`所选区间每天订单量，共 ${total} 单`}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={dailyOrders} margin={{ top: 8, right: 4, bottom: 0, left: -18 }} accessibilityLayer>
+              <CartesianGrid stroke="var(--border-soft)" strokeDasharray="3 4" vertical={false} />
+              <XAxis dataKey="day" tickFormatter={(day: string) => day.slice(5)} interval="preserveStartEnd" minTickGap={20} tick={{ fill: "var(--muted)", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis allowDecimals={false} width={34} tick={{ fill: "var(--muted)", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip labelFormatter={(day) => `${day}`} formatter={(value) => [`${value ?? 0} 单`, "当天订单"]} />
+              <Bar dataKey="orders" name="当天订单" fill="var(--cyan)" radius={[3, 3, 0, 0]} maxBarSize={18} isAnimationActive={false} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       )}
+      {!isHourly && <p className="insight-summary"><Clock3 size={14} aria-hidden="true" />{peakDay && peakDay.orders > 0 ? `单量最高 ${peakDay.day} · ${peakDay.orders} 单` : "所选区间暂未收到订单"}</p>}
     </section>
   );
 }
@@ -121,12 +123,10 @@ function TopProducts({ products }: { products: DashboardTopProduct[] }): React.J
         <div className="insight-empty"><Package size={20} aria-hidden="true" /><span>当前区间暂无商品明细</span></div>
       ) : (
         <ol className="top-product-list">
-          {products.slice(0, 5).map((product, index) => (
+          {products.map((product, index) => (
             <li key={`${product.sku}:${product.name}`}>
               <span className="top-product-rank">{String(index + 1).padStart(2, "0")}</span>
-              <span className="top-product-image">
-                {product.imageUrl ? <img src={product.imageUrl} alt={`${product.name || product.sku} 主图`} width="42" height="42" loading="lazy" /> : <ImageOff size={17} aria-label="暂无商品主图" />}
-              </span>
+              {product.imageUrl ? <OrderImagePreview src={product.imageUrl} alt={`${product.name || product.sku} 主图`} fallbackLabel="暂无商品主图" width={42} height={42} className="top-product-image__img" placeholderClassName="top-product-image" /> : <span className="top-product-image"><ImageOff size={17} aria-label="暂无商品主图" /></span>}
               <div className="top-product-info">
                 <strong title={product.name}>{product.name || product.sku || "未命名商品"}</strong>
                 <span>SKU {product.sku || "—"} · {formatDashboardMoneyList(product.gmv)}</span>
@@ -149,8 +149,8 @@ function TopProducts({ products }: { products: DashboardTopProduct[] }): React.J
 export function DashboardInsights(props: DashboardInsightsProps): React.JSX.Element {
   return (
     <section className="dashboard-insights" aria-label="订单运营洞察">
-      <StatusDistribution orderStatuses={props.orderStatuses} overdueShipments={props.overdueShipments} statusRange={props.statusRange} />
-      <HourlyDistribution hourlyOrders={props.hourlyOrders} range={props.range} />
+      <StatusDistribution orderStatuses={props.orderStatuses} statusRange={props.statusRange} />
+      <HourlyDistribution hourlyOrders={props.hourlyOrders} dailyOrders={props.dailyOrders} timeDistributionMode={props.timeDistributionMode} />
       <TopProducts products={props.topProducts} />
     </section>
   );

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { useSearchParams } from "react-router-dom";
@@ -55,6 +55,7 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   const [visibleFeedCount, setVisibleFeedCount] = useState(5);
   const [incomingLowStock, setIncomingLowStock] = useState<InventoryLowStockAlert | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(() => orderIdFromUrl);
+  const streamRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const privacyHidden = useDashboardPrivacy();
 
   useEffect(() => {
@@ -78,8 +79,15 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
   }
 
   const handleStreamEvent = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    if (streamRefreshTimer.current) clearTimeout(streamRefreshTimer.current);
+    streamRefreshTimer.current = setTimeout(() => {
+      streamRefreshTimer.current = null;
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    }, 400);
   }, [queryClient]);
+  useEffect(() => () => {
+    if (streamRefreshTimer.current) clearTimeout(streamRefreshTimer.current);
+  }, []);
   // Autoplay policies block audio until the user interacts with the page once;
   // `unlock` is idempotent, so keeping the listeners for the page lifetime is safe.
   useEffect(() => {
@@ -192,7 +200,7 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
             <LiveOrders
               orders={visibleFeedOrders}
               totalOrders={feedOrders.length}
-              onLoadMore={() => setVisibleFeedCount((count) => Math.min(count + 10, feedOrders.length))}
+            onLoadMore={() => setVisibleFeedCount((count) => Math.min(count + 10, feedOrders.length))}
               paused={feedPaused}
               onPausedChange={setFeedPaused}
               onOrderSelect={selectOrder}
@@ -202,10 +210,10 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
           <DashboardInsights
             orderStatuses={dashboardQuery.data.orderStatuses}
             hourlyOrders={dashboardQuery.data.hourlyOrders}
+            dailyOrders={dashboardQuery.data.dailyOrders}
+            timeDistributionMode={dashboardQuery.data.timeDistributionMode}
             topProducts={dashboardQuery.data.topProducts}
-            overdueShipments={dashboardQuery.data.overdueShipments}
             statusRange={dashboardQuery.data.statusRange}
-            range={range}
           />
           <SyncStrip stores={dashboardQuery.data.sync} privacyHidden={privacyHidden} />
           <StoreOperationsPanel
