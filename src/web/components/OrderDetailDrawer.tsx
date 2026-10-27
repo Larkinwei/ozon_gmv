@@ -5,7 +5,7 @@ import { PackageOpen, RefreshCw, X } from "lucide-react";
 import type { OrderDetailItem } from "../../shared/contracts";
 import { fetchOrderDetail } from "../api";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
-import { formatBeijingTime, formatMoney } from "../format";
+import { formatBeijingTime, formatDashboardMoney } from "../format";
 
 interface OrderDetailDrawerProps {
   orderId: string;
@@ -144,7 +144,7 @@ export function OrderDetailDrawer({ orderId, onClose, privacyHidden = false }: O
                 </span>
                 {order.cancelled && <span className="danger-label">已取消</span>}
               </div>
-              <strong className="order-detail-amount">{formatMoney(order.amount)}</strong>
+              <strong className="order-detail-amount">{formatDashboardMoney(order.amount)}</strong>
             </section>
 
             <dl className="order-detail-meta">
@@ -171,8 +171,8 @@ export function OrderDetailDrawer({ orderId, onClose, privacyHidden = false }: O
                       <p>SKU：{item.sku}</p>
                       <p>Offer ID：{item.offerId || "—"}</p>
                       <div className="order-product-price">
-                        <span>{formatMoney(item.unitPrice)} × {item.quantity}</span>
-                        <strong>{formatMoney(item.subtotal)}</strong>
+                        <span>{formatDashboardMoney(item.unitPrice)} × {item.quantity}</span>
+                        <strong>{formatDashboardMoney(item.subtotal)}</strong>
                       </div>
                     </div>
                   </article>

@@ -204,6 +204,7 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
             hourlyOrders={dashboardQuery.data.hourlyOrders}
             topProducts={dashboardQuery.data.topProducts}
             overdueShipments={dashboardQuery.data.overdueShipments}
+            statusRange={dashboardQuery.data.statusRange}
             range={range}
           />
           <SyncStrip stores={dashboardQuery.data.sync} privacyHidden={privacyHidden} />

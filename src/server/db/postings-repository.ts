@@ -22,6 +22,8 @@ interface ExistingPostingRow {
   cancelled_at_ms: number | null;
   shipment_at_ms: number | null;
   shipment_time_source: string;
+  shipment_deadline_at_ms: number | null;
+  shipment_deadline_source: string;
 }
 
 function postingChanged(existing: ExistingPostingRow, posting: NormalizedPosting): boolean {
@@ -34,12 +36,23 @@ function postingChanged(existing: ExistingPostingRow, posting: NormalizedPosting
     existing.currency !== posting.currency ||
     Boolean(existing.cancelled_at_ms) !== Boolean(posting.cancelledAt) ||
     existing.shipment_at_ms !== (posting.shipmentAt?.getTime() ?? null) ||
-    existing.shipment_time_source !== (posting.shipmentTimeSource ?? "missing")
+    existing.shipment_time_source !== (posting.shipmentTimeSource ?? "missing") ||
+    existing.shipment_deadline_at_ms !== (posting.shipmentDeadlineAt?.getTime() ?? null) ||
+    existing.shipment_deadline_source !== posting.shipmentDeadlineSource
   );
 }
 
 export class PostingsRepository {
   public constructor(private readonly database: AppDatabase) {}
+
+  /** Marks a fully successful long-window Ozon sync as having refreshed shipment deadlines. */
+  public markShipmentDeadlineBackfillComplete(storeId: string, completedAtMs: number): void {
+    this.database.prepare(
+      `INSERT INTO dashboard_shipment_deadline_backfills (store_id, completed_at_ms)
+       VALUES (?, ?)
+       ON CONFLICT(store_id) DO UPDATE SET completed_at_ms = excluded.completed_at_ms`,
+    ).run(storeId, completedAtMs);
+  }
 
   /** Upserts one canonical posting and replaces its non-PII item projection atomically. */
   public async upsert(storeId: string, posting: NormalizedPosting): Promise<PostingMutation> {
@@ -47,7 +60,8 @@ export class PostingsRepository {
       const existing = this.database.prepare(
         `SELECT id, fulfillment_mode, order_at_ms, status, substatus,
                 gross_amount_minor, currency, cancelled_at_ms,
-                shipment_at_ms, shipment_time_source
+                shipment_at_ms, shipment_time_source,
+                shipment_deadline_at_ms, shipment_deadline_source
          FROM postings
          WHERE store_id = ? AND posting_number = ?`,
       ).get(storeId, posting.postingNumber) as ExistingPostingRow | undefined;
@@ -63,7 +77,8 @@ export class PostingsRepository {
           `UPDATE postings SET
              order_number = ?, fulfillment_mode = ?, order_at_ms = ?, status = ?,
              substatus = ?, gross_amount_minor = ?, currency = ?, cancelled_at_ms = ?,
-             shipment_at_ms = ?, shipment_time_source = ?, updated_at_ms = ?
+             shipment_at_ms = ?, shipment_time_source = ?, shipment_deadline_at_ms = ?,
+             shipment_deadline_source = ?, updated_at_ms = ?
            WHERE id = ?`,
         ).run(
           posting.orderNumber,
@@ -76,6 +91,8 @@ export class PostingsRepository {
           posting.cancelledAt?.getTime() ?? null,
           posting.shipmentAt?.getTime() ?? null,
           posting.shipmentTimeSource ?? "missing",
+          posting.shipmentDeadlineAt?.getTime() ?? null,
+          posting.shipmentDeadlineSource,
           now,
           postingId,
         );
@@ -85,8 +102,9 @@ export class PostingsRepository {
           `INSERT INTO postings (
              id, store_id, posting_number, order_number, fulfillment_mode, order_at_ms,
              status, substatus, gross_amount_minor, currency, cancelled_at_ms,
-             shipment_at_ms, shipment_time_source, created_at_ms, updated_at_ms
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             shipment_at_ms, shipment_time_source, shipment_deadline_at_ms,
+             shipment_deadline_source, created_at_ms, updated_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           postingId,
           storeId,
@@ -101,6 +119,8 @@ export class PostingsRepository {
           posting.cancelledAt?.getTime() ?? null,
           posting.shipmentAt?.getTime() ?? null,
           posting.shipmentTimeSource ?? "missing",
+          posting.shipmentDeadlineAt?.getTime() ?? null,
+          posting.shipmentDeadlineSource,
           now,
           now,
         );

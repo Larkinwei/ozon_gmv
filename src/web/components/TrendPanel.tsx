@@ -17,7 +17,7 @@ import type { BarShapeProps } from "recharts";
 
 import type { StoreTimeSeriesValue, TimeSeriesPoint } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
-import { formatCompactNumber, formatMoney, formatMoneyList } from "../format";
+import { dashboardCurrencySymbol, formatCompactNumber, formatDashboardMoney, formatDashboardMoneyList } from "../format";
 
 interface StoreDescriptor {
   id: string;
@@ -270,7 +270,7 @@ function UnifiedTrendDetail({
       <div className="chart-tooltip__totals">
         <div>
           <span>总 GMV</span>
-          <strong>{formatMoney({ amount: String(datum.gmv), currency })}</strong>
+          <strong>{formatDashboardMoney({ amount: String(datum.gmv), currency })}</strong>
         </div>
         <div>
           <span>总订单</span>
@@ -291,7 +291,7 @@ function UnifiedTrendDetail({
                   <span className="chart-color-dot" style={{ backgroundColor: row.color }} aria-hidden="true" />
                   <span>{privacyHidden ? HIDDEN_PLACEHOLDER : row.name}</span>
                 </span>
-                <strong>{formatMoney({ amount: String(row.gmv), currency })}</strong>
+                <strong>{formatDashboardMoney({ amount: String(row.gmv), currency })}</strong>
                 <span>{row.orders} 单</span>
               </li>
             ))}
@@ -429,7 +429,7 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
           <p className="eyebrow">ORDER MOMENTUM</p>
           <h2 id="trend-title">GMV 与订单趋势</h2>
           <p className="chart-summary">
-            共 {formatMoney({ amount: totalGmv.toFixed(2), currency })}，峰值出现在 {peak?.label ?? "—"}。
+            共 {formatDashboardMoney({ amount: totalGmv.toFixed(2), currency })}，峰值出现在 {peak?.label ?? "—"}。
           </p>
         </div>
         <div className="chart-actions">
@@ -517,7 +517,7 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
                     </span>
                   </td>
                   <td>{store.orders}</td>
-                  <td>{formatMoneyList(store.gmv)}</td>
+                  <td>{formatDashboardMoneyList(store.gmv)}</td>
                 </tr>
               )))}
             </tbody>
@@ -569,7 +569,7 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
                   stroke="#64748B"
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={formatCompactNumber}
+                  tickFormatter={(value: number) => `${formatCompactNumber(value)} ${dashboardCurrencySymbol(currency)}`}
                   width={52}
                   domain={[0, (dataMax: number) => Math.max(1, Math.ceil(dataMax * 1.15))]}
                 />

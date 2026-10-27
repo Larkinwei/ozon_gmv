@@ -27,6 +27,8 @@ function posting(): NormalizedPosting {
     orderAt: new Date("2026-08-06T04:00:00.000Z"),
     status: "awaiting_packaging",
     substatus: "posting_created",
+    shipmentDeadlineAt: null,
+    shipmentDeadlineSource: "missing",
     grossAmount: "398.00",
     currency: "CNY",
     cancelledAt: null,

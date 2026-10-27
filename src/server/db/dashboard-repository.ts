@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { subDays } from "date-fns";
 
 import type {
   DashboardKpis,
@@ -14,7 +15,7 @@ import type {
   StorePlatform,
 } from "../../shared/contracts";
 import { buildDashboardSeries, type DashboardSeriesRow } from "../domain/dashboard-series";
-import type { DashboardWindow } from "../domain/time-range";
+import { resolveDashboardWindow, type DashboardWindow } from "../domain/time-range";
 import type { AppDatabase } from "./database";
 import { minorUnitsToAmount } from "./money-storage";
 import { StoresRepository, toStoreView } from "./stores-repository";
@@ -98,8 +99,11 @@ interface FilterClause {
 }
 
 interface ProductMetricRow {
+  store_id: string | null;
   sku: string;
+  offer_id: string | null;
   name: string;
+  image_url: string | null;
   currency: string;
   quantity: number;
   gmv_minor: number;
@@ -110,8 +114,12 @@ interface StatusCountRow {
   count: number;
 }
 
-function comparisonWindow(window: DashboardWindow): DashboardWindow {
+function comparisonWindow(range: DashboardRange, window: DashboardWindow): DashboardWindow {
   const duration = window.to.getTime() - window.from.getTime();
+  const day = 24 * 60 * 60 * 1000;
+  if (range === "today" || range === "yesterday") {
+    return { ...window, from: new Date(window.from.getTime() - day), to: new Date(window.to.getTime() - day) };
+  }
   return {
     from: new Date(window.from.getTime() - duration),
     to: new Date(window.from.getTime()),
@@ -628,7 +636,7 @@ export class DashboardRepository {
     ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams, window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as BreakdownRow[];
     const breakdownRows = [...ozonBreakdownRows, ...wbBreakdownRows];
 
-    const previous = comparisonWindow(window);
+    const previous = comparisonWindow(range, window);
     const previousFilter = createFilter(previous, storeIds, platform);
     const previousOzonRows = this.database.prepare(
       `SELECT currency, COUNT(*) AS orders, COALESCE(SUM(gross_amount_minor), 0) AS gmv_minor,
@@ -683,30 +691,48 @@ export class DashboardRepository {
        ) GROUP BY store_id, store_name, color, platform, currency`,
     ).all(previous.from.getTime(), previous.to.getTime(), ...marketplaceStoreParams, previous.from.getTime(), previous.to.getTime(), ...marketplaceStoreParams) as BreakdownRow[];
 
+    const statusNow = new Date();
+    const statusWindow = resolveDashboardWindow("30d", statusNow);
+    const statusFilter = createFilter(statusWindow, storeIds, platform);
     const ozonStatusRows = platform === "wildberries" ? [] : this.database.prepare(
       `SELECT ${statusCase("p.status", "p.cancelled_at_ms")} AS status, COUNT(*) AS count
-       FROM postings p WHERE ${filter.sql}
+       FROM postings p WHERE ${statusFilter.sql}
        GROUP BY status`,
-    ).all(...filter.parameters) as StatusCountRow[];
+    ).all(...statusFilter.parameters) as StatusCountRow[];
     const wbStatusRows = platform === "ozon" ? [] : this.database.prepare(
       `SELECT ${statusCase("mo.status", "mo.cancelled_at_ms")} AS status, COUNT(DISTINCT mo.external_order_id) AS count
        FROM marketplace_orders mo WHERE mo.order_at_ms >= ? AND mo.order_at_ms < ?${marketplaceStoreFilter}
        GROUP BY status`,
-    ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as StatusCountRow[];
+    ).all(statusWindow.from.getTime(), statusWindow.to.getTime(), ...marketplaceStoreParams) as StatusCountRow[];
     const statusTotals = new Map<DashboardOrderStatus, number>();
     for (const row of [...ozonStatusRows, ...wbStatusRows]) {
       statusTotals.set(row.status, (statusTotals.get(row.status) ?? 0) + row.count);
     }
 
     const overdueRow = platform === "wildberries" ? undefined : this.database.prepare(
-      `SELECT COUNT(*) AS count, MIN(p.order_at_ms) AS oldest_at_ms
+      `SELECT SUM(CASE WHEN p.shipment_deadline_at_ms < ? THEN 1 ELSE 0 END) AS count,
+              MIN(CASE WHEN p.shipment_deadline_at_ms < ? THEN p.shipment_deadline_at_ms END) AS oldest_deadline_at_ms,
+              SUM(CASE WHEN p.shipment_deadline_at_ms IS NULL THEN 1 ELSE 0 END) AS missing_deadline_count
        FROM postings p
        WHERE p.fulfillment_mode IN ('FBS', 'RFBS')
          AND p.cancelled_at_ms IS NULL
          AND LOWER(p.status) IN ('awaiting_packaging', 'awaiting_deliver')
-         AND p.order_at_ms <= ?
-         AND p.order_at_ms < ?${storeIds.length ? ` AND p.store_id IN (${storeIds.map(() => "?").join(", ")})` : ""}`,
-    ).get(Date.now() - 12 * 60 * 60 * 1000, window.to.getTime(), ...storeIds) as { count: number; oldest_at_ms: number | null };
+         AND p.order_at_ms >= ? AND p.order_at_ms < ?
+         AND p.store_id IN (SELECT id FROM stores WHERE platform = 'ozon')
+         ${storeIds.length ? `AND p.store_id IN (${storeIds.map(() => "?").join(", ")})` : ""}`,
+    ).get(statusNow.getTime(), statusNow.getTime(), statusWindow.from.getTime(), statusWindow.to.getTime(), ...storeIds) as {
+      count: number | null;
+      oldest_deadline_at_ms: number | null;
+      missing_deadline_count: number | null;
+    };
+
+    const backfillStatus = platform === "wildberries" ? { pending: 0 } : this.database.prepare(
+      `SELECT COUNT(*) AS pending
+       FROM stores s
+       LEFT JOIN dashboard_shipment_deadline_backfills b ON b.store_id = s.id
+       WHERE s.enabled = 1 AND s.platform = 'ozon' AND b.store_id IS NULL
+         ${storeIds.length ? `AND s.id IN (${storeIds.map(() => "?").join(", ")})` : ""}`,
+    ).get(...storeIds) as { pending: number };
 
     const hourlyRows = range !== "today" ? [] : [
       ...(platform === "wildberries" ? [] : this.database.prepare(
@@ -733,36 +759,65 @@ export class DashboardRepository {
     }));
 
     const ozonProducts = platform === "wildberries" ? [] : this.database.prepare(
-      `SELECT item.sku, item.name, item.currency, SUM(item.quantity) AS quantity,
+      `SELECT p.store_id, item.sku, item.offer_id, item.name, image.primary_image_url AS image_url,
+              item.currency, SUM(item.quantity) AS quantity,
               SUM(item.unit_price_minor * item.quantity) AS gmv_minor
        FROM posting_items item JOIN postings p ON p.id = item.posting_id
+       LEFT JOIN product_images image ON image.store_id = p.store_id AND image.sku = item.sku
        WHERE ${filter.sql}
-       GROUP BY item.sku, item.name, item.currency`,
+       GROUP BY p.store_id, item.sku, item.offer_id, item.name, image.primary_image_url, item.currency`,
     ).all(...filter.parameters) as ProductMetricRow[];
     const wbProducts = platform === "ozon" ? [] : this.database.prepare(
-      `SELECT item.sku, item.name, item.currency, SUM(item.quantity) AS quantity,
+      `SELECT mo.store_id, item.sku, item.offer_id, item.name, NULL AS image_url, item.currency, SUM(item.quantity) AS quantity,
               SUM(item.unit_price_minor * item.quantity) AS gmv_minor
        FROM marketplace_order_items item JOIN marketplace_orders mo ON mo.id = item.order_id
        WHERE mo.order_at_ms >= ? AND mo.order_at_ms < ?${marketplaceStoreFilter}
-       GROUP BY item.sku, item.name, item.currency`,
+       GROUP BY mo.store_id, item.sku, item.offer_id, item.name, item.currency`,
     ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as ProductMetricRow[];
-    const productTotals = new Map<string, { sku: string; name: string; quantity: number; gmv: Map<string, number> }>();
+    const productTotals = new Map<string, {
+      sku: string; name: string; nameQuantity: number; quantity: number; gmv: Map<string, number>;
+      offerIds: Set<string>; imageUrl: string | null; imageStoreQuantity: number;
+      storeQuantity: Map<string, number>; storeImages: Map<string, { quantity: number; imageUrl: string | null }>;
+    }>();
     for (const row of [...ozonProducts, ...wbProducts]) {
-      const key = `${row.sku}:${row.name}`;
-      const product = productTotals.get(key) ?? { sku: row.sku, name: row.name, quantity: 0, gmv: new Map<string, number>() };
+      const key = row.sku || row.name;
+      const product = productTotals.get(key) ?? {
+        sku: row.sku, name: row.name, nameQuantity: 0, quantity: 0, gmv: new Map<string, number>(),
+        offerIds: new Set<string>(), imageUrl: null, imageStoreQuantity: -1,
+        storeQuantity: new Map<string, number>(), storeImages: new Map(),
+      };
       product.quantity += row.quantity;
+      if (row.name && row.quantity > product.nameQuantity) {
+        product.name = row.name;
+        product.nameQuantity = row.quantity;
+      }
       product.gmv.set(row.currency, (product.gmv.get(row.currency) ?? 0) + row.gmv_minor);
+      if (row.offer_id) product.offerIds.add(row.offer_id);
+      if (row.store_id) {
+        product.storeQuantity.set(row.store_id, (product.storeQuantity.get(row.store_id) ?? 0) + row.quantity);
+        const candidate = product.storeImages.get(row.store_id) ?? { quantity: 0, imageUrl: null };
+        candidate.quantity += row.quantity;
+        candidate.imageUrl ??= row.image_url;
+        product.storeImages.set(row.store_id, candidate);
+      }
       productTotals.set(key, product);
     }
     const topProducts = [...productTotals.values()]
       .sort((left, right) => right.quantity - left.quantity || left.name.localeCompare(right.name))
-      .slice(0, 8)
-      .map((product) => ({
+      .slice(0, 5)
+      .map((product) => {
+        const imageStore = [...product.storeImages.values()]
+          .filter((store) => store.imageUrl)
+          .sort((left, right) => right.quantity - left.quantity)[0];
+        return ({
         sku: product.sku,
         name: product.name,
+        imageUrl: imageStore?.imageUrl ?? null,
+        offerIds: [...product.offerIds].sort((left, right) => left.localeCompare(right)),
         quantity: product.quantity,
         gmv: [...product.gmv.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([currency, amount]) => moneyFromMinorUnits(amount, currency)),
-      }));
+        });
+      });
 
     const totalComparisonOrders = previousSummary.reduce((sum, row) => sum + row.orders, 0);
     const comparisonGmv = buildKpis(previousSummary).gmv;
@@ -814,17 +869,23 @@ export class DashboardRepository {
       granularity: window.granularity,
       kpis: buildKpis(summaryRows),
       comparison: {
-        label: range === "today" ? "较昨日同期" : "较上一周期",
+        label: range === "today" ? "较昨日同期" : range === "yesterday" ? "较前日" : "较上一周期",
         previousOrders: totalComparisonOrders,
         previousGmv: comparisonGmv,
+      },
+      statusRange: {
+        from: statusWindow.from.toISOString(),
+        to: statusWindow.to.toISOString(),
+        label: "最近30天",
       },
       orderStatuses: [...statusTotals.entries()].map(([status, count]) => ({ status, count })),
       hourlyOrders,
       topProducts,
       overdueShipments: {
         count: overdueRow?.count ?? 0,
-        thresholdHours: 12,
-        oldestOrderAt: overdueRow?.oldest_at_ms ? new Date(overdueRow.oldest_at_ms).toISOString() : null,
+        oldestDeadlineAt: overdueRow?.oldest_deadline_at_ms ? new Date(overdueRow.oldest_deadline_at_ms).toISOString() : null,
+        missingDeadlineCount: overdueRow?.missing_deadline_count ?? 0,
+        backfillInProgress: backfillStatus.pending > 0,
       },
       platforms: buildPlatformBreakdown(platformSummaryRows),
       timeSeries: buildDashboardSeries(seriesRows, window),

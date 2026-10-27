@@ -162,8 +162,8 @@ describe("TrendPanel", () => {
 
     const table = screen.getByRole("table", { name: /按时间和店铺拆分/ });
     expect(within(table).getAllByText("店铺 A")).toHaveLength(2);
-    expect(within(table).getByText(/120,50/)).toBeInTheDocument();
-    expect(within(table).getByText(/250,25/)).toBeInTheDocument();
+    expect(within(table).getByText(/₽120\.50/)).toBeInTheDocument();
+    expect(within(table).getByText(/₽250\.25/)).toBeInTheDocument();
   });
 
   it("masks store names in the legend, table, and keyboard detail", () => {
@@ -194,7 +194,7 @@ describe("TrendPanel", () => {
     fireEvent.keyDown(charts, { key: "ArrowLeft" });
     expect(detail).toHaveTextContent("08-02");
     expect(detail).toHaveTextContent("店铺 B");
-    expect(detail).toHaveTextContent("250,25");
+    expect(detail).toHaveTextContent("₽250.25");
     expect(detail).toHaveTextContent("3 单");
     expect(detail).toHaveClass("chart-tooltip--right");
     expect(within(charts).getAllByTestId("trend-detail")).toHaveLength(1);
@@ -224,7 +224,7 @@ describe("TrendPanel", () => {
     expect(detail).toHaveTextContent("总 GMV");
     expect(detail).toHaveTextContent("总订单");
     expect(detail).toHaveTextContent("其他 2 家");
-    expect(detail).toHaveTextContent("300,00");
+    expect(detail).toHaveTextContent("₽300.00");
     expect(detail).toHaveTextContent("3 单");
     expect(within(detail).getByText("店铺 1")).toBeInTheDocument();
     expect(within(detail).queryByText("店铺 7")).not.toBeInTheDocument();
@@ -238,7 +238,7 @@ describe("TrendPanel", () => {
     fireEvent.focus(charts);
     const detail = within(charts).getByTestId("trend-detail");
     expect(detail).toHaveTextContent("其他 14 家");
-    expect(detail).toHaveTextContent("10 500,00");
+    expect(detail).toHaveTextContent("₽10,500.00");
     expect(detail).toHaveTextContent("105 单");
     expect(within(detail).getAllByRole("listitem")).toHaveLength(7);
   });

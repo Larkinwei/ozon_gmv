@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { subHours } from "date-fns";
+import { subDays, subHours } from "date-fns";
 
 import { buildAdminApp, buildWallboardApp } from "./app";
 import { loadConfig } from "./config";
@@ -98,7 +98,10 @@ adminApp.log.info(
 );
 
 const now = new Date();
-void syncService.syncActiveStores(subHours(now, 24), now, undefined, 5_000).catch((error: unknown) => {
+void syncService.syncActiveStores(subDays(now, 30), now, undefined, 5_000, "ozon").catch((error: unknown) => {
+  adminApp.log.warn({ err: error }, "Startup shipment deadline reconciliation will retry in the background");
+});
+void syncService.syncActiveStores(subHours(now, 24), now, undefined, 5_000, "wildberries").catch((error: unknown) => {
   adminApp.log.warn({ err: error }, "Startup reconciliation will retry in the background");
 });
 

@@ -2,7 +2,7 @@ import { CirclePause, CirclePlay, ChevronDown, PackageOpen } from "lucide-react"
 
 import type { RecentOrder } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
-import { formatBeijingTime, formatMoney } from "../format";
+import { formatBeijingTime, formatDashboardMoney } from "../format";
 
 interface LiveOrdersProps {
   orders: RecentOrder[];
@@ -55,7 +55,7 @@ export function LiveOrders({ orders, totalOrders, onLoadMore, paused, onPausedCh
                     <span className="store-dot" aria-hidden="true" />
                     {privacyHidden ? HIDDEN_PLACEHOLDER : order.storeName}
                   </span>
-                  <strong>{formatMoney(order.amount)}</strong>
+                  <strong>{formatDashboardMoney(order.amount)}</strong>
                 </div>
                 <p
                   className="order-row__product"

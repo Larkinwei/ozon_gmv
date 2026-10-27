@@ -1,7 +1,7 @@
 import { Ban, PackageCheck, ReceiptText, RussianRuble } from "lucide-react";
 
 import type { DashboardComparison, DashboardKpis } from "../../shared/contracts";
-import { formatMoneyList } from "../format";
+import { dashboardCurrencySymbol, formatDashboardMoneyList } from "../format";
 
 interface KpiGridProps {
   kpis: DashboardKpis;
@@ -21,7 +21,7 @@ function gmvComparison(kpis: DashboardKpis, comparison: DashboardComparison): st
     if (!previous) return [];
     const currentAmount = Number(current.amount);
     const previousAmount = Number(previous.amount);
-    return [`${current.currency} ${percentChange(currentAmount, previousAmount)}`];
+    return [`${dashboardCurrencySymbol(current.currency)} ${percentChange(currentAmount, previousAmount)}`];
   });
   return rows.length > 0 ? `${comparison.label} · ${rows.join(" / ")}` : `${comparison.label} · 暂无可比数据`;
 }
@@ -37,14 +37,14 @@ export function KpiGrid({ kpis, comparison }: KpiGridProps): React.JSX.Element {
     },
     {
       label: "下单 GMV",
-      value: formatMoneyList(kpis.gmv),
+      value: formatDashboardMoneyList(kpis.gmv),
       footnote: gmvComparison(kpis, comparison),
       icon: RussianRuble,
       tone: "cyan",
     },
     {
       label: "平均客单价",
-      value: formatMoneyList(kpis.averageOrderValue),
+      value: formatDashboardMoneyList(kpis.averageOrderValue),
       footnote: "GMV ÷ 下单数量",
       icon: ReceiptText,
       tone: "violet",
@@ -52,7 +52,7 @@ export function KpiGrid({ kpis, comparison }: KpiGridProps): React.JSX.Element {
     {
       label: "取消订单",
       value: new Intl.NumberFormat("zh-CN").format(kpis.cancelledOrders),
-      footnote: formatMoneyList(kpis.cancelledGmv),
+      footnote: formatDashboardMoneyList(kpis.cancelledGmv),
       icon: Ban,
       tone: "red",
     },

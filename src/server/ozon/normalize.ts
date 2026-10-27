@@ -18,6 +18,8 @@ export interface NormalizedPosting {
   orderAt: Date;
   shipmentAt?: Date | null;
   shipmentTimeSource?: "delivering_date" | "in_process_at" | "missing";
+  shipmentDeadlineAt: Date | null;
+  shipmentDeadlineSource: "shipment_date" | "missing";
   status: string;
   substatus: string | null;
   grossAmount: string;
@@ -91,6 +93,8 @@ export function normalizePosting(posting: OzonPosting, source: "FBO" | "FBS", ob
     orderAt: new Date(orderAtValue),
     shipmentAt: shipmentTime.value ? new Date(shipmentTime.value) : null,
     shipmentTimeSource: shipmentTime.source,
+    shipmentDeadlineAt: posting.shipment_date ? new Date(posting.shipment_date) : null,
+    shipmentDeadlineSource: posting.shipment_date ? "shipment_date" : "missing",
     status: posting.status,
     substatus: posting.substatus ?? null,
     grossAmount: total.amount,

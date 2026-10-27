@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DashboardRepository } from "../src/server/db/dashboard-repository";
 import { MarketplaceRepository } from "../src/server/db/marketplace-repository";
@@ -23,6 +23,8 @@ function posting(number: string, orderAt: string, amount: string, currency: stri
     grossAmount: amount,
     currency,
     cancelledAt: null,
+    shipmentDeadlineAt: null,
+    shipmentDeadlineSource: "missing",
     items: [{
       sku: `sku-${number}`,
       offerId: `offer-${number}`,
@@ -35,6 +37,80 @@ function posting(number: string, orderAt: string, amount: string, currency: stri
 }
 
 describe("Dashboard store time series", () => {
+  it("compares today with the same Beijing-time window and keeps status/overdue metrics on the last 30 days", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-02T04:00:00.000Z")); // Beijing noon.
+    const context = createTestDatabase();
+    try {
+      await new StoresRepository(context.database).create({
+        id: STORE_A_ID,
+        name: "店铺 A",
+        clientId: "client-a",
+        apiKeyCiphertext: "cipher-a",
+        color: "#3B82F6",
+        fulfillmentModes: ["FBS"],
+        apiKeyExpiresAt: null,
+      });
+
+      const current = posting("today-current", "2026-08-02T03:00:00.000Z", "100.00", "RUB");
+      current.items[0]!.sku = "popular-sku";
+      current.items[0]!.offerId = "offer-today";
+      current.items[0]!.quantity = 2;
+      const sameYesterdayWindow = posting("yesterday-same", "2026-08-01T03:00:00.000Z", "90.00", "RUB");
+      sameYesterdayWindow.items[0]!.sku = "popular-sku";
+      sameYesterdayWindow.items[0]!.offerId = "offer-yesterday";
+      sameYesterdayWindow.items[0]!.quantity = 3;
+      const currentSecondOffer = posting("today-second-offer", "2026-08-02T03:30:00.000Z", "95.00", "RUB");
+      currentSecondOffer.items[0]!.sku = "popular-sku";
+      currentSecondOffer.items[0]!.offerId = "offer-today-second";
+      currentSecondOffer.items[0]!.quantity = 3;
+      const wrongYesterdayWindow = posting("yesterday-other", "2026-08-01T10:00:00.000Z", "80.00", "RUB");
+      const overdue = posting("overdue", "2026-07-20T03:00:00.000Z", "70.00", "RUB");
+      overdue.shipmentDeadlineAt = new Date("2026-07-20T04:00:00.000Z");
+      overdue.shipmentDeadlineSource = "shipment_date";
+      const futureDeadline = posting("future-deadline", "2026-07-21T03:00:00.000Z", "60.00", "RUB");
+      futureDeadline.shipmentDeadlineAt = new Date("2026-08-03T00:00:00.000Z");
+      futureDeadline.shipmentDeadlineSource = "shipment_date";
+      const missingDeadline = posting("missing-deadline", "2026-07-22T03:00:00.000Z", "50.00", "RUB");
+      const olderThanThirtyDays = posting("old-order", "2026-06-01T03:00:00.000Z", "40.00", "RUB");
+
+      const postings = new PostingsRepository(context.database);
+      for (const item of [current, sameYesterdayWindow, currentSecondOffer, wrongYesterdayWindow, overdue, futureDeadline, missingDeadline, olderThanThirtyDays]) {
+        await postings.upsert(STORE_A_ID, item);
+      }
+      new ProductImagesRepository(context.database).saveBatch(STORE_A_ID, [{
+        sku: "popular-sku",
+        offerId: "offer-today",
+        imageUrl: "https://cdn.example.com/popular.jpg",
+      }], Date.now());
+
+      const snapshot = await new DashboardRepository(context.database).getSnapshot("today", {
+        from: new Date("2026-08-01T16:00:00.000Z"),
+        to: new Date("2026-08-02T04:00:00.000Z"),
+        granularity: "15m",
+      }, []);
+
+      expect(snapshot.kpis.orders).toBe(2);
+      expect(snapshot.comparison).toMatchObject({ label: "较昨日同期", previousOrders: 1 });
+      expect(snapshot.statusRange).toMatchObject({
+        from: "2026-07-03T16:00:00.000Z",
+        to: "2026-08-02T04:00:00.000Z",
+        label: "最近30天",
+      });
+      expect(snapshot.orderStatuses.reduce((total, row) => total + row.count, 0)).toBe(7);
+      expect(snapshot.overdueShipments).toMatchObject({ count: 1, missingDeadlineCount: 5, backfillInProgress: true });
+      expect(snapshot.topProducts[0]).toMatchObject({
+        sku: "popular-sku",
+        imageUrl: "https://cdn.example.com/popular.jpg",
+        quantity: 5,
+      });
+      expect(snapshot.topProducts[0]?.offerIds).toEqual(expect.arrayContaining(["offer-today", "offer-today-second"]));
+    } finally {
+      context.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("searches local Ozon orders by order number, product name, SKU, and date", async () => {
     const context = createTestDatabase();
     try {

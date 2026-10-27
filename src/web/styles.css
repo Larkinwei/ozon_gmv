@@ -1109,6 +1109,8 @@ td {
 
 .overdue-alert.is-warning { color: #fcd34d; background: rgb(245 158 11 / 8%); border-color: rgb(245 158 11 / 35%); }
 .overdue-alert svg { flex: 0 0 auto; }
+.overdue-alert__messages { display: grid; gap: 4px; }
+.overdue-alert__messages small { color: var(--muted); font-size: 10px; }
 
 .hourly-chart { width: 100%; min-height: 128px; flex: 1; }
 .insight-summary { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
@@ -1116,11 +1118,18 @@ td {
 .insight-empty svg { color: #64748b; }
 
 .top-product-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.top-product-list li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.top-product-list li { display: grid; grid-template-columns: 22px 42px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
 .top-product-rank { color: #64748b; font-size: 10px; font-variant-numeric: tabular-nums; }
+.top-product-image { display: grid; width: 42px; height: 42px; place-items: center; overflow: hidden; color: var(--muted); background: var(--surface-raised); border: 1px solid var(--border-soft); border-radius: 7px; }
+.top-product-image img { display: block; width: 42px; height: 42px; object-fit: cover; }
 .top-product-info { display: grid; min-width: 0; gap: 3px; }
 .top-product-info strong { overflow: hidden; font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .top-product-info > span:not(.top-product-track) { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.top-product-offers { display: flex; align-items: baseline; gap: 6px; min-width: 0; color: var(--muted); font-size: 10px; }
+.top-product-offers > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-product-offers details { position: relative; flex: 0 0 auto; }
+.top-product-offers summary { color: var(--primary); cursor: pointer; }
+.top-product-offers details > span { position: absolute; z-index: 3; top: 18px; left: 0; min-width: 160px; max-width: 260px; padding: 8px; overflow-wrap: anywhere; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 7px; box-shadow: var(--shadow); }
 .top-product-track { height: 3px; overflow: hidden; background: var(--surface-raised); border-radius: 99px; }
 .top-product-track i { display: block; height: 100%; background: var(--cyan); border-radius: inherit; }
 .top-product-list li > b { font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -1128,7 +1137,7 @@ td {
 .dashboard-left-column {
   display: grid;
   min-height: 0;
-  grid-template-rows: minmax(300px, 1fr) 190px;
+  grid-template-rows: minmax(340px, 1fr) minmax(350px, 1fr);
   gap: 16px;
 }
 
@@ -1239,20 +1248,21 @@ td {
   border-radius: 50%;
 }
 
+/* Desktop charts share the card's remaining height; mobile sets a readable scrollable minimum below. */
 .charts {
   position: relative;
   display: grid;
   height: auto;
-  min-height: 250px;
+  min-height: 0;
   flex: 1;
-  grid-template-rows: minmax(145px, 1.65fr) minmax(96px, 1fr);
+  grid-template-rows: minmax(0, 1.65fr) minmax(0, 1fr);
   gap: 4px;
   border-radius: 8px;
 }
 
 .charts-scroll {
   min-width: 0;
-  min-height: 250px;
+  min-height: 0;
   flex: 1;
   overflow-x: auto;
   overflow-y: hidden;
@@ -1433,7 +1443,10 @@ td {
 }
 
 .ranking-panel {
-  overflow: auto;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .panel-count {
@@ -1446,16 +1459,26 @@ td {
 
 .ranking-list {
   display: grid;
+  min-height: 0;
   margin: 8px 0 0;
   padding: 0;
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #334155 transparent;
+  scrollbar-width: thin;
   list-style: none;
 }
 
 .ranking-list li {
-  display: flex;
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 6px;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .rank-number {
@@ -1466,14 +1489,18 @@ td {
 }
 
 .ranking-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 10px;
   min-width: 0;
-  flex: 1;
 }
 
 .ranking-label {
   display: grid;
-  grid-template-columns: minmax(110px, 1fr) minmax(90px, auto) minmax(115px, auto);
-  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 4px 8px;
   align-items: center;
   font-size: 11px;
 }
@@ -1491,11 +1518,11 @@ td {
 .ranking-label b {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .ranking-track {
-  height: 4px;
-  margin-top: 4px;
+  height: 3px;
   overflow: hidden;
   background: #1e293b;
   border-radius: 999px;
@@ -1507,7 +1534,7 @@ td {
   border-radius: inherit;
 }
 
-.ranking-change { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.ranking-change { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .ranking-change.is-positive { color: var(--success); }
 .ranking-change.is-negative { color: var(--danger); }
 
@@ -1663,7 +1690,7 @@ td {
 /* Keep the desktop trend panel independent from the length of the live order feed. */
 @media (min-width: 1025px) {
   .dashboard-page:not(.is-wallboard) .dashboard-content-grid {
-    height: clamp(560px, calc(100dvh - 330px), 760px);
+    height: clamp(706px, calc(100dvh - 250px), 820px);
   }
 }
 
@@ -6009,8 +6036,62 @@ td {
   to { transform: translateX(100%); }
 }
 
+@media (max-width: 1720px) {
+  .dashboard-header .app-nav > .nav-link,
+  .dashboard-header .app-nav > .desktop-logout {
+    display: none;
+  }
+
+  .dashboard-header .mobile-menu-button {
+    display: inline-grid;
+  }
+
+  .range-button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .dashboard-header .mobile-nav-drawer {
+    position: absolute;
+    z-index: 90;
+    top: calc(100% + 8px);
+    right: 0;
+    display: grid;
+    width: min(300px, calc(100vw - 24px));
+    padding: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    box-shadow: 0 20px 50px rgb(0 0 0 / 42%);
+  }
+
+  .dashboard-header .mobile-nav-drawer a,
+  .dashboard-header .mobile-nav-drawer button {
+    display: flex;
+    min-height: 48px;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px;
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 650;
+  }
+
+  .dashboard-header .mobile-nav-drawer a.is-active {
+    color: #bfdbfe;
+    background: rgb(59 130 246 / 13%);
+  }
+
+  .dashboard-header .mobile-nav-drawer .nav-update-badge {
+    margin-left: auto;
+  }
+}
+
 @media (max-width: 1440px) {
-  .dashboard-header { grid-template-columns: auto 1fr auto; padding-inline: 18px; }
+  .dashboard-header { grid-template-columns: minmax(230px, auto) minmax(0, 1fr) auto; padding-inline: 18px; }
   .range-button { padding-inline: 8px; }
   .beijing-clock span { display: none; }
   .dashboard-main { padding-inline: 18px; }
@@ -6055,6 +6136,8 @@ td {
   .dashboard-left-column { grid-template-rows: minmax(400px, auto) auto; }
   .trend-panel { min-height: 440px; }
   .live-panel { min-height: 520px; }
+  .ranking-panel { overflow: visible; }
+  .ranking-list { max-height: 360px; }
   .sync-strip { align-items: flex-start; flex-direction: column; }
   .sync-strip__label { border-right: 0; }
   .login-page { grid-template-columns: 1fr; }
@@ -6104,7 +6187,7 @@ td {
   .dashboard-insights > .insight-panel:last-child { grid-column: auto; }
   .insight-panel { min-height: 210px; }
   .trend-panel { min-height: 430px; order: 1; }
-  .charts { grid-template-rows: minmax(145px, 1.65fr) minmax(96px, 1fr) auto; }
+  .charts { min-height: 250px; grid-template-rows: minmax(145px, 1.65fr) minmax(96px, 1fr) auto; }
   .gmv-chart { grid-row: 1; }
   .orders-chart { grid-row: 2; }
   .chart-tooltip {
@@ -6120,10 +6203,12 @@ td {
   }
   .live-panel { min-height: 0; order: 2; }
   .order-feed { flex: 0 0 auto; overflow: visible; }
-  .ranking-panel { order: 3; overflow: visible; }
+  .ranking-panel { order: 3; max-height: 460px; overflow: hidden; }
+  .ranking-list { max-height: 360px; }
   .charts-scroll { min-height: 250px; margin-inline: -4px; padding-inline: 4px; }
   .charts-scroll .charts { min-width: 720px; }
-  .ranking-label { grid-template-columns: minmax(80px, 1fr) 46px minmax(100px, auto); }
+  .ranking-label { grid-template-columns: minmax(0, 1fr) auto; }
+  .ranking-label strong { grid-column: 1 / -1; }
   .sync-strip { margin: 0; }
   .app-nav .nav-link { font-size: 0; gap: 0; width: 44px; padding: 0; justify-content: center; }
   .app-nav > .nav-link .nav-update-badge { display: none; }

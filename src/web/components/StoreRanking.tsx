@@ -2,7 +2,7 @@ import { Store } from "lucide-react";
 
 import type { StoreBreakdown } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
-import { formatMoneyList } from "../format";
+import { formatDashboardMoneyList } from "../format";
 
 export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreBreakdown[]; privacyHidden?: boolean }): React.JSX.Element {
   const visibleStores = stores.filter((store) => store.orders > 0);
@@ -36,7 +36,7 @@ export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreB
                   <div className="ranking-label">
                     <strong>{privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}</strong>
                     <span>{store.orders} 单 · 占 {store.orderSharePercent.toFixed(1)}%</span>
-                    <b>{formatMoneyList(store.gmv)}</b>
+                    <b>{formatDashboardMoneyList(store.gmv)}</b>
                   </div>
                   <div className="ranking-track" aria-hidden="true">
                     <span style={{ width: `${Math.max((barValue / maximum) * 100, 2)}%`, background: store.color }} />

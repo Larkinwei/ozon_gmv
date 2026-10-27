@@ -100,6 +100,7 @@ export class SyncService {
       return;
     }
 
+    const syncStartedAt = Date.now();
     this.activeSyncs.add(storeId);
     await this.stores.markSyncStarted(storeId);
     this.events.publish("sync.status", { storeId, state: "syncing" });
@@ -120,6 +121,16 @@ export class SyncService {
         for (const source of sources) {
           await this.syncSourceWindow(store, client, source, window.from, window.to);
         }
+      }
+      const storeNeedsShipmentDeadlines = store.fulfillmentModes.some((mode) => mode === "FBS" || mode === "RFBS");
+      const shipmentSourceWasSynced = sources.includes("FBS");
+      const latestDeadlineWindowStart = syncStartedAt - 29 * 24 * 60 * 60 * 1000;
+      if (
+        since.getTime() <= latestDeadlineWindowStart
+        && to.getTime() >= syncStartedAt - 5 * 60 * 1000
+        && (!storeNeedsShipmentDeadlines || shipmentSourceWasSynced)
+      ) {
+        this.postings.markShipmentDeadlineBackfillComplete(storeId, to.getTime());
       }
       await this.stores.markSyncFinished(storeId);
       this.events.publish("sync.status", { storeId, state: "healthy" });

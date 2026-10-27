@@ -53,7 +53,7 @@ export function startScheduler(syncService: SyncService, finance?: Pick<FinanceR
         return;
       }
       const now = new Date();
-      void syncService.syncActiveStores(subDays(now, 7), now, undefined, 10_000, "ozon").catch(() => undefined);
+      void syncService.syncActiveStores(subDays(now, 30), now, undefined, 10_000, "ozon").catch(() => undefined);
       void syncService.syncActiveStores(subDays(now, 7), now, undefined, 10_000, "wildberries").catch(() => undefined);
       if (finance) {
         void finance.syncActiveStores(subDays(now, 180), now).catch(() => undefined);

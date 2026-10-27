@@ -35,6 +35,33 @@ export function formatMoneyList(values: Money[]): string {
   return values.length > 0 ? values.map(formatMoney).join(" · ") : "—";
 }
 
+/** Formats dashboard amounts with compact symbols such as ¥ and ₽. */
+export function formatDashboardMoney(value: Money): string {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: value.currency,
+    currencyDisplay: "narrowSymbol",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value.amount));
+}
+
+/** Formats each currency separately so mixed-currency totals are never combined. */
+export function formatDashboardMoneyList(values: Money[]): string {
+  return values.length > 0 ? values.map(formatDashboardMoney).join(" · ") : "—";
+}
+
+/** Returns the localized narrow symbol used by dashboard comparison labels. */
+export function dashboardCurrencySymbol(currency: string): string {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency,
+    currencyDisplay: "narrowSymbol",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).formatToParts(0).find((part) => part.type === "currency")?.value ?? currency;
+}
+
 export function formatCompactNumber(value: number): string {
   return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }

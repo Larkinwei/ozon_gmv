@@ -66,6 +66,12 @@ export interface DashboardComparison {
   previousGmv: Money[];
 }
 
+export interface DashboardStatusRange {
+  from: string;
+  to: string;
+  label: "最近30天";
+}
+
 export type DashboardOrderStatus = "awaiting_shipment" | "in_transit" | "delivered" | "cancelled" | "other";
 
 export interface DashboardOrderStatusCount {
@@ -81,14 +87,17 @@ export interface DashboardHourlyOrders {
 export interface DashboardTopProduct {
   sku: string;
   name: string;
+  imageUrl: string | null;
+  offerIds: string[];
   quantity: number;
   gmv: Money[];
 }
 
 export interface DashboardOverdueShipments {
   count: number;
-  thresholdHours: number;
-  oldestOrderAt: string | null;
+  oldestDeadlineAt: string | null;
+  missingDeadlineCount: number;
+  backfillInProgress: boolean;
 }
 
 export interface TimeSeriesPoint {
@@ -208,6 +217,7 @@ export interface DashboardSnapshot {
   granularity: "15m" | "hour" | "day";
   kpis: DashboardKpis;
   comparison: DashboardComparison;
+  statusRange: DashboardStatusRange;
   orderStatuses: DashboardOrderStatusCount[];
   hourlyOrders: DashboardHourlyOrders[];
   topProducts: DashboardTopProduct[];
