@@ -9,6 +9,8 @@ const orderSearchQuerySchema = z.object({
   q: z.string().trim().max(100).optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
+  storeId: z.string().min(1).optional(),
+  cancelledOnly: z.enum(["true", "false"]).optional().transform((value) => value === "true"),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 }).refine((value) => Boolean(value.from) === Boolean(value.to), {
@@ -31,6 +33,8 @@ export function registerOrderSearchRoutes(app: FastifyInstance, dashboard: Dashb
     }
     return dashboard.searchOzonOrders({
       ...(query.q ? { q: query.q } : {}),
+      ...(query.storeId ? { storeId: query.storeId } : {}),
+      ...(query.cancelledOnly ? { cancelledOnly: true } : {}),
       from,
       to,
       page: query.page,

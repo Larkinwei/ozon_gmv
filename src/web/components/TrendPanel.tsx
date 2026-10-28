@@ -40,6 +40,7 @@ interface ChartDatum {
   label: string;
   orders: number;
   gmv: number;
+  previousGmv: number | null;
   storeGmv: Record<string, number>;
   stores: StoreChartValue[];
 }
@@ -79,8 +80,8 @@ function moneyAmount(values: StoreTimeSeriesValue["gmv"], currency: string): num
   return Number(values.find((value) => value.currency === currency)?.amount ?? 0);
 }
 
-function toChartData(points: TimeSeriesPoint[], currency: string): ChartDatum[] {
-  return points.map((point) => {
+function toChartData(points: TimeSeriesPoint[], currency: string, previousPoints: TimeSeriesPoint[]): ChartDatum[] {
+  return points.map((point, index) => {
     const stores = point.stores.map((store) => ({
       id: store.storeId,
       name: store.storeName,
@@ -93,6 +94,9 @@ function toChartData(points: TimeSeriesPoint[], currency: string): ChartDatum[] 
       label: point.label,
       orders: point.orders,
       gmv: Number(point.gmv.find((value) => value.currency === currency)?.amount ?? 0),
+      previousGmv: previousPoints[index]
+        ? Number(previousPoints[index]!.gmv.find((value) => value.currency === currency)?.amount ?? 0)
+        : null,
       storeGmv: Object.fromEntries(stores.map((store) => [store.id, store.gmv])),
       stores,
     };
@@ -277,6 +281,11 @@ function UnifiedTrendDetail({
           <strong>{datum.orders} 单</strong>
         </div>
       </div>
+      {datum.previousGmv !== null && (
+        <p className="chart-tooltip__comparison">
+          昨日同期 GMV <strong>{formatDashboardMoney({ amount: String(datum.previousGmv), currency })}</strong>
+        </p>
+      )}
       {rows.length > 0 ? (
         <div className="chart-tooltip__stores">
           <div className="chart-tooltip__columns" aria-hidden="true">
@@ -304,7 +313,8 @@ function UnifiedTrendDetail({
   );
 }
 
-export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeriesPoint[]; privacyHidden?: boolean }): React.JSX.Element {
+/** Renders synchronized GMV and stacked-order trends with one shared bucket detail. */
+export function TrendPanel({ points, previousPoints = [], privacyHidden = false }: { points: TimeSeriesPoint[]; previousPoints?: TimeSeriesPoint[]; privacyHidden?: boolean }): React.JSX.Element {
   const orderStackClipPrefix = useId().replaceAll(":", "");
   const [showTable, setShowTable] = useState(false);
   const [lineVisibility, setLineVisibility] = useState<LineVisibilitySelection | null>(null);
@@ -322,7 +332,7 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
     }
   }, [currencies, currency]);
 
-  const data = useMemo(() => toChartData(points, currency), [points, currency]);
+  const data = useMemo(() => toChartData(points, currency, previousPoints), [points, previousPoints, currency]);
   const stores = useMemo(() => collectStores(points, currency), [points, currency]);
   const automaticVisibleStoreIds = useMemo(() => {
     const lineLimit = stores.length > LINE_COLLAPSE_THRESHOLD ? DEFAULT_STORE_LINE_LIMIT : stores.length;
@@ -338,6 +348,7 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
   const visibleStores = stores.filter((store) => visibleStoreIds.has(store.id));
   const hiddenStoreCount = stores.length - visibleStores.length;
   const showTotalLine = stores.length > 1;
+  const hasPreviousSeries = data.some((datum) => datum.previousGmv !== null);
   const totalGmv = points.reduce((sum, point) => {
     const amount = point.gmv.find((value) => value.currency === currency)?.amount ?? "0";
     return sum.plus(amount);
@@ -453,6 +464,12 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
             <span className="chart-legend__total">
               <span className="chart-legend__line" aria-hidden="true" />
               总计
+            </span>
+          )}
+          {hasPreviousSeries && (
+            <span className="chart-legend__previous">
+              <span className="chart-legend__line chart-legend__line--previous" aria-hidden="true" />
+              昨日同期
             </span>
           )}
           {stores.map((store) => {
@@ -575,6 +592,19 @@ export function TrendPanel({ points, privacyHidden = false }: { points: TimeSeri
                 />
                 <Tooltip cursor={false} content={() => null} />
                 {activeDatum && <ReferenceLine x={activeDatum.label} stroke="#38BDF8" strokeDasharray="3 4" />}
+                {hasPreviousSeries && (
+                  <Line
+                    type="linear"
+                    dataKey="previousGmv"
+                    name="昨日同期"
+                    stroke="#94A3B8"
+                    strokeWidth={2}
+                    strokeDasharray="6 4"
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                    isAnimationActive={false}
+                  />
+                )}
                 {showTotalLine && (
                   <Line
                     type="linear"

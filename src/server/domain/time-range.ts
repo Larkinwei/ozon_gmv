@@ -8,7 +8,7 @@ export const DASHBOARD_TIMEZONE = "Asia/Shanghai" as const;
 export interface DashboardWindow {
   from: Date;
   to: Date;
-  granularity: "15m" | "hour" | "day";
+  granularity: "30m" | "hour" | "day";
 }
 
 /** Resolves a named dashboard range into an exact UTC half-open interval. */
@@ -22,7 +22,7 @@ export function resolveDashboardWindow(
   const today = startOfDay(zonedNow);
 
   if (range === "today") {
-    return { from: fromZonedTime(today, DASHBOARD_TIMEZONE), to: now, granularity: "15m" };
+    return { from: fromZonedTime(today, DASHBOARD_TIMEZONE), to: now, granularity: "30m" };
   }
   if (range === "yesterday") {
     const yesterday = subDays(today, 1);
@@ -51,7 +51,7 @@ export function resolveDashboardWindow(
   }
 
   const days = differenceInCalendarDays(toZonedTime(to, DASHBOARD_TIMEZONE), toZonedTime(from, DASHBOARD_TIMEZONE));
-  let granularity: DashboardWindow["granularity"] = "15m";
+  let granularity: DashboardWindow["granularity"] = "30m";
   if (days >= 2) {
     granularity = "day";
   } else if (days >= 1) {

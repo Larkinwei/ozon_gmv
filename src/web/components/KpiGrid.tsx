@@ -2,10 +2,13 @@ import { Ban, PackageCheck, ReceiptText, RussianRuble } from "lucide-react";
 
 import type { DashboardComparison, DashboardKpis } from "../../shared/contracts";
 import { dashboardCurrencySymbol, formatDashboardMoneyList } from "../format";
+import { Link } from "react-router-dom";
 
 interface KpiGridProps {
   kpis: DashboardKpis;
   comparison: DashboardComparison;
+  ordersHref?: string;
+  cancelledHref?: string;
 }
 
 function percentChange(current: number, previous: number): string {
@@ -26,7 +29,7 @@ function gmvComparison(kpis: DashboardKpis, comparison: DashboardComparison): st
   return rows.length > 0 ? `${comparison.label} · ${rows.join(" / ")}` : `${comparison.label} · 暂无可比数据`;
 }
 
-export function KpiGrid({ kpis, comparison }: KpiGridProps): React.JSX.Element {
+export function KpiGrid({ kpis, comparison, ordersHref, cancelledHref }: KpiGridProps): React.JSX.Element {
   const cards = [
     {
       label: "下单数量",
@@ -58,12 +61,14 @@ export function KpiGrid({ kpis, comparison }: KpiGridProps): React.JSX.Element {
     },
   ];
 
+  const cardLinks = [ordersHref, undefined, undefined, cancelledHref];
+
   return (
     <section className="kpi-grid" aria-label="核心指标">
-      {cards.map((card) => {
+      {cards.map((card, index) => {
         const Icon = card.icon;
-        return (
-          <article className={`kpi-card kpi-card--${card.tone}`} key={card.label}>
+        const content = (
+          <>
             <div className="kpi-card__header">
               <span>{card.label}</span>
               <span className="kpi-icon" aria-hidden="true">
@@ -72,7 +77,15 @@ export function KpiGrid({ kpis, comparison }: KpiGridProps): React.JSX.Element {
             </div>
             <strong className="kpi-value">{card.value}</strong>
             <p>{card.footnote}</p>
-          </article>
+          </>
+        );
+        const href = cardLinks[index];
+        return href ? (
+          <Link className={`kpi-card kpi-card--${card.tone} kpi-card--interactive`} to={href} key={card.label} aria-label={`${card.label} ${card.value}，查看订单明细`}>
+            {content}
+          </Link>
+        ) : (
+          <article className={`kpi-card kpi-card--${card.tone}`} key={card.label}>{content}</article>
         );
       })}
     </section>

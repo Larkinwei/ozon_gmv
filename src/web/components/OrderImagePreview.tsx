@@ -34,6 +34,7 @@ export function OrderImagePreview({
   const [previewPosition, setPreviewPosition] = useState<PreviewPosition | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const suppressFocusPreviewRef = useRef(false);
   const usableSrc = src && !failed ? src : null;
 
   const showPreview = (): void => {
@@ -50,10 +51,17 @@ export function OrderImagePreview({
     });
   };
 
+  /** Closes the full-size view without reopening the hover preview on focus restore. */
+  function closeViewer(): void {
+    suppressFocusPreviewRef.current = true;
+    setPreviewPosition(null);
+    setOpen(false);
+  }
+
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") closeViewer();
     };
     document.addEventListener("keydown", onKeyDown);
     closeRef.current?.focus();
@@ -77,10 +85,19 @@ export function OrderImagePreview({
         className="order-image-preview__trigger"
         ref={triggerRef}
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setPreviewPosition(null);
+          setOpen(true);
+        }}
         onMouseEnter={showPreview}
         onMouseLeave={() => setPreviewPosition(null)}
-        onFocus={showPreview}
+        onFocus={() => {
+          if (suppressFocusPreviewRef.current) {
+            suppressFocusPreviewRef.current = false;
+            return;
+          }
+          showPreview();
+        }}
         onBlur={() => setPreviewPosition(null)}
         aria-label={`放大查看：${alt}`}
         title="点击查看大图"
@@ -94,9 +111,9 @@ export function OrderImagePreview({
         document.body,
       )}
       {open && createPortal(
-        <div className="order-image-viewer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
+        <div className="order-image-viewer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeViewer()}>
           <section className="order-image-viewer__dialog" role="dialog" aria-modal="true" aria-label={`${alt}大图`}>
-            <button className="icon-button order-image-viewer__close" ref={closeRef} type="button" onClick={() => setOpen(false)} aria-label="关闭大图">
+            <button className="icon-button order-image-viewer__close" ref={closeRef} type="button" onClick={closeViewer} aria-label="关闭大图">
               <X size={20} aria-hidden="true" />
             </button>
             <img src={usableSrc} alt={alt} />

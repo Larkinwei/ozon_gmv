@@ -229,6 +229,8 @@ export interface OrderSearchFilters {
   q?: string;
   from?: string;
   to?: string;
+  storeId?: string;
+  cancelledOnly?: boolean;
   page?: number;
   pageSize?: number;
 }
@@ -244,7 +246,10 @@ export async function fetchOrderSearch(filters: OrderSearchFilters = {}): Promis
       .map((order) => ({ ...order, orderNumber: order.postingNumber.split("-").slice(0, -1).join("-"), imageUrl: null, skus: [] as string[], offerIds: [] as string[] }))
       .filter((order) => {
         const searchable = `${order.postingNumber} ${order.orderNumber} ${order.productNames.join(" ")} ${order.skus.join(" ")} ${order.offerIds.join(" ")}`.toLocaleLowerCase("zh-CN");
-        return Date.parse(order.orderAt) >= from && Date.parse(order.orderAt) < to && (!q || searchable.includes(q));
+        return Date.parse(order.orderAt) >= from && Date.parse(order.orderAt) < to
+          && (!filters.storeId || order.storeId === filters.storeId)
+          && (!filters.cancelledOnly || order.cancelled)
+          && (!q || searchable.includes(q));
       });
     const page = filters.page ?? 1;
     const pageSize = filters.pageSize ?? 20;
@@ -254,6 +259,8 @@ export async function fetchOrderSearch(filters: OrderSearchFilters = {}): Promis
   if (filters.q) params.set("q", filters.q);
   if (filters.from) params.set("from", filters.from);
   if (filters.to) params.set("to", filters.to);
+  if (filters.storeId) params.set("storeId", filters.storeId);
+  if (filters.cancelledOnly) params.set("cancelledOnly", "true");
   params.set("page", String(filters.page ?? 1));
   params.set("pageSize", String(filters.pageSize ?? 20));
   const path = runtimeRole === "wallboard" ? "/api/wallboard/orders/search" : "/api/orders/search";

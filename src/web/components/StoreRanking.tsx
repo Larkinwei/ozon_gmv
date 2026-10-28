@@ -4,7 +4,7 @@ import type { StoreBreakdown } from "../../shared/contracts";
 import { HIDDEN_PLACEHOLDER } from "../dashboard-privacy";
 import { formatDashboardMoneyList } from "../format";
 
-export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreBreakdown[]; privacyHidden?: boolean }): React.JSX.Element {
+export function StoreRanking({ stores, privacyHidden = false, onSelectStore }: { stores: StoreBreakdown[]; privacyHidden?: boolean; onSelectStore: (store: StoreBreakdown) => void }): React.JSX.Element {
   const visibleStores = stores.filter((store) => store.orders > 0);
   const currencies = new Set(visibleStores.flatMap((store) => store.gmv.map((value) => value.currency)));
   const mixedCurrencies = currencies.size > 1;
@@ -32,19 +32,21 @@ export function StoreRanking({ stores, privacyHidden = false }: { stores: StoreB
             return (
               <li key={store.storeId}>
                 <span className="rank-number">{String(index + 1).padStart(2, "0")}</span>
-                <div className="ranking-content">
-                  <div className="ranking-label">
-                    <strong>{privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}</strong>
-                    <span>{store.orders} 单 · 占 {store.orderSharePercent.toFixed(1)}%</span>
-                    <b>{formatDashboardMoneyList(store.gmv)}</b>
+                <button className="ranking-select" type="button" onClick={() => onSelectStore(store)} aria-label={`按店铺筛选：${privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}`}>
+                  <div className="ranking-content">
+                    <div className="ranking-label">
+                      <strong>{privacyHidden ? HIDDEN_PLACEHOLDER : store.storeName}</strong>
+                      <span>{store.orders} 单 · 占 {store.orderSharePercent.toFixed(1)}%</span>
+                      <b>{formatDashboardMoneyList(store.gmv)}</b>
+                    </div>
+                    <div className="ranking-track" aria-hidden="true">
+                      <span style={{ width: `${Math.max((barValue / maximum) * 100, 2)}%`, background: store.color }} />
+                    </div>
+                    <span className={`ranking-change${store.gmvChangePercent === null ? " is-unavailable" : store.gmvChangePercent >= 0 ? " is-positive" : " is-negative"}`}>
+                      {store.gmvChangePercent === null ? "暂无同期比较" : `GMV ${store.gmvChangePercent > 0 ? "↑" : store.gmvChangePercent < 0 ? "↓" : "→"} ${Math.abs(store.gmvChangePercent).toFixed(1)}%`}
+                    </span>
                   </div>
-                  <div className="ranking-track" aria-hidden="true">
-                    <span style={{ width: `${Math.max((barValue / maximum) * 100, 2)}%`, background: store.color }} />
-                  </div>
-                  <span className={`ranking-change${store.gmvChangePercent === null ? " is-unavailable" : store.gmvChangePercent >= 0 ? " is-positive" : " is-negative"}`}>
-                    {store.gmvChangePercent === null ? "暂无同期比较" : `GMV ${store.gmvChangePercent > 0 ? "↑" : store.gmvChangePercent < 0 ? "↓" : "→"} ${Math.abs(store.gmvChangePercent).toFixed(1)}%`}
-                  </span>
-                </div>
+                </button>
               </li>
             );
           })}

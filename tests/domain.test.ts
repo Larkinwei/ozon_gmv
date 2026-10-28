@@ -23,7 +23,7 @@ describe("GMV domain behavior", () => {
 
     expect(window.from.toISOString()).toBe("2026-08-05T16:00:00.000Z");
     expect(window.to.toISOString()).toBe("2026-08-05T16:30:00.000Z");
-    expect(window.granularity).toBe("15m");
+    expect(window.granularity).toBe("30m");
   });
 
   it("fills every daily bucket in a 30-day dashboard series", () => {

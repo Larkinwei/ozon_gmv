@@ -200,6 +200,21 @@ describe("TrendPanel", () => {
     expect(within(charts).getAllByTestId("trend-detail")).toHaveLength(1);
   });
 
+  it("shows the previous-day same-time GMV for today comparisons", () => {
+    const previousPoints = points.map((point, index) => ({
+      ...point,
+      bucket: index === 0 ? "2026-07-31T16:00:00.000Z" : "2026-08-01T16:00:00.000Z",
+      gmv: [{ amount: index === 0 ? "300.00" : "50.00", currency: "RUB" }],
+    }));
+    render(<TrendPanel points={points} previousPoints={previousPoints} />);
+
+    expect(screen.getByText("昨日同期")).toBeInTheDocument();
+    const charts = screen.getByRole("group", { name: /左右方向键/ });
+    fireEvent.focus(charts);
+    expect(within(charts).getByTestId("trend-detail")).toHaveTextContent("昨日同期 GMV");
+    expect(within(charts).getByTestId("trend-detail")).toHaveTextContent("₽50.00");
+  });
+
   it("defaults to the top five store lines while keeping every store in the legend", () => {
     render(<TrendPanel points={[createStorePoint(8)]} />);
 

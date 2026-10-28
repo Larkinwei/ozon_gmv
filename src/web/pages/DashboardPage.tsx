@@ -191,11 +191,22 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
         </main>
       ) : dashboardQuery.data ? (
         <main className="dashboard-main" id="dashboard-main">
-          <KpiGrid kpis={dashboardQuery.data.kpis} comparison={dashboardQuery.data.comparison} />
+          <KpiGrid
+            kpis={dashboardQuery.data.kpis}
+            comparison={dashboardQuery.data.comparison}
+            {...(platform === "ozon" ? {
+              ordersHref: makeOrderSearchHref(dashboardQuery.data.from, dashboardQuery.data.to, storeId),
+              cancelledHref: makeOrderSearchHref(dashboardQuery.data.from, dashboardQuery.data.to, storeId, true),
+            } : {})}
+          />
           <div className={privacyHidden ? "dashboard-content-grid is-privacy-hidden" : "dashboard-content-grid"}>
             <div className="dashboard-left-column">
-              <TrendPanel points={dashboardQuery.data.timeSeries} privacyHidden={privacyHidden} />
-              <StoreRanking stores={dashboardQuery.data.stores} privacyHidden={privacyHidden} />
+              <TrendPanel points={dashboardQuery.data.timeSeries} previousPoints={dashboardQuery.data.previousTimeSeries} privacyHidden={privacyHidden} />
+              <StoreRanking
+                stores={dashboardQuery.data.stores}
+                privacyHidden={privacyHidden}
+                onSelectStore={(store) => { setStoreId(store.storeId); setPlatform(store.platform); }}
+              />
             </div>
             <LiveOrders
               orders={visibleFeedOrders}
@@ -231,4 +242,12 @@ export default function DashboardPage({ wallboard = false }: DashboardPageProps)
       {!wallboard && <LowStockWarning incomingAlert={incomingLowStock} />}
     </div>
   );
+}
+
+/** Builds an order-search deep link for the dashboard's current filter window. */
+function makeOrderSearchHref(from: string, to: string, storeId: string, cancelledOnly = false): string {
+  const params = new URLSearchParams({ from, to });
+  if (storeId !== "all") params.set("storeId", storeId);
+  if (cancelledOnly) params.set("cancelledOnly", "true");
+  return `/orders/search?${params.toString()}`;
 }

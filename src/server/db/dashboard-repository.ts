@@ -177,8 +177,8 @@ function moneyFromMinorUnits(amount: number, currency: string): Money {
 }
 
 function bucketExpression(granularity: DashboardWindow["granularity"]): string {
-  if (granularity === "15m") {
-    return "CAST(p.order_at_ms / 900000 AS INTEGER) * 900000";
+  if (granularity === "30m") {
+    return "CAST(p.order_at_ms / 1800000 AS INTEGER) * 1800000";
   }
   if (granularity === "hour") {
     return "CAST(p.order_at_ms / 3600000 AS INTEGER) * 3600000";
@@ -281,8 +281,8 @@ function buildBreakdown(rows: BreakdownRow[], previousRows: BreakdownRow[]): Sto
 }
 
 function marketplaceBucketExpression(column: string, granularity: DashboardWindow["granularity"]): string {
-  if (granularity === "15m") {
-    return `CAST(${column} / 900000 AS INTEGER) * 900000`;
+  if (granularity === "30m") {
+    return `CAST(${column} / 1800000 AS INTEGER) * 1800000`;
   }
   if (granularity === "hour") {
     return `CAST(${column} / 3600000 AS INTEGER) * 3600000`;
@@ -337,10 +337,15 @@ export class DashboardRepository {
     this.storesRepository = new StoresRepository(database);
   }
 
-  public searchOzonOrders(query: { q?: string; from: Date; to: Date; page: number; pageSize: number }): OrderSearchPage {
+  public searchOzonOrders(query: { q?: string; from: Date; to: Date; page: number; pageSize: number; storeId?: string; cancelledOnly?: boolean }): OrderSearchPage {
     const clauses = ["p.order_at_ms >= ?", "p.order_at_ms < ?", "s.platform = 'ozon'"];
     const dateParameters: Array<number | string> = [query.from.getTime(), query.to.getTime()];
     const searchParameters: Array<number | string> = [];
+    if (query.storeId) {
+      clauses.push("p.store_id = ?");
+      searchParameters.push(query.storeId);
+    }
+    if (query.cancelledOnly) clauses.push("p.cancelled_at_ms IS NOT NULL");
     if (query.q) {
       const escaped = query.q.toLocaleLowerCase("ru-RU").replace(/[\\%_]/g, "\\$&");
       const pattern = `%${escaped}%`;
@@ -545,10 +550,6 @@ export class DashboardRepository {
     platform: StorePlatform | "all" = "all",
   ): Promise<DashboardSnapshot> {
     const filter = createFilter(window, storeIds, platform);
-    const seriesBucket = bucketExpression(window.granularity);
-    const wbOrderBucket = marketplaceBucketExpression("mo.order_at_ms", window.granularity);
-    const wbSalesBucket = marketplaceBucketExpression("ms.sale_at_ms", window.granularity);
-
     const ozonSummaryRows = this.database.prepare(
       `SELECT currency,
               COUNT(*) AS orders,
@@ -595,48 +596,52 @@ export class DashboardRepository {
       ...wbSummaryRows.map((row) => ({ ...row, platform: "wildberries" as const })),
     ];
 
-    const seriesSqlRows = this.database.prepare(
-      `SELECT ${seriesBucket} AS bucket_ms,
-              p.store_id, s.name AS store_name, s.color AS store_color, p.currency,
-              COUNT(*) AS orders,
-              COALESCE(SUM(p.gross_amount_minor), 0) AS gmv_minor
-       FROM postings p
-       JOIN stores s ON s.id = p.store_id
-       WHERE ${filter.sql}
-       GROUP BY bucket_ms, p.store_id, s.name, s.color, p.currency
-       ORDER BY bucket_ms ASC, s.name ASC, p.currency ASC`,
-    ).all(...filter.parameters) as SeriesSqlRow[];
-    const wbSeriesRows = this.database.prepare(
-      `SELECT bucket_ms, store_id, store_name, store_color, currency,
-              SUM(orders) AS orders, SUM(gmv_minor) AS gmv_minor
-       FROM (
-         SELECT ${wbOrderBucket} AS bucket_ms,
-                mo.store_id, s.name AS store_name, s.color AS store_color, mo.currency,
-                COUNT(DISTINCT mo.external_order_id) AS orders, 0 AS gmv_minor
-         FROM marketplace_orders mo JOIN stores s ON s.id = mo.store_id
-         WHERE mo.order_at_ms >= ? AND mo.order_at_ms < ?${marketplaceStoreFilter}
-         GROUP BY bucket_ms, mo.store_id, s.name, s.color, mo.currency
-         UNION ALL
-         SELECT ${wbSalesBucket} AS bucket_ms,
-                ms.store_id, s.name AS store_name, s.color AS store_color, ms.currency,
-                0 AS orders,
-                COALESCE(SUM(CASE WHEN ms.fact_type = 'return' THEN -ms.amount_minor ELSE ms.amount_minor END), 0) AS gmv_minor
-         FROM marketplace_sales ms JOIN stores s ON s.id = ms.store_id
-         WHERE ms.sale_at_ms >= ? AND ms.sale_at_ms < ?${marketplaceSalesStoreFilter}
-         GROUP BY bucket_ms, ms.store_id, s.name, s.color, ms.currency
-       )
-       GROUP BY bucket_ms, store_id, store_name, store_color, currency
-       ORDER BY bucket_ms ASC, store_name ASC, currency ASC`,
-    ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams, window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as SeriesSqlRow[];
-    const seriesRows: DashboardSeriesRow[] = [...seriesSqlRows, ...wbSeriesRows].map((row) => ({
-      bucket: new Date(row.bucket_ms),
-      storeId: row.store_id,
-      storeName: row.store_name,
-      storeColor: row.store_color,
-      currency: row.currency,
-      orders: row.orders,
-      gmv: minorUnitsToAmount(row.gmv_minor),
-    }));
+    /** Reads the same Ozon and Wildberries series for any comparison window. */
+    const loadSeriesRows = (queryWindow: DashboardWindow): DashboardSeriesRow[] => {
+      const queryFilter = createFilter(queryWindow, storeIds, platform);
+      const ozonRows = this.database.prepare(
+        `SELECT ${bucketExpression(queryWindow.granularity)} AS bucket_ms,
+                p.store_id, s.name AS store_name, s.color AS store_color, p.currency,
+                COUNT(*) AS orders, COALESCE(SUM(p.gross_amount_minor), 0) AS gmv_minor
+         FROM postings p JOIN stores s ON s.id = p.store_id
+         WHERE ${queryFilter.sql}
+         GROUP BY bucket_ms, p.store_id, s.name, s.color, p.currency
+         ORDER BY bucket_ms ASC, s.name ASC, p.currency ASC`,
+      ).all(...queryFilter.parameters) as SeriesSqlRow[];
+      const wbRows = this.database.prepare(
+        `SELECT bucket_ms, store_id, store_name, store_color, currency,
+                SUM(orders) AS orders, SUM(gmv_minor) AS gmv_minor
+         FROM (
+           SELECT ${marketplaceBucketExpression("mo.order_at_ms", queryWindow.granularity)} AS bucket_ms,
+                  mo.store_id, s.name AS store_name, s.color AS store_color, mo.currency,
+                  COUNT(DISTINCT mo.external_order_id) AS orders, 0 AS gmv_minor
+           FROM marketplace_orders mo JOIN stores s ON s.id = mo.store_id
+           WHERE mo.order_at_ms >= ? AND mo.order_at_ms < ?${marketplaceStoreFilter}
+           GROUP BY bucket_ms, mo.store_id, s.name, s.color, mo.currency
+           UNION ALL
+           SELECT ${marketplaceBucketExpression("ms.sale_at_ms", queryWindow.granularity)} AS bucket_ms,
+                  ms.store_id, s.name AS store_name, s.color AS store_color, ms.currency,
+                  0 AS orders,
+                  COALESCE(SUM(CASE WHEN ms.fact_type = 'return' THEN -ms.amount_minor ELSE ms.amount_minor END), 0) AS gmv_minor
+           FROM marketplace_sales ms JOIN stores s ON s.id = ms.store_id
+           WHERE ms.sale_at_ms >= ? AND ms.sale_at_ms < ?${marketplaceSalesStoreFilter}
+           GROUP BY bucket_ms, ms.store_id, s.name, s.color, ms.currency
+         ) GROUP BY bucket_ms, store_id, store_name, store_color, currency
+         ORDER BY bucket_ms ASC, store_name ASC, currency ASC`,
+      ).all(queryWindow.from.getTime(), queryWindow.to.getTime(), ...marketplaceStoreParams, queryWindow.from.getTime(), queryWindow.to.getTime(), ...marketplaceStoreParams) as SeriesSqlRow[];
+      return [...ozonRows, ...wbRows].map((row) => ({
+        bucket: new Date(row.bucket_ms),
+        storeId: row.store_id,
+        storeName: row.store_name,
+        storeColor: row.store_color,
+        currency: row.currency,
+        orders: row.orders,
+        gmv: minorUnitsToAmount(row.gmv_minor),
+      }));
+    };
+    const seriesRows = loadSeriesRows(window);
+    const previous = comparisonWindow(range, window);
+    const previousSeriesRows = range === "today" ? loadSeriesRows(previous) : [];
 
     const ozonBreakdownRows = this.database.prepare(
       `SELECT s.id AS store_id, s.name AS store_name, s.color, p.currency,
@@ -671,7 +676,6 @@ export class DashboardRepository {
     ).all(window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams, window.from.getTime(), window.to.getTime(), ...marketplaceStoreParams) as BreakdownRow[];
     const breakdownRows = [...ozonBreakdownRows, ...wbBreakdownRows];
 
-    const previous = comparisonWindow(range, window);
     const previousFilter = createFilter(previous, storeIds, platform);
     const previousOzonRows = this.database.prepare(
       `SELECT currency, COUNT(*) AS orders, COALESCE(SUM(gross_amount_minor), 0) AS gmv_minor,
@@ -919,6 +923,7 @@ export class DashboardRepository {
       topProducts,
       platforms: buildPlatformBreakdown(platformSummaryRows),
       timeSeries: buildDashboardSeries(seriesRows, window),
+      previousTimeSeries: range === "today" ? buildDashboardSeries(previousSeriesRows, previous) : [],
       stores: buildBreakdown(breakdownRows, [...previousOzonBreakdown, ...previousWbBreakdown]),
       recentOrders: recentRows.map((row) => ({
         id: row.id,

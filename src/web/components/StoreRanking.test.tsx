@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { StoreBreakdown } from "../../shared/contracts";
 import { StoreRanking } from "./StoreRanking";
@@ -14,8 +14,10 @@ const stores: StoreBreakdown[] = [
 ];
 
 describe("StoreRanking", () => {
+  afterEach(cleanup);
+
   it("shows every store with orders and excludes stores without orders", () => {
-    render(<StoreRanking stores={stores} />);
+    render(<StoreRanking stores={stores} onSelectStore={vi.fn()} />);
 
     expect(screen.getByText("店铺 A")).toBeInTheDocument();
     expect(screen.getByText("店铺 B")).toBeInTheDocument();
@@ -23,5 +25,14 @@ describe("StoreRanking", () => {
     expect(screen.getByText("GMV ↑ 10.0%")).toBeInTheDocument();
     expect(screen.queryByText("无订单店铺")).not.toBeInTheDocument();
     expect(screen.getByText("2 家店铺")).toBeInTheDocument();
+  });
+
+  it("selects the clicked store to drive the global dashboard filter", () => {
+    const onSelectStore = vi.fn();
+    render(<StoreRanking stores={stores} onSelectStore={onSelectStore} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "按店铺筛选：店铺 A" }));
+
+    expect(onSelectStore).toHaveBeenCalledWith(stores[0]);
   });
 });

@@ -2,10 +2,10 @@ import { CalendarDays, ChevronLeft, ChevronRight, PackageOpen, Search } from "lu
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import type { OrderSearchFilters } from "../api";
-import { fetchOrderSearch } from "../api";
+import { fetchOrderSearch, fetchStores, fetchWallboardStoreOptions } from "../api";
 import { OrderDetailDrawer } from "../components/OrderDetailDrawer";
 import { OrderImagePreview } from "../components/OrderImagePreview";
 import { formatBeijingTime, formatMoney } from "../format";
@@ -35,6 +35,22 @@ function defaultRange(): { from: string; to: string } {
     from: localDateTimeValue(new Date(now.getTime() - 90 * DAY_MS)),
     to: localDateTimeValue(now),
   };
+}
+
+function initialSearchState(searchParams: URLSearchParams): { from: string; to: string; storeId: string; cancelledOnly: boolean } {
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
+  const fromDate = from ? new Date(from) : null;
+  const toDate = to ? new Date(to) : null;
+  if (fromDate && toDate && Number.isFinite(fromDate.getTime()) && Number.isFinite(toDate.getTime()) && fromDate < toDate) {
+    return {
+      from: localDateTimeValue(fromDate),
+      to: localDateTimeValue(toDate),
+      storeId: searchParams.get("storeId") ?? "",
+      cancelledOnly: searchParams.get("cancelledOnly") === "true",
+    };
+  }
+  return { ...defaultRange(), storeId: searchParams.get("storeId") ?? "", cancelledOnly: searchParams.get("cancelledOnly") === "true" };
 }
 
 function statusLabel(status: string, cancelled: boolean): string {
@@ -68,15 +84,21 @@ function SearchPagination({ page, pageSize, total, onPageChange }: { page: numbe
 }
 
 export default function OrderSearchPage({ wallboard = false }: { wallboard?: boolean }): React.JSX.Element {
-  const initialRange = defaultRange();
-  const [keyword, setKeyword] = useState("");
-  const [from, setFrom] = useState(initialRange.from);
-  const [to, setTo] = useState(initialRange.to);
+  const [searchParams] = useSearchParams();
+  const [initial] = useState(() => initialSearchState(searchParams));
+  const [keyword, setKeyword] = useState(searchParams.get("q") ?? "");
+  const [from, setFrom] = useState(initial.from);
+  const [to, setTo] = useState(initial.to);
+  const [storeId, setStoreId] = useState(initial.storeId);
+  const [cancelledOnly, setCancelledOnly] = useState(initial.cancelledOnly);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [filters, setFilters] = useState<OrderSearchFilters>(() => ({
-    from: requiredUtcValue(initialRange.from),
-    to: requiredUtcValue(initialRange.to),
+    ...(searchParams.get("q") ? { q: searchParams.get("q")! } : {}),
+    from: requiredUtcValue(initial.from),
+    to: requiredUtcValue(initial.to),
+    ...(initial.storeId ? { storeId: initial.storeId } : {}),
+    ...(initial.cancelledOnly ? { cancelledOnly: true } : {}),
     page: 1,
     pageSize: PAGE_SIZE,
   }));
@@ -86,6 +108,7 @@ export default function OrderSearchPage({ wallboard = false }: { wallboard?: boo
     placeholderData: (previous) => previous,
     retry: false,
   });
+  const storesQuery = useQuery({ queryKey: [wallboard ? "wallboard-store-options" : "stores"], queryFn: wallboard ? fetchWallboardStoreOptions : fetchStores });
 
   function submitSearch(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -100,7 +123,7 @@ export default function OrderSearchPage({ wallboard = false }: { wallboard?: boo
       return;
     }
     setValidationError(null);
-    setFilters({ ...(keyword.trim() ? { q: keyword.trim() } : {}), from: fromUtc, to: toUtc, page: 1, pageSize: PAGE_SIZE });
+    setFilters({ ...(keyword.trim() ? { q: keyword.trim() } : {}), from: fromUtc, to: toUtc, ...(storeId ? { storeId } : {}), ...(cancelledOnly ? { cancelledOnly: true } : {}), page: 1, pageSize: PAGE_SIZE });
   }
 
   function resetSearch(): void {
@@ -108,6 +131,8 @@ export default function OrderSearchPage({ wallboard = false }: { wallboard?: boo
     setKeyword("");
     setFrom(nextRange.from);
     setTo(nextRange.to);
+    setStoreId("");
+    setCancelledOnly(false);
     setValidationError(null);
     setFilters({ from: requiredUtcValue(nextRange.from), to: requiredUtcValue(nextRange.to), page: 1, pageSize: PAGE_SIZE });
   }
@@ -128,6 +153,20 @@ export default function OrderSearchPage({ wallboard = false }: { wallboard?: boo
         <label className="order-search-field order-search-field--keyword">
           <span><Search size={14} aria-hidden="true" />关键词</span>
           <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="订单号、商品名称或 SKU" />
+        </label>
+        <label className="order-search-field order-search-field--store">
+          <span>店铺</span>
+          <select value={storeId} onChange={(event) => setStoreId(event.target.value)}>
+            <option value="">全部 Ozon 店铺</option>
+            {(storesQuery.data ?? []).filter((store) => store.platform === "ozon").map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+          </select>
+        </label>
+        <label className="order-search-field order-search-field--status">
+          <span>订单状态</span>
+          <select value={cancelledOnly ? "cancelled" : "all"} onChange={(event) => setCancelledOnly(event.target.value === "cancelled")}>
+            <option value="all">全部状态</option>
+            <option value="cancelled">仅取消订单</option>
+          </select>
         </label>
         <div className="order-search-field order-search-field--range">
           <span><CalendarDays size={14} aria-hidden="true" />时间范围</span>

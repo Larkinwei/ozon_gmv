@@ -87,7 +87,7 @@ describe("Dashboard store time series", () => {
       const snapshot = await new DashboardRepository(context.database).getSnapshot("today", {
         from: new Date("2026-08-01T16:00:00.000Z"),
         to: new Date("2026-08-02T04:00:00.000Z"),
-        granularity: "15m",
+        granularity: "30m",
       }, []);
 
       expect(snapshot.kpis.orders).toBe(2);

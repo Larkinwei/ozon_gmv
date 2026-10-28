@@ -34,7 +34,7 @@ function floorToBucket(date: Date, granularity: DashboardWindow["granularity"]):
   if (granularity === "hour") {
     return fromZonedTime(startOfHour(zonedDate), DASHBOARD_TIMEZONE);
   }
-  zonedDate.setMinutes(Math.floor(zonedDate.getMinutes() / 15) * 15, 0, 0);
+  zonedDate.setMinutes(Math.floor(zonedDate.getMinutes() / 30) * 30, 0, 0);
   return fromZonedTime(zonedDate, DASHBOARD_TIMEZONE);
 }
 
@@ -45,7 +45,7 @@ function nextBucket(date: Date, granularity: DashboardWindow["granularity"]): Da
   if (granularity === "hour") {
     return addHours(date, 1);
   }
-  return addMinutes(date, 15);
+  return addMinutes(date, 30);
 }
 
 function seriesRowKey(bucket: string, storeId: string, currency: string): string {

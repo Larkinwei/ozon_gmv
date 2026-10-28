@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OrderDetail, OrderSearchPage } from "../../shared/contracts";
 import * as api from "../api";
@@ -12,7 +12,7 @@ import OrderSearchPageView from "./OrderSearchPage";
 
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
-  return { ...actual, fetchOrderSearch: vi.fn(), fetchOrderDetail: vi.fn() };
+  return { ...actual, fetchOrderSearch: vi.fn(), fetchOrderDetail: vi.fn(), fetchStores: vi.fn(), fetchWallboardStoreOptions: vi.fn() };
 });
 
 const searchPage: OrderSearchPage = {
@@ -65,12 +65,17 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderPage(): void {
+beforeEach(() => {
+  vi.mocked(api.fetchStores).mockResolvedValue([]);
+  vi.mocked(api.fetchWallboardStoreOptions).mockResolvedValue([]);
+});
+
+function renderPage(initialEntry = "/orders/search", wallboard = false): void {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/orders/search"]}>
-        <OrderSearchPageView />
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <OrderSearchPageView wallboard={wallboard} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -101,5 +106,36 @@ describe("OrderSearchPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "查看详情" }));
     expect(await screen.findByRole("dialog", { name: "订单详情" })).toBeInTheDocument();
     expect(api.fetchOrderDetail).toHaveBeenCalledWith(searchPage.items[0]!.id);
+  });
+
+  it("prefills date, store, and cancelled filters from a dashboard KPI link", async () => {
+    vi.mocked(api.fetchOrderSearch).mockResolvedValue(searchPage);
+    vi.mocked(api.fetchStores).mockResolvedValue([
+      { id: "store-1", name: "北极星旗舰店", platform: "ozon", externalStoreId: null, capabilities: { orders: true, sales: false, balance: false, notifications: false, inventory: false, writeOperations: false }, clientId: "client", color: "#3B82F6", enabled: true, inventoryMonitorEnabled: false, fulfillmentModes: ["FBS"], apiKeyExpiresAt: null, lastSyncStartedAt: null, lastSyncFinishedAt: null, lastSyncError: null, syncHealth: "healthy" },
+    ]);
+    renderPage("/orders/search?from=2026-09-18T00%3A00%3A00.000Z&to=2026-09-19T00%3A00%3A00.000Z&storeId=store-1&cancelledOnly=true");
+
+    expect(await screen.findByText("蓝色旅行收纳包")).toBeInTheDocument();
+    expect(api.fetchOrderSearch).toHaveBeenCalledWith(expect.objectContaining({
+      from: "2026-09-18T00:00:00.000Z",
+      to: "2026-09-19T00:00:00.000Z",
+      storeId: "store-1",
+      cancelledOnly: true,
+    }));
+    expect(screen.getByLabelText("店铺")).toHaveValue("store-1");
+    expect(screen.getByLabelText("订单状态")).toHaveValue("cancelled");
+  });
+
+  it("uses the read-only store-options endpoint on the wallboard", async () => {
+    vi.mocked(api.fetchOrderSearch).mockResolvedValue(searchPage);
+    vi.mocked(api.fetchWallboardStoreOptions).mockResolvedValue([
+      { id: "store-1", name: "北极星旗舰店", platform: "ozon", color: "#3B82F6" },
+    ]);
+    renderPage("/orders/search?storeId=store-1", true);
+
+    expect(await screen.findByText("蓝色旅行收纳包")).toBeInTheDocument();
+    expect(api.fetchWallboardStoreOptions).toHaveBeenCalled();
+    expect(api.fetchStores).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("店铺")).toHaveValue("store-1");
   });
 });

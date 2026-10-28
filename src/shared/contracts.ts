@@ -213,7 +213,7 @@ export interface DashboardSnapshot {
   range: DashboardRange;
   from: string;
   to: string;
-  granularity: "15m" | "hour" | "day";
+  granularity: "30m" | "hour" | "day";
   kpis: DashboardKpis;
   comparison: DashboardComparison;
   statusRange: DashboardStatusRange;
@@ -224,6 +224,7 @@ export interface DashboardSnapshot {
   topProducts: DashboardTopProduct[];
   platforms: PlatformBreakdown[];
   timeSeries: TimeSeriesPoint[];
+  previousTimeSeries: TimeSeriesPoint[];
   stores: StoreBreakdown[];
   recentOrders: RecentOrder[];
   sync: StoreView[];

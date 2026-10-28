@@ -110,12 +110,12 @@ const storeTotals = [
   { orders: 59, gmv: 194_760 },
 ];
 
-function makeSeries(selectedStoreId: string): TimeSeriesPoint[] {
+function makeSeries(selectedStoreId: string, daysAgo = 0): TimeSeriesPoint[] {
   const now = new Date();
   const selectedStores = demoStores.filter((store) => selectedStoreId === "all" || store.id === selectedStoreId);
   const weights = [0.38, 0.28, 0.2, 0.14];
   return Array.from({ length: 32 }, (_, index) => {
-    const bucket = subMinutes(now, (31 - index) * 15);
+    const bucket = subMinutes(now, daysAgo * 24 * 60 + (31 - index) * 30);
     const wave = Math.sin(index / 3.1) * 6;
     const orders = Math.max(2, Math.round(10 + wave + (index % 5)));
     let assignedOrders = 0;
@@ -194,7 +194,7 @@ function makeBreakdown(selectedStoreId: string): StoreBreakdown[] {
 /** Keeps demo chart buckets aligned with the production dashboard ranges. */
 function getDemoGranularity(range: DashboardRange): DashboardSnapshot["granularity"] {
   if (range === "today") {
-    return "15m";
+    return "30m";
   }
 
   if (range === "yesterday") {
@@ -254,6 +254,7 @@ export function createDemoSnapshot(range: DashboardRange, selectedStoreId: strin
     ],
     platforms: [{ platform: "ozon", orders, gmv: [{ amount: gmv.toFixed(2), currency: "RUB" }] }],
     timeSeries: makeSeries(selectedStoreId),
+    previousTimeSeries: range === "today" ? makeSeries(selectedStoreId, 1) : [],
     stores,
     recentOrders: makeRecentOrders().filter((order) => selectedStoreId === "all" || storeIds.has(order.storeId)),
     sync: demoStores.filter((store) => selectedStoreId === "all" || store.id === selectedStoreId),
