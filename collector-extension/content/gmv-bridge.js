@@ -39,6 +39,11 @@
       sendResponse({ ok: true });
       return false;
     }
+    if (message?.action === "storefrontPriceResult") {
+      window.postMessage({ type: "OZON_GMV_STOREFRONT_RESULT", ...message.result }, window.location.origin);
+      sendResponse({ ok: true });
+      return false;
+    }
     return false;
   });
 
@@ -54,6 +59,31 @@
           window.postMessage({ type: "OZON_GMV_BATCH_ACCEPTED", batchId: event.data.batchId, accepted: response.accepted }, window.location.origin);
         }
       });
+    }
+    if (event.data?.type === "OZON_GMV_START_STOREFRONT_COLLECTION") {
+      sendExtensionMessage({ action: "startStorefrontPriceCollection", jobId: event.data.jobId, items: event.data.items }, (response, error) => {
+        const failed = Boolean(error || !response?.ok);
+        window.postMessage({
+          type: failed ? "OZON_GMV_STOREFRONT_ERROR" : "OZON_GMV_STOREFRONT_ACCEPTED",
+          requestId: event.data.requestId,
+          accepted: response?.accepted ?? 0,
+          error: error || response?.error || "无法启动前台价格采集",
+        }, window.location.origin);
+      });
+    }
+    if (event.data?.type === "OZON_GMV_READ_STOREFRONT_PENDING") {
+      sendExtensionMessage({ action: "readPendingStorefrontResults" }, (response, error) => {
+        if (error || !response?.ok) return;
+        for (const result of response.items || []) {
+          window.postMessage({ type: "OZON_GMV_STOREFRONT_RESULT", ...result }, window.location.origin);
+        }
+      });
+    }
+    if (event.data?.type === "OZON_GMV_ACK_STOREFRONT_RESULT") {
+      sendExtensionMessage({ action: "ackStorefrontPriceResult", requestId: event.data.requestId });
+    }
+    if (event.data?.type === "OZON_GMV_STOREFRONT_JOB_ACTION") {
+      sendExtensionMessage({ action: "storefrontPriceJobAction", jobId: event.data.jobId, actionName: event.data.action });
     }
     if (event.data?.type === "OZON_GMV_SOURCE_COLLECT_RESULT" && event.data.ok && event.data.requestId) {
       sendExtensionMessage({ action: "ackPending", requestId: event.data.requestId });

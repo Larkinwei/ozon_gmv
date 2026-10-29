@@ -78,6 +78,7 @@ export interface OzonListedProduct {
   productId: string;
   offerId: string;
   productName: string | null;
+  sales30d: number;
   imageUrl: string | null;
   sku: string | null;
   status: string | null;
@@ -495,6 +496,7 @@ export class OzonClient {
         productId,
         offerId,
         productName: null,
+        sales30d: 0,
         imageUrl: null,
         sku: null,
         status: null,

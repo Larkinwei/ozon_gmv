@@ -8,6 +8,7 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const SelectionPage = lazy(() => import("./pages/SelectionPage"));
+const StorefrontPriceMonitorPage = lazy(() => import("./pages/StorefrontPriceMonitorPage"));
 const OperationsCenterLayout = lazy(() => import("./components/OperationsCenterLayout"));
 const PublishTasksPage = lazy(() => import("./pages/PublishTasksPage"));
 const PublishCollectionPage = lazy(() => import("./pages/PublishCollectionPage"));
@@ -125,6 +126,7 @@ export function App(): React.JSX.Element {
         <Route path="/operations" element={<OperationsCenterLayout />}>
           <Route index element={<Navigate to="selection" replace />} />
           <Route path="selection" element={<SelectionPage />} />
+          <Route path="storefront-prices" element={<StorefrontPriceMonitorPage />} />
           <Route path="publish" element={<Navigate to="/operations/publish/collection" replace />} />
           <Route path="publish/collection" element={<PublishCollectionPage />} />
           <Route path="publish/processing" element={<PublishCollectionPage />} />

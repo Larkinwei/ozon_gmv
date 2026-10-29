@@ -5339,6 +5339,68 @@ td {
 .finance-drawer h3 { margin: 2px 0 0; font-size: 15px; }
 .finance-detail-table { min-width: 620px; }
 
+/* Storefront monitoring shares the finance module's dark, compact data-table language. */
+.storefront-price-page { display: grid; gap: 16px; padding: 24px; background: var(--background); }
+.storefront-price-header { align-items: center; }
+.storefront-price-header .eyebrow { margin: 0; }
+.storefront-price-store-select { display: grid; min-width: 220px; gap: 6px; color: var(--muted); font-size: 12px; }
+.storefront-price-store-select select, .storefront-price-job-select select { min-height: 44px; padding: 0 12px; color: var(--text); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
+.storefront-price-panel { min-width: 0; padding: 16px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px; }
+.storefront-price-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.storefront-price-toolbar > button, .storefront-price-pagination button, .storefront-price-job-summary button { min-height: 42px; }
+.storefront-price-search { display: flex; min-width: min(320px, 100%); min-height: 42px; align-items: center; gap: 8px; box-sizing: border-box; padding: 0 10px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
+.storefront-price-search input { width: 100%; min-width: 0; color: var(--text); background: transparent; border: 0; outline: 0; }
+.storefront-price-sort { display: flex; min-height: 42px; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.storefront-price-sort select { min-height: 38px; color: var(--text); background: transparent; border: 0; outline: 0; }
+.storefront-price-list-note { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.storefront-price-selected, .storefront-price-muted { color: var(--muted); font-size: 12px; }
+.storefront-price-table-wrap { max-width: 100%; overflow: auto; border: 1px solid var(--border-soft); border-radius: 9px; }
+.storefront-price-table { width: 100%; min-width: 880px; border-collapse: collapse; font-size: 12px; }
+.storefront-price-table th, .storefront-price-table td { padding: 10px 12px; border-bottom: 1px solid var(--border-soft); text-align: left; vertical-align: middle; }
+.storefront-price-table th { position: sticky; top: 0; z-index: 1; color: var(--muted); background: #0b1425; font-weight: 500; white-space: nowrap; }
+.storefront-price-table tr:last-child td { border-bottom: 0; }
+.storefront-price-product { display: flex; min-width: 210px; align-items: center; gap: 10px; }
+.storefront-price-product img, .storefront-price-product-placeholder { width: 42px; height: 42px; flex: 0 0 42px; object-fit: contain; border-radius: 6px; background: var(--surface-raised); }
+.storefront-price-product-placeholder { display: grid; place-items: center; color: var(--muted); font-size: 10px; }
+.storefront-price-product > span:last-child, .storefront-price-product > span:last-child > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storefront-price-public-link, .storefront-price-sku-link { display: inline-flex; min-width: 0; align-items: center; gap: 4px; color: var(--primary); text-decoration: none; }
+.storefront-price-public-link { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storefront-price-public-link:hover, .storefront-price-sku-link:hover { text-decoration: underline; }
+.storefront-price-product small, .storefront-price-name + small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.storefront-price-name { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storefront-price-job-select { display: grid; max-width: 460px; gap: 6px; margin: 12px 0; color: var(--muted); font-size: 12px; }
+.storefront-price-job-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; color: var(--muted); font-size: 12px; }
+.storefront-price-job-summary strong { color: var(--text); }
+.storefront-price-status, .storefront-price-item-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.storefront-price-status.status-completed, .storefront-price-item-status.item-success { color: #86efac; }
+.storefront-price-status.status-running, .storefront-price-item-status.item-running { color: #93c5fd; }
+.storefront-price-item-status.item-failed { color: #fca5a5; }
+.storefront-price-item-status.item-no_data { color: #fcd34d; }
+.storefront-price-progress { height: 5px; overflow: hidden; margin: 8px 0 12px; background: var(--surface-raised); border-radius: 999px; }
+.storefront-price-progress span { display: block; height: 100%; background: var(--primary); transition: width .2s ease; }
+.storefront-price-error-cell { max-width: 320px; color: #fca5a5; overflow-wrap: anywhere; }
+.storefront-price-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.storefront-price-empty { display: grid; min-height: 96px; place-items: center; color: var(--muted); text-align: center; font-size: 13px; }
+.storefront-price-empty.is-error, .storefront-price-error { color: #fca5a5; }
+.storefront-price-alert { display: flex; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; }
+.storefront-price-alert.is-error { color: #fecaca; border-color: rgb(248 113 113 / 35%); }
+.storefront-price-overlay { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(2 6 23 / 78%); }
+.storefront-price-history { width: min(680px, 100%); max-height: min(80vh, 720px); overflow: auto; padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.storefront-price-history > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.storefront-price-history h2 { margin: 4px 0 12px; }
+.storefront-price-history-list { display: grid; gap: 8px; }
+.storefront-price-history-list article { display: grid; gap: 7px; padding: 12px; background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 9px; }
+.storefront-price-history-list small { color: var(--muted); }
+.storefront-price-history-list article > div { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; }
+@media (max-width: 768px) {
+  .storefront-price-page { gap: 12px; padding: 14px; }
+  .storefront-price-header { align-items: stretch; }
+  .storefront-price-store-select { min-width: 0; width: 100%; }
+  .storefront-price-toolbar > button { flex: 1 1 140px; }
+  .storefront-price-selected { width: 100%; }
+  .storefront-price-panel { padding: 12px; }
+}
+
 @media (max-width: 1024px) {
   .finance-filter-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .finance-sync-summary { justify-content: flex-start; }

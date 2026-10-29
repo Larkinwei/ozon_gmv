@@ -1,9 +1,16 @@
 const PENDING_KEY = "ozon-gmv-collector-pending-v1";
+const STOREFRONT_QUEUE_KEY = "ozon-gmv-storefront-queue-v1";
+const STOREFRONT_RESULTS_KEY = "ozon-gmv-storefront-results-v1";
+const STOREFRONT_NOT_BEFORE_KEY = "ozon-gmv-storefront-not-before-v1";
+const STOREFRONT_ALARM = "ozon-gmv-storefront-collection";
+const STOREFRONT_DELAY_MS = 1600;
+const STOREFRONT_CHUNK_SIZE = 60;
 const DASHBOARD_PATTERNS = [
   "http://localhost:5173/*", "http://127.0.0.1:5173/*",
   "http://localhost:3001/*", "http://127.0.0.1:3001/*",
 ];
 const pendingScrapes = new Map();
+let storefrontWorkerRunning = false;
 
 /** Stores a source snapshot and opens the GMV collection inbox. */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -44,12 +51,194 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void acknowledge(message.requestId).then(() => sendResponse({ ok: true }));
     return true;
   }
+  if (message?.action === "startStorefrontPriceCollection") {
+    void startStorefrontPriceCollection(message.jobId, message.items)
+      .then((accepted) => sendResponse({ ok: true, accepted }))
+      .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "无法启动前台价格采集" }));
+    return true;
+  }
+  if (message?.action === "readPendingStorefrontResults") {
+    void getLocal([STOREFRONT_RESULTS_KEY]).then((stored) => sendResponse({ ok: true, items: stored[STOREFRONT_RESULTS_KEY] || [] }));
+    return true;
+  }
+  if (message?.action === "ackStorefrontPriceResult") {
+    void acknowledgeStorefrontResult(message.requestId).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message?.action === "storefrontPriceJobAction") {
+    void updateStorefrontQueueState(message.jobId, message.actionName).then(() => sendResponse({ ok: true }));
+    return true;
+  }
   if (message?.action === "openCollectionInbox") {
     void openCollectionInbox().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   return false;
 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === STOREFRONT_ALARM) void processStorefrontQueue();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void getLocal([STOREFRONT_QUEUE_KEY]).then((stored) => {
+    const queue = Array.isArray(stored[STOREFRONT_QUEUE_KEY]) ? stored[STOREFRONT_QUEUE_KEY] : [];
+    if (queue.some((item) => item.status === "queued" || item.status === "running")) ensureStorefrontAlarm();
+  });
+});
+
+/** Reads an Ozon page price queue in one low-rate worker, preserving unfinished work locally. */
+async function startStorefrontPriceCollection(jobId, items) {
+  if (typeof jobId !== "string" || !Array.isArray(items)) throw new Error("采集任务参数无效");
+  const normalized = items.filter((item) => item && typeof item.id === "string" && typeof item.sku === "string" && /^\d+$/.test(item.sku));
+  if (normalized.length > 20_000) throw new Error("单次采集商品数量超出限制");
+  const stored = await getLocal([STOREFRONT_QUEUE_KEY]);
+  const queue = Array.isArray(stored[STOREFRONT_QUEUE_KEY]) ? stored[STOREFRONT_QUEUE_KEY] : [];
+  const next = queue.filter((item) => item.jobId !== jobId);
+  for (const item of normalized) next.push({ jobId, itemId: item.id, sku: item.sku, status: "queued", attemptedAt: 0 });
+  const resultStore = await getLocal([STOREFRONT_RESULTS_KEY]);
+  const results = Array.isArray(resultStore[STOREFRONT_RESULTS_KEY]) ? resultStore[STOREFRONT_RESULTS_KEY] : [];
+  const itemIds = new Set(normalized.map((item) => item.id));
+  await setLocal({
+    [STOREFRONT_QUEUE_KEY]: next,
+    [STOREFRONT_RESULTS_KEY]: results.filter((result) => result.jobId !== jobId || !itemIds.has(result.itemId)),
+  });
+  ensureStorefrontAlarm();
+  void processStorefrontQueue();
+  return normalized.length;
+}
+
+/** Processes a small chunk and schedules the next chunk so MV3 can suspend safely. */
+async function processStorefrontQueue() {
+  if (storefrontWorkerRunning) return;
+  storefrontWorkerRunning = true;
+  try {
+    let stored = await getLocal([STOREFRONT_QUEUE_KEY]);
+    let queue = Array.isArray(stored[STOREFRONT_QUEUE_KEY]) ? stored[STOREFRONT_QUEUE_KEY] : [];
+    const throttle = await getLocal([STOREFRONT_NOT_BEFORE_KEY]);
+    if (Number(throttle[STOREFRONT_NOT_BEFORE_KEY]) > Date.now()) return;
+    const now = Date.now();
+    queue = queue.map((item) => item.status === "running" && now - item.attemptedAt > 120_000 ? { ...item, status: "queued" } : item);
+    await setLocal({ [STOREFRONT_QUEUE_KEY]: queue });
+    let processed = 0;
+    while (processed < STOREFRONT_CHUNK_SIZE) {
+      const index = queue.findIndex((item) => item.status === "queued");
+      if (index < 0) break;
+      const item = { ...queue[index], status: "running", attemptedAt: Date.now() };
+      queue[index] = item;
+      await setLocal({ [STOREFRONT_QUEUE_KEY]: queue });
+      const result = await collectStorefrontPrice(item);
+      const outbox = await getLocal([STOREFRONT_RESULTS_KEY]);
+      const results = Array.isArray(outbox[STOREFRONT_RESULTS_KEY]) ? outbox[STOREFRONT_RESULTS_KEY] : [];
+      results.push(result);
+      await setLocal({ [STOREFRONT_RESULTS_KEY]: results.slice(-20_000) });
+      queue = queue.filter((queued) => !(queued.jobId === item.jobId && queued.itemId === item.itemId));
+      await setLocal({ [STOREFRONT_QUEUE_KEY]: queue });
+      await deliverStorefrontResult(result);
+      processed += 1;
+      if (result.error?.includes("HTTP 429")) {
+        await setLocal({ [STOREFRONT_NOT_BEFORE_KEY]: Date.now() + 60_000 });
+        break;
+      }
+      if (processed < STOREFRONT_CHUNK_SIZE && queue.some((queued) => queued.status === "queued")) await delay(STOREFRONT_DELAY_MS);
+      stored = await getLocal([STOREFRONT_QUEUE_KEY]);
+      queue = Array.isArray(stored[STOREFRONT_QUEUE_KEY]) ? stored[STOREFRONT_QUEUE_KEY] : [];
+    }
+    if (queue.some((item) => item.status === "queued" || item.status === "running")) ensureStorefrontAlarm();
+    else chrome.alarms.clear(STOREFRONT_ALARM);
+  } finally {
+    storefrontWorkerRunning = false;
+  }
+}
+
+/** Fetches a single Ozon product page and returns compact, SKU-bound price data. */
+async function collectStorefrontPrice(item) {
+  try {
+    const path = `/product/${encodeURIComponent(item.sku)}/`;
+    const url = `https://www.ozon.ru/api/composer-api.bx/page/json/v2?url=${encodeURIComponent(path)}`;
+    const response = await fetch(url, { credentials: "include", headers: { accept: "application/json, text/plain, */*" }, signal: AbortSignal.timeout(25_000) });
+    if (!response.ok) throw new Error(response.status === 429 ? "Ozon 前台限流（HTTP 429），请稍后重试" : `Ozon 前台请求失败（HTTP ${response.status}）`);
+    const payload = await response.json();
+    const parsed = parseStorefrontPricePayload(payload);
+    if (parsed.sku !== item.sku) throw new Error(parsed.sku ? `页面 SKU ${parsed.sku} 与目标 SKU ${item.sku} 不一致` : "页面未返回可核对的 Ozon SKU");
+    if (parsed.greenPrice === null && parsed.blackPrice === null) throw new Error("页面未显示绿标价或黑标价");
+    return { requestId: crypto.randomUUID(), jobId: item.jobId, itemId: item.itemId, payload: parsed, error: null };
+  } catch (error) {
+    return { requestId: crypto.randomUUID(), jobId: item.jobId, itemId: item.itemId, payload: null, error: error instanceof Error ? error.message : "Ozon 前台读取失败" };
+  }
+}
+
+/** Extracts the selected product's SKU and buyer prices without retaining the full response. */
+function parseStorefrontPricePayload(payload) {
+  const states = payload?.widgetStates || payload?.widgetState || {};
+  const entry = (prefix) => {
+    const found = Object.entries(states).find(([key]) => key.split("-")[0] === prefix)?.[1];
+    if (typeof found !== "string") return found && typeof found === "object" ? found : null;
+    try { return JSON.parse(found); } catch { return null; }
+  };
+  const detail = entry("webDetailSKU");
+  let sku = detail?.copyText ?? payload?.pageInfo?.analyticsInfo?.sku ?? null;
+  if (sku === null) {
+    for (const script of payload?.seo?.script || []) {
+      if (script.type !== "application/ld+json") continue;
+      try { sku = JSON.parse(script.innerHTML || "null")?.sku ?? sku; } catch { /* Ignore malformed structured data. */ }
+    }
+  }
+  const price = entry("webPrice");
+  return { sku: sku === null ? null : String(sku).trim(), greenPrice: parsePriceValue(price?.cardPrice), blackPrice: parsePriceValue(price?.price) };
+}
+
+function parsePriceValue(value, depth = 0) {
+  if (depth > 5 || value === null || value === undefined) return null;
+  if (typeof value === "object") {
+    for (const key of ["price", "value", "text", "amount", "label"]) {
+      const parsed = parsePriceValue(value[key], depth + 1);
+      if (parsed !== null) return parsed;
+    }
+    return null;
+  }
+  const match = String(value).match(/\d[\d\s\u00a0\u202f.,]*/u)?.[0];
+  if (!match) return null;
+  let normalized = match.replace(/[\s\u00a0\u202f]/gu, "").replace(/\.(?=.*\.)/gu, "");
+  if (normalized.includes(",") && normalized.includes(".")) normalized = normalized.lastIndexOf(",") > normalized.lastIndexOf(".") ? normalized.replace(/\./gu, "").replace(",", ".") : normalized.replace(/,/gu, "");
+  else if (normalized.includes(",")) normalized = normalized.replace(",", ".");
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount > 0 ? amount.toFixed(2) : null;
+}
+
+/** Delivers persisted results to an open GMV monitor tab; otherwise they remain in local outbox. */
+async function deliverStorefrontResult(result) {
+  const tabs = await chrome.tabs.query({ url: DASHBOARD_PATTERNS });
+  for (const tab of tabs) {
+    if (!tab.id || !tab.url?.includes("/operations/storefront-prices")) continue;
+    try { await chrome.tabs.sendMessage(tab.id, { action: "storefrontPriceResult", result }); } catch { /* The result stays in outbox until the page reconnects. */ }
+  }
+}
+
+async function acknowledgeStorefrontResult(requestId) {
+  const stored = await getLocal([STOREFRONT_RESULTS_KEY]);
+  const results = Array.isArray(stored[STOREFRONT_RESULTS_KEY]) ? stored[STOREFRONT_RESULTS_KEY] : [];
+  await setLocal({ [STOREFRONT_RESULTS_KEY]: results.filter((item) => item.requestId !== requestId) });
+}
+
+async function updateStorefrontQueueState(jobId, action) {
+  const stored = await getLocal([STOREFRONT_QUEUE_KEY]);
+  let queue = Array.isArray(stored[STOREFRONT_QUEUE_KEY]) ? stored[STOREFRONT_QUEUE_KEY] : [];
+  if (action === "cancel") queue = queue.filter((item) => item.jobId !== jobId);
+  else if (action === "pause") queue = queue.map((item) => item.jobId === jobId ? { ...item, status: "paused" } : item);
+  await setLocal({ [STOREFRONT_QUEUE_KEY]: queue });
+  if (queue.some((item) => item.status === "queued" || item.status === "running")) ensureStorefrontAlarm();
+  else chrome.alarms.clear(STOREFRONT_ALARM);
+}
+
+/** Keeps a repeating recovery alarm while work is pending, so MV3 worker suspension cannot strand a task. */
+function ensureStorefrontAlarm() {
+  chrome.alarms.create(STOREFRONT_ALARM, { delayInMinutes: 0.5, periodInMinutes: 0.5 });
+}
+
+function getLocal(keys) { return new Promise((resolve) => chrome.storage.local.get(keys, resolve)); }
+function setLocal(value) { return new Promise((resolve) => chrome.storage.local.set(value, resolve)); }
+function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 /** Runs extraction beside marketplace page scripts so runtime product state is readable. */
 async function readProductInPageMainWorld(tabId, platform) {

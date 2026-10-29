@@ -816,7 +816,7 @@ export async function fetchResellTasks(filters: {
 export interface OnlineProductPage {
   storeId: string;
   visibility: "ALL" | "VISIBLE" | "INVISIBLE" | "ARCHIVED";
-  items: Array<{ productId: string; offerId: string; productName: string | null; imageUrl: string | null; sku: string | null; status: string | null; archived: boolean | null; price: string | null; oldPrice: string | null; minimumPrice: string | null; currencyCode: string | null; vat: string | null; sourceUrl: string | null; volumeWeight: number | null; createdAt: string | null; statusFailed: string | null; validationStatus: string | null; hasFboStocks: boolean | null; hasFbsStocks: boolean | null }>;
+  items: Array<{ productId: string; offerId: string; productName: string | null; sales30d: number; imageUrl: string | null; sku: string | null; status: string | null; archived: boolean | null; price: string | null; oldPrice: string | null; minimumPrice: string | null; currencyCode: string | null; vat: string | null; sourceUrl: string | null; volumeWeight: number | null; createdAt: string | null; statusFailed: string | null; validationStatus: string | null; hasFboStocks: boolean | null; hasFbsStocks: boolean | null }>;
   count: number;
   readAt: string;
 }
@@ -826,6 +826,116 @@ export async function fetchOnlineProducts(storeId: string, visibility: OnlinePro
   const params = new URLSearchParams({ storeId, visibility });
   if (productIds?.length) params.set("productIds", productIds.join(","));
   return apiFetch(`/api/selection/publish/online-products?${params.toString()}`);
+}
+
+export type StorefrontPriceJobStatus = "queued" | "running" | "paused" | "completed" | "cancelled";
+export type StorefrontPriceItemStatus = "queued" | "running" | "success" | "failed" | "no_data" | "cancelled";
+export interface StorefrontPriceItem {
+  id: string;
+  productId: string;
+  sku: string | null;
+  offerId: string;
+  productName: string | null;
+  imageUrl: string | null;
+  backendPrice: string | null;
+  currencyCode: string | null;
+  status: StorefrontPriceItemStatus;
+  greenPrice: string | null;
+  blackPrice: string | null;
+  error: string | null;
+  capturedAt: string | null;
+}
+export interface StorefrontPriceJob {
+  id: string;
+  storeId: string;
+  storeName: string;
+  status: StorefrontPriceJobStatus;
+  totalCount: number;
+  completedCount: number;
+  successCount: number;
+  failedCount: number;
+  noDataCount: number;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  itemPage: number;
+  itemPageSize: number;
+  itemTotal: number;
+  items: StorefrontPriceItem[];
+}
+export type StorefrontPriceJobSummary = Omit<StorefrontPriceJob, "items" | "itemPage" | "itemPageSize" | "itemTotal">;
+export interface StorefrontPriceSnapshot extends Omit<StorefrontPriceItem, "status" | "error"> {
+  greenPrice: string | null;
+  blackPrice: string | null;
+  capturedAt: string;
+}
+
+export interface StorefrontPriceQueueItem { id: string; sku: string }
+export interface StorefrontPriceCreateProduct {
+  productId: string;
+  sku: string | null;
+  offerId: string;
+  productName: string | null;
+  imageUrl: string | null;
+  backendPrice: string | null;
+  currencyCode: string | null;
+}
+
+/** Loads recent background collection summaries for the monitor page. */
+export async function fetchStorefrontPriceJobs(): Promise<StorefrontPriceJobSummary[]> {
+  return (await apiFetch<{ items: StorefrontPriceJobSummary[] }>("/api/operations/storefront-prices/jobs")).items;
+}
+
+/** Loads one persisted collection and its per-product results. */
+export async function fetchStorefrontPriceJob(id: string, page = 1, pageSize = 50): Promise<StorefrontPriceJob> {
+  return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}?page=${page}&pageSize=${pageSize}`);
+}
+
+/** Persists products already loaded by the page without requesting the Seller product list again. */
+export async function createStorefrontPriceJob(input: { storeId: string; products: StorefrontPriceCreateProduct[] }): Promise<StorefrontPriceJob> {
+  return apiFetch("/api/operations/storefront-prices/jobs", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Returns pending SKUs that the collector extension should process. */
+export async function fetchStorefrontPriceJobQueue(id: string): Promise<StorefrontPriceQueueItem[]> {
+  return (await apiFetch<{ items: StorefrontPriceQueueItem[] }>(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/queue`)).items;
+}
+
+/** Marks a job running after the browser extension accepts its queue. */
+export async function activateStorefrontPriceJob(id: string): Promise<StorefrontPriceJob> {
+  return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/activate`, { method: "POST" });
+}
+
+/** Saves one result collected by the Ozon-authorized browser extension. */
+export async function recordStorefrontPriceResult(id: string, itemId: string, result: { payload?: unknown; error: string | null }): Promise<{ ok: boolean; recorded: boolean }> {
+  return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}/result`, { method: "POST", body: JSON.stringify(result) });
+}
+
+/** Requeues a failed or empty-price item for another browser collection attempt. */
+export async function retryStorefrontPriceItem(id: string, itemId: string): Promise<{ job: StorefrontPriceJob; item: StorefrontPriceQueueItem }> {
+  return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}/retry`, { method: "POST" });
+}
+
+/** Deletes only a failed or no-price item from a persisted collection job. */
+export async function deleteStorefrontPriceItem(id: string, itemId: string): Promise<StorefrontPriceJob> {
+  return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}`, { method: "DELETE" });
+}
+
+/** Pauses, resumes, or cancels a persisted storefront price job. */
+export async function updateStorefrontPriceJob(id: string, action: "pause" | "resume" | "cancel"): Promise<StorefrontPriceJob> {
+  return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+}
+
+/** Reads the newest saved front-end price snapshot for each product. */
+export async function fetchLatestStorefrontPrices(input: { storeId: string; search?: string; page?: number; pageSize?: number }): Promise<{ items: StorefrontPriceSnapshot[]; total: number }> {
+  const params = new URLSearchParams({ storeId: input.storeId, search: input.search ?? "", page: String(input.page ?? 1), pageSize: String(input.pageSize ?? 100) });
+  return apiFetch(`/api/operations/storefront-prices/latest?${params.toString()}`);
+}
+
+/** Reads saved price snapshots for one Seller product. */
+export async function fetchStorefrontPriceHistory(input: { storeId: string; productId: string }): Promise<StorefrontPriceSnapshot[]> {
+  const params = new URLSearchParams(input);
+  return (await apiFetch<{ items: StorefrontPriceSnapshot[] }>(`/api/operations/storefront-prices/history?${params.toString()}`)).items;
 }
 
 export interface OnlineProductUpdateResult { updated?: string[]; archived?: string[]; skipped: Array<{ productId: string; reason: string }> }

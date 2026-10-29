@@ -17,7 +17,7 @@
       "32": "icons/icon-32.png"
     }
   },
-  "permissions": ["storage", "tabs", "scripting"],
+  "permissions": ["storage", "tabs", "scripting", "alarms"],
   "host_permissions": [
     "https://www.ozon.ru/*",
     "https://ozon.ru/*",

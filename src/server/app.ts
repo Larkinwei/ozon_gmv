@@ -38,6 +38,7 @@ import { registerSelectionDiscoveryRoutes } from "./routes/selection-discovery";
 import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
 import { registerStoreOperationsRoutes } from "./routes/store-operations";
+import { registerStorefrontPriceRoutes } from "./routes/storefront-prices";
 import { registerToolsRoutes } from "./routes/tools";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
 import { registerWallboardReadonlyRoutes } from "./routes/wallboard-readonly";
@@ -45,6 +46,7 @@ import { wallboardAuthorization } from "./security/wallboard-session";
 import { SelectionModule } from "./selection/selection-module";
 import { WordstatClient } from "./selection/wordstat-client";
 import { OrderNotificationService } from "./services/order-notification-service";
+import { StorefrontPriceMonitorService } from "./services/storefront-price-monitor";
 import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { InventoryMonitorService } from "./services/inventory-monitor-service";
@@ -206,6 +208,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
   const finance = dependencies.finance ?? new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
+  const storefrontPrices = new StorefrontPriceMonitorService(database);
   const exchangeRate = dependencies.exchangeRate;
   const pricingScenarios = dependencies.pricingScenarios;
   const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config, fetch, aiRelaySettings);
@@ -219,12 +222,14 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
     ...myData.listProducts({ page: 1, pageSize: 100, sort: "monthlyUnits" }).items.map((product) => ({ id: product.id, kind: "product" as const, name: product.productName, sku: product.sku, category: product.category, productContext: { name: product.productName, category: product.category, attributes: {}, material: "", color: "", targetMarket: "俄罗斯", imagePurpose: "场景图", style: "真实电商摄影", aspectRatio: "1:1" } })),
   ];
   resell.start();
+  storefrontPrices.start();
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
   registerAiRoutes(app, aiConversations, () => aiGateway.checkHealth(), () => aiRelaySettings.view().modelAlias, listAiSources);
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
+  registerStorefrontPriceRoutes(app, storefrontPrices, stores);
   registerFinanceRoutes(app, finance);
   if (exchangeRate) registerAgentPricingRoutes(app, exchangeRate);
   if (exchangeRate && pricingScenarios) registerToolsRoutes(app, exchangeRate, pricingScenarios);
@@ -244,6 +249,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   app.get("/api/runtime", async () => ({ role: "admin" as const }));
   registerHealthRoutes(app, database);
   app.addHook("onClose", async () => {
+    await storefrontPrices.stop();
     resell.stop();
     notifications.close();
   });

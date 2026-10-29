@@ -534,7 +534,7 @@ export class ResellModule {
     const client = this.clientFor(store, 1);
     if (input.productIds?.length) {
       const products = await client.getProductInfoByProductIds(input.productIds);
-      return products.flatMap((product): OzonListedProduct[] => {
+      const productItems = products.flatMap((product): OzonListedProduct[] => {
         const productId = product.product_id ?? product.id;
         const offerId = product.offer_id.trim();
         if (!productId || !offerId) return [];
@@ -542,6 +542,7 @@ export class ResellModule {
           productId,
           offerId,
           productName: product.product_name ?? product.name ?? null,
+          sales30d: 0,
           imageUrl: product.primary_image[0] ?? product.images[0] ?? null,
           sku: product.sku ?? product.sources[0]?.sku?.toString() ?? null,
           status: product.statuses?.status_name ?? product.status_name ?? product.statuses?.status ?? product.status ?? null,
@@ -560,6 +561,10 @@ export class ResellModule {
           hasFbsStocks: null,
         }];
       });
+      const salesBySku = this.listOnlineProductSales30d(input.storeId);
+      return productItems
+        .filter((product) => input.visibility !== "VISIBLE" || product.archived !== true)
+        .map((product) => ({ ...product, sales30d: salesBySku.get(product.sku ?? "") ?? 0 }));
     }
     const items: OzonListedProduct[] = [];
     let lastId = "";
@@ -578,11 +583,12 @@ export class ResellModule {
       });
     }
     const sourceUrls = this.listOnlineProductSourceUrls(input.storeId);
-    return items.map((item) => {
+    const enrichedItems = items.map((item) => {
       const product = metadata.get(item.productId);
       return {
         ...item,
         productName: product?.product_name ?? product?.name ?? null,
+        sales30d: 0,
         imageUrl: product?.primary_image[0] ?? product?.images[0] ?? null,
         sku: product?.sku ?? product?.sources[0]?.sku?.toString() ?? null,
         status: product?.statuses?.status_name ?? product?.status_name ?? product?.statuses?.status ?? product?.status ?? null,
@@ -599,6 +605,22 @@ export class ResellModule {
         validationStatus: product?.statuses?.validation_status ?? null,
       };
     });
+    const salesBySku = this.listOnlineProductSales30d(input.storeId);
+    return enrichedItems
+      .filter((item) => input.visibility !== "VISIBLE" || item.archived !== true)
+      .map((item) => ({ ...item, sales30d: salesBySku.get(item.sku ?? "") ?? 0 }));
+  }
+
+  /** Returns locally synced, non-cancelled units by Ozon SKU for the last 30 days. */
+  private listOnlineProductSales30d(storeId: string): Map<string, number> {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1_000;
+    const rows = this.database.prepare<[string, number], { sku: string; units: number }>(
+      `SELECT i.sku, SUM(i.quantity) AS units
+       FROM postings p JOIN posting_items i ON i.posting_id = p.id
+       WHERE p.store_id = ? AND p.order_at_ms >= ? AND p.cancelled_at_ms IS NULL
+       GROUP BY i.sku`,
+    ).all(storeId, cutoff);
+    return new Map(rows.map((row) => [row.sku, Number(row.units) || 0]));
   }
 
   /** Returns the GMV-only source URL stored for an online product card. */
