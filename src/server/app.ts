@@ -208,7 +208,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const publishDrafts = dependencies.publishDrafts ?? new PublishDraftsModule(database);
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
   const finance = dependencies.finance ?? new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
-  const storefrontPrices = new StorefrontPriceMonitorService(database);
+  const storefrontPrices = new StorefrontPriceMonitorService(database, () => settings.get("selection.categories.opencli_path"));
   const exchangeRate = dependencies.exchangeRate;
   const pricingScenarios = dependencies.pricingScenarios;
   const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config, fetch, aiRelaySettings);

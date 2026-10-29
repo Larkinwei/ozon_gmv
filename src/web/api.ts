@@ -842,6 +842,7 @@ export interface StorefrontPriceItem {
   status: StorefrontPriceItemStatus;
   greenPrice: string | null;
   blackPrice: string | null;
+  frontCurrencyCode: string | null;
   error: string | null;
   capturedAt: string | null;
 }

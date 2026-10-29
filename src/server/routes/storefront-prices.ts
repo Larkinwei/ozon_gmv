@@ -46,6 +46,7 @@ export function registerStorefrontPriceRoutes(
     }
 
     const job = monitor.createJob({ id: store.id, name: store.name }, input.products);
+    monitor.startCollection(job.id);
     return reply.code(201).send(job);
   });
 
@@ -71,6 +72,7 @@ export function registerStorefrontPriceRoutes(
   app.post("/api/operations/storefront-prices/jobs/:id/items/:itemId/retry", { preHandler: requireSession }, async (request, reply) => {
     const params = z.object({ id: z.string().uuid(), itemId: z.string().uuid() }).parse(request.params);
     const retried = monitor.retryItem(params.id, params.itemId);
+    if (retried) monitor.startCollection(params.id);
     return retried ? retried : reply.code(409).send({ error: "ITEM_NOT_RETRYABLE", message: "仅失败或无前台价格且 SKU 有效的商品可以重新采集" });
   });
 

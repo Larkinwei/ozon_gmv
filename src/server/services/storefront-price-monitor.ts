@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-
 import type { AppDatabase } from "../db/database";
+import { defaultOpenCliPath, OpenCliStorefrontPriceCollector } from "./opencli-storefront-price-collector";
 
 export type StorefrontPriceJobStatus = "queued" | "running" | "paused" | "completed" | "cancelled";
 export type StorefrontPriceItemStatus = "queued" | "running" | "success" | "failed" | "no_data" | "cancelled";
@@ -20,6 +20,7 @@ export interface StorefrontPriceJobItemView extends StorefrontPriceProduct {
   status: StorefrontPriceItemStatus;
   greenPrice: string | null;
   blackPrice: string | null;
+  frontCurrencyCode: string | null;
   error: string | null;
   capturedAt: string | null;
 }
@@ -49,6 +50,7 @@ export interface StorefrontPriceSnapshotView extends StorefrontPriceProduct {
   id: string;
   greenPrice: string | null;
   blackPrice: string | null;
+  frontCurrencyCode: string | null;
   capturedAt: string;
 }
 
@@ -81,6 +83,7 @@ interface ItemRow {
   image_url: string | null;
   backend_price: string | null;
   currency_code: string | null;
+  front_currency_code: string | null;
   status: StorefrontPriceItemStatus;
   green_price: string | null;
   black_price: string | null;
@@ -94,6 +97,7 @@ interface SnapshotRow extends Omit<ItemRow, "status" | "error"> {
 
 interface OzonPricePayload {
   sku?: string | number;
+  currencyCode?: string;
   greenPrice?: string | number | null;
   blackPrice?: string | number | null;
   widgetStates?: Record<string, string>;
@@ -106,6 +110,28 @@ interface PriceParseResult {
   sku: string | null;
   greenPrice: string | null;
   blackPrice: string | null;
+  frontCurrencyCode: string | null;
+}
+
+function detectCurrency(value: unknown, depth = 0): string | null {
+  if (depth > 6 || value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    if (/₽|\bруб(?:\.|лей|ля|ль)?\b|\bRUB\b/iu.test(value)) return "RUB";
+    if (/CN¥|CNY|人民币|元|¥/iu.test(value)) return "CNY";
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) { const currency = detectCurrency(item, depth + 1); if (currency) return currency; }
+    return null;
+  }
+  const record = asRecord(value);
+  if (!record) return null;
+  for (const [key, item] of Object.entries(record)) {
+    if (/currency(code)?/iu.test(key) && typeof item === "string" && /^(RUB|CNY)$/iu.test(item)) return item.toUpperCase();
+    const currency = detectCurrency(item, depth + 1);
+    if (currency) return currency;
+  }
+  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -171,12 +197,13 @@ function readSku(payload: OzonPricePayload, widgetStates: Record<string, string>
 /** Parses only Ozon's storefront price widgets and an explicit SKU identity field. */
 export function parseOzonStorefrontPricePayload(input: unknown): PriceParseResult {
   const payload = asRecord(input) as OzonPricePayload | null;
-  if (!payload) return { sku: null, greenPrice: null, blackPrice: null };
+  if (!payload) return { sku: null, greenPrice: null, blackPrice: null, frontCurrencyCode: null };
   if (payload.sku !== undefined) {
     return {
       sku: String(payload.sku).trim() || null,
       greenPrice: numericPrice(payload.greenPrice),
       blackPrice: numericPrice(payload.blackPrice),
+      frontCurrencyCode: detectCurrency([payload.greenPrice, payload.blackPrice, payload.currencyCode]),
     };
   }
   const states = payload.widgetStates ?? payload.widgetState;
@@ -185,6 +212,7 @@ export function parseOzonStorefrontPricePayload(input: unknown): PriceParseResul
     sku: readSku(payload, states),
     greenPrice: valuePrice(priceWidget?.cardPrice),
     blackPrice: valuePrice(priceWidget?.price),
+    frontCurrencyCode: detectCurrency([priceWidget?.cardPrice, priceWidget?.price, payload]),
   };
 }
 
@@ -217,6 +245,7 @@ function jobView(row: JobRow, itemRows: ItemRow[], itemPage: number, itemPageSiz
       status: item.status,
       greenPrice: item.green_price,
       blackPrice: item.black_price,
+      frontCurrencyCode: item.front_currency_code,
       error: item.error,
       capturedAt: item.captured_at_ms === null ? null : new Date(item.captured_at_ms).toISOString(),
     })),
@@ -225,7 +254,9 @@ function jobView(row: JobRow, itemRows: ItemRow[], itemPage: number, itemPageSiz
 
 /** Persists storefront jobs; Ozon page requests are performed by the collector extension. */
 export class StorefrontPriceMonitorService {
-  public constructor(private readonly database: AppDatabase) {
+  private readonly activeJobs = new Set<string>();
+
+  public constructor(private readonly database: AppDatabase, private readonly getOpenCliPath: () => string | null = () => null) {
     database.prepare("UPDATE storefront_price_job_items SET status = 'queued' WHERE status = 'running'").run();
     database.prepare("UPDATE storefront_price_jobs SET status = 'queued' WHERE status = 'running'").run();
   }
@@ -233,6 +264,42 @@ export class StorefrontPriceMonitorService {
   public start(): void {}
 
   public async stop(): Promise<void> {}
+
+  /** Starts a persisted queue using the configured OpenCLI Chrome session. */
+  public startCollection(jobId: string): void {
+    if (this.activeJobs.has(jobId)) return;
+    const job = this.getJob(jobId, 1, 1);
+    if (!job || !["queued", "paused"].includes(job.status)) return;
+    const executable = this.getOpenCliPath() || defaultOpenCliPath();
+    const sessionName = `ozon-storefront-${jobId.slice(0, 8)}`;
+    const collector = new OpenCliStorefrontPriceCollector({ executable, sessionName });
+    this.activeJobs.add(jobId);
+    this.activateJob(jobId);
+    void (async () => {
+      try {
+        for (const item of this.listQueuedItems(jobId)) {
+          const current = this.getJob(jobId, 1, 1);
+          if (!current || current.status !== "running") break;
+          try {
+            const payload = await collector.collect(item.sku);
+            const status = asRecord(payload);
+            const fetchError = typeof status?.__httpStatus === "number"
+              ? (status.__httpStatus === 429 ? "Ozon 前台限流（HTTP 429），请稍后重试" : `Ozon 前台请求失败（HTTP ${status.__httpStatus}）`)
+              : typeof status?.__fetchError === "string" ? status.__fetchError : null;
+            this.recordBrowserResult(jobId, item.id, payload, fetchError);
+          } catch (error) {
+            this.recordBrowserResult(jobId, item.id, null, error instanceof Error ? error.message : "OpenCLI 前台采集失败");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1_600));
+        }
+      } finally {
+        await collector.close();
+        const current = this.getJob(jobId, 1, 1);
+        this.activeJobs.delete(jobId);
+        if (current?.status === "queued") this.startCollection(jobId);
+      }
+    })();
+  }
 
   public createJob(store: { id: string; name: string }, products: StorefrontPriceProduct[]): StorefrontPriceJobView {
     if (products.length === 0) throw new Error("没有可采集的在线商品");
@@ -286,18 +353,18 @@ export class StorefrontPriceMonitorService {
       this.database.prepare("UPDATE storefront_price_job_items SET status = 'running' WHERE id = ?").run(item.id);
     }
     if (fetchError) {
-      this.finishItem(item, "failed", null, null, fetchError, null);
+      this.finishItem(item, "failed", null, null, null, fetchError, null);
       return true;
     }
     const parsed = parseOzonStorefrontPricePayload(payload);
     if (parsed.sku !== item.sku) {
-      this.finishItem(item, "failed", null, null, parsed.sku ? `页面 SKU ${parsed.sku} 与目标 SKU ${item.sku} 不一致` : "页面未返回可核对的 Ozon SKU", null);
+      this.finishItem(item, "failed", null, null, null, parsed.sku ? `页面 SKU ${parsed.sku} 与目标 SKU ${item.sku} 不一致` : "页面未返回可核对的 Ozon SKU", null);
       return true;
     }
     if (parsed.greenPrice === null && parsed.blackPrice === null) {
-      this.finishItem(item, "no_data", null, null, "页面未显示绿标价或黑标价", null);
+      this.finishItem(item, "no_data", null, null, parsed.frontCurrencyCode, "页面未显示绿标价或黑标价", null);
     } else {
-      this.finishItem(item, "success", parsed.greenPrice, parsed.blackPrice, null, Date.now());
+      this.finishItem(item, "success", parsed.greenPrice, parsed.blackPrice, parsed.frontCurrencyCode, null, Date.now());
     }
     return true;
   }
@@ -305,7 +372,7 @@ export class StorefrontPriceMonitorService {
   public retryItem(jobId: string, itemId: string): { job: StorefrontPriceJobView; item: StorefrontPriceQueueItem } | null {
     const item = this.database.prepare("SELECT status, sku FROM storefront_price_job_items WHERE job_id = ? AND id = ?").get(jobId, itemId) as { status: StorefrontPriceItemStatus; sku: string | null } | undefined;
     if (!item || !["failed", "no_data"].includes(item.status) || !item.sku) return null;
-    this.database.prepare("UPDATE storefront_price_job_items SET status = 'queued', green_price = NULL, black_price = NULL, error = NULL, captured_at_ms = NULL WHERE job_id = ? AND id = ?")
+    this.database.prepare("UPDATE storefront_price_job_items SET status = 'queued', green_price = NULL, black_price = NULL, front_currency_code = NULL, error = NULL, captured_at_ms = NULL WHERE job_id = ? AND id = ?")
       .run(jobId, itemId);
     this.database.prepare("UPDATE storefront_price_jobs SET status = 'queued', finished_at_ms = NULL WHERE id = ?").run(jobId);
     this.recount(jobId);
@@ -365,6 +432,7 @@ export class StorefrontPriceMonitorService {
         this.recount(id);
       })();
     }
+    if (action === "resume") this.startCollection(id);
     return this.getJob(id);
   }
 
@@ -405,21 +473,22 @@ export class StorefrontPriceMonitorService {
       currencyCode: row.currency_code,
       greenPrice: row.green_price,
       blackPrice: row.black_price,
+      frontCurrencyCode: row.front_currency_code,
       capturedAt: new Date(row.captured_at_ms).toISOString(),
     };
   }
 
-  private finishItem(item: ItemRow & { job_id: string; store_id: string }, status: "success" | "failed" | "no_data", greenPrice: string | null, blackPrice: string | null, error: string | null, capturedAt: number | null): void {
+  private finishItem(item: ItemRow & { job_id: string; store_id: string }, status: "success" | "failed" | "no_data", greenPrice: string | null, blackPrice: string | null, frontCurrencyCode: string | null, error: string | null, capturedAt: number | null): void {
     this.database.transaction(() => {
       this.database.prepare(
-        "UPDATE storefront_price_job_items SET status = ?, green_price = ?, black_price = ?, error = ?, captured_at_ms = ? WHERE id = ?",
-      ).run(status, greenPrice, blackPrice, error, capturedAt, item.id);
+        "UPDATE storefront_price_job_items SET status = ?, green_price = ?, black_price = ?, front_currency_code = ?, error = ?, captured_at_ms = ? WHERE id = ?",
+      ).run(status, greenPrice, blackPrice, frontCurrencyCode, error, capturedAt, item.id);
       if (status === "success" && capturedAt !== null && item.sku) {
         this.database.prepare(
           `INSERT INTO storefront_price_snapshots
-           (id, store_id, product_id, sku, offer_id, product_name, image_url, backend_price, green_price, black_price, currency_code, captured_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(randomUUID(), item.store_id, item.product_id, item.sku, item.offer_id, item.product_name, item.image_url, item.backend_price, greenPrice, blackPrice, item.currency_code, capturedAt);
+           (id, store_id, product_id, sku, offer_id, product_name, image_url, backend_price, green_price, black_price, currency_code, front_currency_code, captured_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(randomUUID(), item.store_id, item.product_id, item.sku, item.offer_id, item.product_name, item.image_url, item.backend_price, greenPrice, blackPrice, item.currency_code, frontCurrencyCode, capturedAt);
       }
       this.recount(item.job_id);
     })();
