@@ -38,7 +38,7 @@ describe("Ozon Seller API client", () => {
 
     expect(requestUrl).toBe("https://api-seller.ozon.ru/v3/product/list");
     expect(requestBody).toEqual({ filter: { visibility: "ALL" }, last_id: "", limit: 1000 });
-    expect(page).toEqual({ items: [{ productId: "123", offerId: "OFFER-123", productName: null, imageUrl: null, sku: null, status: null, archived: false, price: null, oldPrice: null, minimumPrice: null, currencyCode: null, vat: null, sourceUrl: null, volumeWeight: null, createdAt: null, statusFailed: null, validationStatus: null, hasFboStocks: true, hasFbsStocks: false }], lastId: "cursor-1", hasNext: true });
+    expect(page).toEqual({ items: [{ productId: "123", offerId: "OFFER-123", productName: null, imageUrl: null, sku: null, status: null, archived: false, price: null, oldPrice: null, minimumPrice: null, currencyCode: null, vat: null, sourceUrl: null, volumeWeight: null, createdAt: null, statusFailed: null, validationStatus: null, hasFboStocks: true, hasFbsStocks: false, sales30d: 0 }], lastId: "cursor-1", hasNext: true });
   });
 
   it("reads current product names by product ID for online-product display", async () => {

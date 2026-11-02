@@ -39,7 +39,13 @@ async function collect1688Product() {
       ? []
       : selector.startsWith("#skuSelection .ant-table-tbody") ? rows : [],
   };
-  const chrome = { runtime: { onMessage: { addListener: () => undefined } } };
+  const chrome = {
+    runtime: {
+      onMessage: { addListener: () => undefined },
+      onStartup: { addListener: () => undefined },
+    },
+    alarms: { onAlarm: { addListener: () => undefined } },
+  };
   const source = `${backgroundSource}\ncollectMarketplaceProduct("1688");`;
   return runInNewContext(source, {
     chrome,
