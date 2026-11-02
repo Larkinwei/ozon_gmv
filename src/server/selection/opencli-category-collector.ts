@@ -196,7 +196,7 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
     for (let attempt = 0; attempt <= REQUEST_DELAYS_MS.length; attempt += 1) {
       const result = await this.runJson<BootstrapResult>(this.bootstrapScript());
       if (!result.companyId) {
-        throw new Error("浏览器中未找到 Ozon Seller 登录状态，请在 Chrome 或 Microsoft Edge 重新登录");
+        throw new Error("Chrome 中未找到 Ozon Seller 登录状态；如使用 Microsoft Edge，请确认已登录 Seller 并启用 Browser Bridge 扩展");
       }
       if (result.status === 401 || result.status === 403) {
         throw new Error("Ozon 登录或类目读取权限已失效，请重新登录 Seller 并确认账号可访问类目分析");

@@ -263,7 +263,7 @@ export class OpenCliDiscoveryCollector implements DiscoveryMarketCollectorPort {
     await this.run(["browser", this.options.sessionName, "wait", "time", "5"]);
     try {
       const bootstrap = await this.runJson<BootstrapResult>(this.bootstrapScript());
-      if (!bootstrap.companyId) throw new Error("浏览器中未找到 Ozon Seller 登录状态，请在 Chrome 或 Microsoft Edge 重新登录");
+      if (!bootstrap.companyId) throw new Error("Chrome 中未找到 Ozon Seller 登录状态；如使用 Microsoft Edge，请确认已登录 Seller 并启用 Browser Bridge 扩展");
       if (bootstrap.error) throw new Error(bootstrap.error);
       const links = this.buildLinks(input.categories, bootstrap.tree, bootstrap.groups);
       const productSteps = 40 + links.filter((link) => link.productTypeIds.length > 0).length * 2;
