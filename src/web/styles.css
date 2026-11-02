@@ -5398,6 +5398,10 @@ td {
 .storefront-price-empty.is-error, .storefront-price-error { color: #fca5a5; }
 .storefront-price-alert { display: flex; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; }
 .storefront-price-alert.is-error { color: #fecaca; border-color: rgb(248 113 113 / 35%); }
+.storefront-price-alert.is-ready { color: #bbf7d0; border-color: rgb(74 222 128 / 35%); }
+.storefront-price-browser-status > span { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.storefront-price-browser-status small { color: var(--muted); }
+.storefront-price-browser-status > button { flex: 0 0 auto; }
 .storefront-price-overlay { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(2 6 23 / 78%); }
 .storefront-price-history { width: min(680px, 100%); max-height: min(80vh, 720px); overflow: auto; padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
 .storefront-price-history > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

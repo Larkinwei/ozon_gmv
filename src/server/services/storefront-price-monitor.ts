@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/database";
 import { defaultOpenCliPath, OpenCliStorefrontPriceCollector } from "./opencli-storefront-price-collector";
+import { diagnoseOpenCliBridge, type OpenCliBridgeStatus } from "./opencli-runtime";
 
 const STOREFRONT_COLLECTION_CONCURRENCY = 3;
 const STOREFRONT_COLLECTION_DELAY_MS = 600;
@@ -268,7 +269,12 @@ export class StorefrontPriceMonitorService {
 
   public async stop(): Promise<void> {}
 
-  /** Starts a persisted queue using the configured OpenCLI Chrome session. */
+  /** Reports whether the bundled CLI can reach a Browser Bridge in Chrome or Edge. */
+  public diagnoseBrowserBridge(): Promise<OpenCliBridgeStatus> {
+    return diagnoseOpenCliBridge(this.getOpenCliPath() || defaultOpenCliPath());
+  }
+
+  /** Starts a persisted queue after checking the Chrome/Edge Browser Bridge. */
   public startCollection(jobId: string): void {
     if (this.activeJobs.has(jobId)) return;
     const job = this.getJob(jobId, 1, 1);
@@ -276,15 +282,23 @@ export class StorefrontPriceMonitorService {
     const executable = this.getOpenCliPath() || defaultOpenCliPath();
     const queuedItems = this.listQueuedItems(jobId);
     const workerCount = Math.min(STOREFRONT_COLLECTION_CONCURRENCY, queuedItems.length);
-    const collectors = Array.from({ length: workerCount }, (_, index) => new OpenCliStorefrontPriceCollector({
-      executable,
-      sessionName: `ozon-storefront-${jobId.slice(0, 8)}-${index + 1}`,
-    }));
+    let collectors: OpenCliStorefrontPriceCollector[] = [];
     let nextItemIndex = 0;
     this.activeJobs.add(jobId);
     this.activateJob(jobId);
     void (async () => {
       try {
+        const bridge = await this.diagnoseBrowserBridge();
+        if (!bridge.ready) {
+          for (const item of queuedItems) {
+            this.recordBrowserResult(jobId, item.id, undefined, bridge.message);
+          }
+          return;
+        }
+        collectors = Array.from({ length: workerCount }, (_, index) => new OpenCliStorefrontPriceCollector({
+          executable,
+          sessionName: `ozon-storefront-${jobId.slice(0, 8)}-${index + 1}`,
+        }));
         await Promise.all(collectors.map(async (collector) => {
           for (;;) {
             const current = this.getJob(jobId, 1, 1);

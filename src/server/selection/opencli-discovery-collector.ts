@@ -1,5 +1,3 @@
-import { spawn } from "node:child_process";
-
 import type {
   SelectionCategoryLink,
   SelectionCategoryMetric,
@@ -7,6 +5,7 @@ import type {
   SelectionDiscoveryProductRanking,
   SelectionDiscoveryQueryRanking,
 } from "../../shared/contracts";
+import { runOpenCli } from "../services/opencli-runtime";
 
 const BESTSELLERS_URL = "https://seller.ozon.ru/app/analytics/what-to-sell/ozon-bestsellers";
 const RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
@@ -250,7 +249,7 @@ function queryFromRaw(
   };
 }
 
-/** Collects official bestseller and market-query pages through OpenCLI's logged-in Chrome session. */
+/** Collects official bestseller and market-query pages through a logged-in Chrome or Edge session. */
 export class OpenCliDiscoveryCollector implements DiscoveryMarketCollectorPort {
   private readonly requestDelayMs: number;
 
@@ -264,7 +263,7 @@ export class OpenCliDiscoveryCollector implements DiscoveryMarketCollectorPort {
     await this.run(["browser", this.options.sessionName, "wait", "time", "5"]);
     try {
       const bootstrap = await this.runJson<BootstrapResult>(this.bootstrapScript());
-      if (!bootstrap.companyId) throw new Error("Chrome 中未找到 Ozon Seller 登录状态，请重新登录");
+      if (!bootstrap.companyId) throw new Error("浏览器中未找到 Ozon Seller 登录状态，请在 Chrome 或 Microsoft Edge 重新登录");
       if (bootstrap.error) throw new Error(bootstrap.error);
       const links = this.buildLinks(input.categories, bootstrap.tree, bootstrap.groups);
       const productSteps = 40 + links.filter((link) => link.productTypeIds.length > 0).length * 2;
@@ -374,7 +373,7 @@ export class OpenCliDiscoveryCollector implements DiscoveryMarketCollectorPort {
       const result = await this.runJson<PageResult<T>>(script);
       if (result.status === 200) return result;
       if (result.status === 401 || result.status === 403) {
-        throw new Error("Ozon 登录或分析权限已失效，请在 Chrome 重新登录 Seller 后再同步");
+        throw new Error("Ozon 登录或分析权限已失效，请在 Chrome 或 Microsoft Edge 重新登录 Seller 后再同步");
       }
       if (result.status !== 429 || attempt === RETRY_DELAYS_MS.length) {
         throw new Error(result.message ?? `Ozon 市场接口返回 ${result.status}`);
@@ -444,17 +443,7 @@ export class OpenCliDiscoveryCollector implements DiscoveryMarketCollectorPort {
 
   private run(argumentsList: string[]): Promise<string> {
     if (this.options.runCommand) return this.options.runCommand(argumentsList);
-    return new Promise((resolve, reject) => {
-      const child = spawn(this.options.executable, argumentsList, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-      child.once("error", () => reject(new Error("OpenCLI 无法启动，请检查路径和 Chrome 扩展连接")));
-      child.once("close", (code) => code === 0
-        ? resolve(Buffer.concat(stdout).toString("utf8"))
-        : reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || `OpenCLI 退出码 ${code}`)));
-    });
+    return runOpenCli(this.options.executable, argumentsList);
   }
 
   private sleep(milliseconds: number): Promise<void> {

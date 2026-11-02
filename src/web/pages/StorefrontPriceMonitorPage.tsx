@@ -9,6 +9,7 @@ import {
   fetchLatestStorefrontPrices,
   fetchExchangeRate,
   fetchOnlineProducts,
+  fetchStorefrontPriceBrowserStatus,
   fetchStores,
   fetchStorefrontPriceHistory,
   fetchStorefrontPriceJob,
@@ -98,6 +99,12 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
   const [historyProductId, setHistoryProductId] = useState("");
 
   const storesQuery = useQuery({ queryKey: ["stores"], queryFn: fetchStores, staleTime: 30_000 });
+  const browserStatusQuery = useQuery({
+    queryKey: ["storefront-prices", "browser-status"],
+    queryFn: fetchStorefrontPriceBrowserStatus,
+    staleTime: 30_000,
+    retry: false,
+  });
   const stores = (storesQuery.data ?? []).filter((store) => store.enabled && store.platform === "ozon");
   useEffect(() => {
     if (!stores.some((store) => store.id === storeId)) setStoreId(stores[0]?.id ?? "");
@@ -157,6 +164,9 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
 
   const createMutation = useMutation({
     mutationFn: async (scope: "all" | "selected") => {
+      const browserStatus = await fetchStorefrontPriceBrowserStatus();
+      queryClient.setQueryData(["storefront-prices", "browser-status"], browserStatus);
+      if (!browserStatus.ready) throw new Error(browserStatus.message);
       if (scope === "all") return { job: await createStorefrontPriceJobForStore(storeId) };
       const chosen = products.filter((product) => selectedProducts.includes(product.productId));
       const job = await createStorefrontPriceJob({ storeId, products: chosen.map((product) => ({ productId: product.productId, sku: product.sku, offerId: product.offerId, productName: product.productName, imageUrl: product.imageUrl, backendPrice: product.price, currencyCode: product.currencyCode })) });
@@ -216,6 +226,11 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
 
       {storesQuery.isError && <div className="storefront-price-alert is-error" role="alert"><AlertCircle size={17} />店铺列表读取失败，请刷新后重试。</div>}
       {stores.length === 0 && !storesQuery.isLoading && <div className="storefront-price-empty">没有已启用的 Ozon 店铺，请先到店铺管理中配置。</div>}
+      <div className={`storefront-price-alert storefront-price-browser-status ${browserStatusQuery.data ? browserStatusQuery.data.ready ? "is-ready" : "is-error" : ""}`} role="status">
+        {browserStatusQuery.data?.ready ? <Check size={17} /> : <AlertCircle size={17} />}
+        <span><strong>{browserStatusQuery.isFetching ? "正在检测浏览器连接…" : browserStatusQuery.data?.ready ? "浏览器连接正常" : "浏览器连接未就绪"}</strong><small>{browserStatusQuery.data?.message ?? (browserStatusQuery.isError ? "OpenCLI 检测请求失败，请稍后重试。" : "正在启动内置 OpenCLI 并检测 Chrome 或 Microsoft Edge 扩展。")}</small></span>
+        <button className="secondary-button compact-button" type="button" onClick={() => void browserStatusQuery.refetch()} disabled={browserStatusQuery.isFetching}><RefreshCw size={15} className={browserStatusQuery.isFetching ? "is-spinning" : undefined} />重新检测</button>
+      </div>
 
       <div className="storefront-price-tabs" role="tablist" aria-label="前台价格监控内容">
         <button type="button" role="tab" aria-selected={section === "products"} className={section === "products" ? "is-active" : ""} onClick={() => setSection("products")}>在线商品{productsQuery.data ? <span>{productsQuery.data.count}</span> : null}</button>

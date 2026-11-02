@@ -1,20 +1,13 @@
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { defaultOpenCliPath, runOpenCli } from "./opencli-runtime";
+
+export { defaultOpenCliPath } from "./opencli-runtime";
 
 export interface OpenCliStorefrontPriceCollectorOptions {
   executable: string;
   sessionName: string;
 }
 
-export function defaultOpenCliPath(): string {
-  if (process.platform !== "win32") return join(homedir(), ".npm-global", "bin", "opencli");
-  const located = spawnSync("where.exe", ["opencli.cmd"], { encoding: "utf8", windowsHide: true });
-  return located.status === 0 ? located.stdout.split(/\r?\n/u).find(Boolean) ?? "opencli.cmd" : "opencli.cmd";
-}
-
-/** Reads public buyer prices through the user's authenticated OpenCLI Chrome session. */
+/** Reads public buyer prices through the user's authenticated Chrome or Edge session. */
 export class OpenCliStorefrontPriceCollector {
   private ready = false;
 
@@ -86,26 +79,6 @@ export class OpenCliStorefrontPriceCollector {
   }
 
   protected run(argumentsList: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-      let command = this.options.executable;
-      let args = argumentsList;
-      if (process.platform === "win32") {
-        const shimPath = /\.cmd$/iu.test(command) ? command : `${command}.cmd`;
-        const entry = join(dirname(shimPath), "node_modules", "@jackwener", "opencli", "dist", "src", "main.js");
-        if (existsSync(entry)) {
-          command = process.execPath;
-          args = [entry, ...argumentsList];
-        }
-      }
-      const child = spawn(command, args, { shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-      child.once("error", () => reject(new Error("OpenCLI 无法启动，请检查设置页中的 OpenCLI 路径和 Chrome 连接")));
-      child.once("close", (code) => code === 0
-        ? resolve(Buffer.concat(stdout).toString("utf8"))
-        : reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || `OpenCLI 退出码 ${code}`)));
-    });
+    return runOpenCli(this.options.executable || defaultOpenCliPath(), argumentsList);
   }
 }

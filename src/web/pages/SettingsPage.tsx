@@ -183,7 +183,7 @@ export default function SettingsPage(): React.JSX.Element {
       if (Date.now() - startedAt > 120_000) {
         window.clearInterval(timer);
         if (!cancelled) {
-          setNotice("更新后服务尚未恢复，请查看 %ProgramData%\\Ozon GMV Dashboard\\updates\\update.log。");
+          setNotice("更新后服务超过 2 分钟仍未恢复。请查看 %ProgramData%\\Ozon GMV Dashboard\\logs\\installer.log；更新启动记录在 updates\\update.log。");
         }
         return;
       }
@@ -277,9 +277,14 @@ export default function SettingsPage(): React.JSX.Element {
               {update?.notes && <div className="update-notes"><strong>更新说明</strong><p>{update.notes}</p>{update.publishedAt && <small>发布于 {new Date(update.publishedAt).toLocaleString("zh-CN")}</small>}</div>}
               {(update?.state === "downloading" || update?.state === "installing") && (
                 <div className="update-progress" aria-live="polite">
-                  <div><span>{update.state === "installing" ? "正在安装并重启服务" : "正在下载安装包"}</span><strong>{progress}%</strong></div>
-                  <progress max="100" value={progress}>{progress}%</progress>
-                  <small>服务恢复后页面会自动刷新，店铺、订单和设置不会丢失。</small>
+                  <div>
+                    <span>{update.state === "installing" ? "安装器正在备份数据、替换文件并启动服务" : "正在下载安装包"}</span>
+                    {update.state === "downloading" && <strong>{progress}%</strong>}
+                  </div>
+                  {update.state === "downloading"
+                    ? <progress max="100" value={progress}>{progress}%</progress>
+                    : <progress aria-label="正在安装更新" />}
+                  <small>{update.state === "installing" ? "安装过程可能需要几分钟；若服务未恢复，请查看 %ProgramData%\\Ozon GMV Dashboard\\logs\\installer.log。" : "安装包校验完成后，服务会短暂离线并自动恢复。店铺、订单和设置不会丢失。"}</small>
                 </div>
               )}
               {update?.error && <div className="field-error" role="alert">{update.error}</div>}

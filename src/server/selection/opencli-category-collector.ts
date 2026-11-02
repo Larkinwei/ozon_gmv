@@ -1,9 +1,8 @@
-import { spawn } from "node:child_process";
-
 import type {
   SelectionCategoryCloudMetric,
   SelectionCategoryPeriod,
 } from "../../shared/contracts";
+import { runOpenCli } from "../services/opencli-runtime";
 
 const CATEGORY_URL = "https://seller.ozon.ru/app/analytics/what-to-sell/categories-comparison?category=null&period=week&group=group_category3&metric=metricGmv&minPrice=1&maxPrice=30&showMyShop=false&showMyCategories=false&sortingColumn=metricGmv&sortingOrder=direction_desc&myShopSortingColumn=metricGmv_self&myShopSortingOrder=direction_desc";
 const REQUEST_DELAYS_MS = [30_000, 60_000, 120_000] as const;
@@ -122,7 +121,7 @@ function normalizeMetric(
   };
 }
 
-/** Uses OpenCLI's fixed argument interface so the user's Chrome cookies never enter this process. */
+/** Uses OpenCLI so Chrome/Edge cookies never enter this process. */
 export class OpenCliCategoryCollector implements CategoryCollectorPort {
   private readonly requestDelayMs: number;
 
@@ -182,7 +181,7 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
         return result.items;
       }
       if (result.status === 401 || result.status === 403) {
-        throw new Error("Ozon 登录已失效，请在 Chrome 重新登录 Seller 后再同步");
+        throw new Error("Ozon 登录已失效，请在 Chrome 或 Microsoft Edge 重新登录 Seller 后再同步");
       }
       if (!isRetryableStatus(result.status) || attempt === REQUEST_DELAYS_MS.length) {
         throw new Error(result.message ?? `Ozon 类目接口返回 ${result.status}`);
@@ -197,7 +196,7 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
     for (let attempt = 0; attempt <= REQUEST_DELAYS_MS.length; attempt += 1) {
       const result = await this.runJson<BootstrapResult>(this.bootstrapScript());
       if (!result.companyId) {
-        throw new Error("Chrome 中未找到 Ozon Seller 登录状态，请重新登录");
+        throw new Error("浏览器中未找到 Ozon Seller 登录状态，请在 Chrome 或 Microsoft Edge 重新登录");
       }
       if (result.status === 401 || result.status === 403) {
         throw new Error("Ozon 登录或类目读取权限已失效，请重新登录 Seller 并确认账号可访问类目分析");
@@ -285,21 +284,7 @@ export class OpenCliCategoryCollector implements CategoryCollectorPort {
     if (this.options.runCommand) {
       return this.options.runCommand(argumentsList);
     }
-    return new Promise((resolve, reject) => {
-      const child = spawn(this.options.executable, argumentsList, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-      child.once("error", () => reject(new Error("OpenCLI 无法启动，请检查路径和 Chrome 扩展连接")));
-      child.once("close", (code) => {
-        if (code !== 0) {
-          reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || `OpenCLI 退出码 ${code}`));
-          return;
-        }
-        resolve(Buffer.concat(stdout).toString("utf8"));
-      });
-    });
+    return runOpenCli(this.options.executable, argumentsList);
   }
 
   private sleep(milliseconds: number): Promise<void> {

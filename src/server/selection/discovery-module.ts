@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import type {
   SelectionCategoryCloudMetric,
@@ -26,6 +24,7 @@ import type { AppDatabase } from "../db/database";
 import { minorUnitsToAmount } from "../db/money-storage";
 import { SettingsRepository } from "../db/settings-repository";
 import { decryptSecret, encryptSecret } from "../security/encryption";
+import { defaultOpenCliPath } from "../services/opencli-runtime";
 import { CategoryCloudClient, type CategoryCloudPort, type CategoryFetch } from "./category-cloud-client";
 import { OpenCliCategoryCollector, type CategoryCollectorPort } from "./opencli-category-collector";
 import {
@@ -183,7 +182,7 @@ export class DiscoveryModule {
   public viewSettings(): SelectionDiscoverySourceSettings {
     return {
       collectorEnabled: this.settings.get(COLLECTOR_ENABLED_KEY) === "true",
-      opencliPath: this.settings.get(OPENCLI_PATH_KEY) ?? join(homedir(), ".npm-global", "bin", "opencli"),
+      opencliPath: defaultOpenCliPath(),
       cloudBaseUrl: this.settings.get(CLOUD_BASE_URL_KEY) ?? this.config.CATEGORY_CLOUD_BASE_URL,
       hasUploadToken: Boolean(this.settings.get(UPLOAD_TOKEN_KEY)),
       estimatedDurationMinutes: [8, 15],

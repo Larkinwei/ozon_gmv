@@ -296,6 +296,7 @@ export class UpdateService {
     this.state = { ...this.state, state: "installing", downloadedBytes: manifest.size };
     try {
       await this.launchInstaller(installerPath);
+      await this.log(`Installer process started for version ${manifest.version}; waiting for service restart.`);
     } catch (error) {
       await unlink(join(this.updatesDir, PENDING_FILE));
       throw error;

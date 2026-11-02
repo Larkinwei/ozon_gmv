@@ -43,6 +43,8 @@ export function registerStorefrontPriceRoutes(
   resell: ResellModule,
   exchangeRates?: ExchangeRateService,
 ): void {
+  app.get("/api/operations/storefront-prices/browser-status", { preHandler: requireSession }, async () => monitor.diagnoseBrowserBridge());
+
   app.get("/api/operations/storefront-prices/jobs", { preHandler: requireSession }, async () => ({ items: monitor.listJobs(20) }));
 
   app.post("/api/operations/storefront-prices/jobs", { preHandler: requireSession }, async (request, reply) => {

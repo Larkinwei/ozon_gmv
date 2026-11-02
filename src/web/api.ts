@@ -883,6 +883,22 @@ export interface StorefrontPriceCreateProduct {
   currencyCode: string | null;
 }
 
+export interface StorefrontPriceBrowserStatus {
+  ready: boolean;
+  cliAvailable: boolean;
+  cliVersion: string;
+  daemonRunning: boolean;
+  extensionConnected: boolean;
+  extensionVersion: string | null;
+  connectedProfiles: number;
+  message: string;
+}
+
+/** Checks the bundled OpenCLI and the Browser Bridge connection in Chrome or Edge. */
+export async function fetchStorefrontPriceBrowserStatus(): Promise<StorefrontPriceBrowserStatus> {
+  return apiFetch("/api/operations/storefront-prices/browser-status");
+}
+
 /** Loads recent background collection summaries for the monitor page. */
 export async function fetchStorefrontPriceJobs(): Promise<StorefrontPriceJobSummary[]> {
   return (await apiFetch<{ items: StorefrontPriceJobSummary[] }>("/api/operations/storefront-prices/jobs")).items;
