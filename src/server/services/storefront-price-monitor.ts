@@ -290,7 +290,8 @@ export class StorefrontPriceMonitorService {
           } catch (error) {
             this.recordBrowserResult(jobId, item.id, null, error instanceof Error ? error.message : "OpenCLI 前台采集失败");
           }
-          await new Promise((resolve) => setTimeout(resolve, 1_600));
+          // Composer 请求本身已串行执行；保留小间隔以平衡速度和 Ozon 前台限流风险。
+          await new Promise((resolve) => setTimeout(resolve, 600));
         }
       } finally {
         await collector.close();
