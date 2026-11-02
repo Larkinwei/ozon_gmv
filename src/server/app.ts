@@ -229,7 +229,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerAiRoutes(app, aiConversations, () => aiGateway.checkHealth(), () => aiRelaySettings.view().modelAlias, listAiSources);
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
-  registerStorefrontPriceRoutes(app, storefrontPrices, stores);
+  registerStorefrontPriceRoutes(app, storefrontPrices, stores, resell, exchangeRate);
   registerFinanceRoutes(app, finance);
   if (exchangeRate) registerAgentPricingRoutes(app, exchangeRate);
   if (exchangeRate && pricingScenarios) registerToolsRoutes(app, exchangeRate, pricingScenarios);

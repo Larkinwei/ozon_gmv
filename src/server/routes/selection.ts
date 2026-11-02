@@ -436,12 +436,12 @@ export function registerSelectionRoutes(app: FastifyInstance, selection: Selecti
     }
   });
   app.get("/api/selection/publish/online-products", { preHandler: requireSession }, async (request, reply) => {
-    const query = z.object({ storeId: z.string().uuid(), visibility: z.enum(["ALL", "VISIBLE", "INVISIBLE", "ARCHIVED"]).default("ALL"), productIds: z.string().optional() }).parse(request.query);
+    const query = z.object({ storeId: z.string().uuid(), visibility: z.enum(["ALL", "VISIBLE", "INVISIBLE", "ARCHIVED"]).default("ALL"), productIds: z.string().optional(), refresh: z.enum(["true", "false"]).default("false").transform((value) => value === "true") }).parse(request.query);
     try {
       const productIds = query.productIds ? [...new Set(query.productIds.split(",").map((id) => id.trim()).filter(Boolean))] : undefined;
       if (productIds && (productIds.length > 1000 || productIds.some((id) => !/^\d+$/.test(id)))) return reply.code(400).send({ error: "ONLINE_PRODUCTS_READ_FAILED", message: "所选商品编号无效或超过 1000 个" });
-      const items = await resell.listOnlineProducts({ storeId: query.storeId, visibility: query.visibility, ...(productIds ? { productIds } : {}) });
-      return { storeId: query.storeId, visibility: query.visibility, items, count: items.length, readAt: new Date().toISOString() };
+      const page = await resell.getOnlineProductsPage({ storeId: query.storeId, visibility: query.visibility, ...(productIds ? { productIds } : {}), forceRefresh: query.refresh });
+      return { storeId: query.storeId, visibility: query.visibility, items: page.items, count: page.items.length, readAt: page.readAt };
     } catch (error) {
       if (error instanceof ResellValidationError) return reply.code(422).send({ error: "ONLINE_PRODUCTS_READ_FAILED", message: error.message });
       throw error;

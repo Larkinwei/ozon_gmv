@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/database";
 import { defaultOpenCliPath, OpenCliStorefrontPriceCollector } from "./opencli-storefront-price-collector";
 
+const STOREFRONT_COLLECTION_CONCURRENCY = 3;
+const STOREFRONT_COLLECTION_DELAY_MS = 600;
+
 export type StorefrontPriceJobStatus = "queued" | "running" | "paused" | "completed" | "cancelled";
 export type StorefrontPriceItemStatus = "queued" | "running" | "success" | "failed" | "no_data" | "cancelled";
 
@@ -271,30 +274,39 @@ export class StorefrontPriceMonitorService {
     const job = this.getJob(jobId, 1, 1);
     if (!job || !["queued", "paused"].includes(job.status)) return;
     const executable = this.getOpenCliPath() || defaultOpenCliPath();
-    const sessionName = `ozon-storefront-${jobId.slice(0, 8)}`;
-    const collector = new OpenCliStorefrontPriceCollector({ executable, sessionName });
+    const queuedItems = this.listQueuedItems(jobId);
+    const workerCount = Math.min(STOREFRONT_COLLECTION_CONCURRENCY, queuedItems.length);
+    const collectors = Array.from({ length: workerCount }, (_, index) => new OpenCliStorefrontPriceCollector({
+      executable,
+      sessionName: `ozon-storefront-${jobId.slice(0, 8)}-${index + 1}`,
+    }));
+    let nextItemIndex = 0;
     this.activeJobs.add(jobId);
     this.activateJob(jobId);
     void (async () => {
       try {
-        for (const item of this.listQueuedItems(jobId)) {
-          const current = this.getJob(jobId, 1, 1);
-          if (!current || current.status !== "running") break;
-          try {
-            const payload = await collector.collect(item.sku);
-            const status = asRecord(payload);
-            const fetchError = typeof status?.__httpStatus === "number"
-              ? (status.__httpStatus === 429 ? "Ozon 前台限流（HTTP 429），请稍后重试" : `Ozon 前台请求失败（HTTP ${status.__httpStatus}）`)
-              : typeof status?.__fetchError === "string" ? status.__fetchError : null;
-            this.recordBrowserResult(jobId, item.id, payload, fetchError);
-          } catch (error) {
-            this.recordBrowserResult(jobId, item.id, null, error instanceof Error ? error.message : "OpenCLI 前台采集失败");
+        await Promise.all(collectors.map(async (collector) => {
+          for (;;) {
+            const current = this.getJob(jobId, 1, 1);
+            if (!current || current.status !== "running") return;
+            const item = queuedItems[nextItemIndex++];
+            if (!item) return;
+            this.database.prepare("UPDATE storefront_price_job_items SET status = 'running' WHERE id = ? AND status = 'queued'").run(item.id);
+            try {
+              const payload = await collector.collect(item.sku);
+              const status = asRecord(payload);
+              const fetchError = typeof status?.__httpStatus === "number"
+                ? (status.__httpStatus === 429 ? "Ozon 前台限流（HTTP 429），请稍后重试" : `Ozon 前台请求失败（HTTP ${status.__httpStatus}）`)
+                : typeof status?.__fetchError === "string" ? status.__fetchError : null;
+              this.recordBrowserResult(jobId, item.id, payload, fetchError);
+            } catch (error) {
+              this.recordBrowserResult(jobId, item.id, null, error instanceof Error ? error.message : "OpenCLI 前台采集失败");
+            }
+            await new Promise((resolve) => setTimeout(resolve, STOREFRONT_COLLECTION_DELAY_MS));
           }
-          // Composer 请求本身已串行执行；保留小间隔以平衡速度和 Ozon 前台限流风险。
-          await new Promise((resolve) => setTimeout(resolve, 600));
-        }
+        }));
       } finally {
-        await collector.close();
+        await Promise.all(collectors.map((collector) => collector.close()));
         const current = this.getJob(jobId, 1, 1);
         this.activeJobs.delete(jobId);
         if (current?.status === "queued") this.startCollection(jobId);
@@ -437,21 +449,56 @@ export class StorefrontPriceMonitorService {
     return this.getJob(id);
   }
 
-  public listLatest(input: { storeId: string; search: string; page: number; pageSize: number }): { items: StorefrontPriceSnapshotView[]; total: number } {
+  public listLatest(input: {
+    storeId: string;
+    search: string;
+    page: number;
+    pageSize: number;
+    frontPrice: "all" | "available" | "missing";
+    difference: "all" | "higher" | "lower" | "equal" | "unavailable";
+    sort: "latest" | "differenceDesc" | "differenceAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
+    rubPerCny: number | null;
+  }): { items: StorefrontPriceSnapshotView[]; total: number } {
     const pattern = `%${input.search.trim()}%`;
-    const rows = this.database.prepare(
-      `WITH ranked AS (
-         SELECT *, ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY captured_at_ms DESC) AS row_number
-         FROM storefront_price_snapshots WHERE store_id = ?
-       ) SELECT * FROM ranked WHERE row_number = 1 AND (sku LIKE ? OR offer_id LIKE ? OR COALESCE(product_name, '') LIKE ?)
-       ORDER BY captured_at_ms DESC LIMIT ? OFFSET ?`,
-    ).all(input.storeId, pattern, pattern, pattern, input.pageSize, (input.page - 1) * input.pageSize) as SnapshotRow[];
-    const total = this.database.prepare(
-      `WITH ranked AS (
-         SELECT product_id, sku, offer_id, product_name, ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY captured_at_ms DESC) AS row_number
-         FROM storefront_price_snapshots WHERE store_id = ?
-       ) SELECT COUNT(*) AS total FROM ranked WHERE row_number = 1 AND (sku LIKE ? OR offer_id LIKE ? OR COALESCE(product_name, '') LIKE ?)`
-    ).get(input.storeId, pattern, pattern, pattern) as { total: number };
+    const filters: string[] = ["(sku LIKE ? OR offer_id LIKE ? OR COALESCE(product_name, '') LIKE ?)"];
+    const params: (string | number)[] = [input.storeId, pattern, pattern, pattern];
+    const greenCny = `CASE WHEN front_currency_code = 'CNY' THEN CAST(green_price AS REAL)
+      WHEN front_currency_code = 'RUB' AND ? > 0 THEN CAST(green_price AS REAL) / ? END`;
+    const backendCny = `CASE WHEN currency_code = 'CNY' THEN CAST(backend_price AS REAL)
+      WHEN currency_code = 'RUB' AND ? > 0 THEN CAST(backend_price AS REAL) / ? END`;
+    const rate = input.rubPerCny ?? 0;
+
+    if (input.frontPrice === "available") filters.push("green_price IS NOT NULL");
+    if (input.frontPrice === "missing") filters.push("green_price IS NULL");
+    if (input.difference === "unavailable") filters.push("price_difference IS NULL");
+    if (input.difference === "higher") filters.push("price_difference > 0");
+    if (input.difference === "lower") filters.push("price_difference < 0");
+    if (input.difference === "equal") filters.push("price_difference = 0");
+
+    const filterSql = filters.join(" AND ");
+    const sortSql: Record<typeof input.sort, string> = {
+      latest: "captured_at_ms DESC",
+      differenceDesc: "(price_difference IS NULL), ABS(price_difference) DESC, captured_at_ms DESC",
+      differenceAsc: "(price_difference IS NULL), ABS(price_difference) ASC, captured_at_ms DESC",
+      greenDesc: "(green_cny IS NULL), green_cny DESC, captured_at_ms DESC",
+      greenAsc: "(green_cny IS NULL), green_cny ASC, captured_at_ms DESC",
+      backendDesc: "(backend_cny IS NULL), backend_cny DESC, captured_at_ms DESC",
+      backendAsc: "(backend_cny IS NULL), backend_cny ASC, captured_at_ms DESC",
+    };
+    const cte = `WITH ranked AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY captured_at_ms DESC) AS row_number
+        FROM storefront_price_snapshots WHERE store_id = ?
+      ), latest AS (
+        SELECT ranked.*, ${greenCny} AS green_cny, ${backendCny} AS backend_cny
+        FROM ranked WHERE row_number = 1
+      ), priced AS (
+        SELECT latest.*, ROUND(green_cny - backend_cny, 2) AS price_difference FROM latest
+      ), filtered AS (SELECT * FROM priced WHERE ${filterSql})`;
+    const rateParams = [rate, rate, rate, rate];
+    const rows = this.database.prepare(`${cte} SELECT * FROM filtered ORDER BY ${sortSql[input.sort]} LIMIT ? OFFSET ?`)
+      .all(...params.slice(0, 1), ...rateParams, ...params.slice(1), input.pageSize, (input.page - 1) * input.pageSize) as SnapshotRow[];
+    const total = this.database.prepare(`${cte} SELECT COUNT(*) AS total FROM filtered`)
+      .get(...params.slice(0, 1), ...rateParams, ...params.slice(1)) as { total: number };
     return { items: rows.map((row) => this.snapshotView(row)), total: total.total };
   }
 

@@ -477,7 +477,7 @@ export class OzonClient {
     return response.items;
   }
 
-  /** Reads one page of seller products; this endpoint is read-only. */
+  /** Reads one page of seller products; `last_id` is the continuation cursor. */
   public async listProductPage(input: { visibility?: string; lastId?: string; limit?: number } = {}): Promise<{ items: OzonListedProduct[]; lastId: string; hasNext: boolean }> {
     const raw = await this.request("/v3/product/list", {
       filter: { visibility: input.visibility ?? "ALL" },
@@ -515,11 +515,8 @@ export class OzonClient {
         hasFbsStocks: typeof item.has_fbs_stocks === "boolean" ? item.has_fbs_stocks : null,
       }];
     }) : [];
-    return {
-      items,
-      lastId: String(result?.last_id ?? ""),
-      hasNext: result?.has_next === true,
-    };
+    const lastId = String(result?.last_id ?? "");
+    return { items, lastId, hasNext: lastId.length > 0 };
   }
 
   /** Reads product names and seller SKUs for identifiers returned by product/list. */

@@ -31,6 +31,7 @@ import { hasPublishAttributeValue } from "../../shared/publish-attributes";
 const PENDING_IMPORT_POLL_INTERVAL_MS = 30_000;
 const MAX_STOCK_POLLS = 6;
 const STOCK_POLL_INTERVAL_MS = 2_000;
+const ONLINE_PRODUCTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface ResellTaskRow {
   id: string;
@@ -568,10 +569,15 @@ export class ResellModule {
     }
     const items: OzonListedProduct[] = [];
     let lastId = "";
-    for (let page = 0; page < 20; page += 1) {
+    const seenCursors = new Set<string>();
+    while (true) {
       const result = await client.listProductPage({ visibility: input.visibility ?? "ALL", lastId, limit: 1000 });
       items.push(...result.items);
-      if (!result.hasNext || !result.lastId || result.lastId === lastId) break;
+      if (!result.lastId) break;
+      if (seenCursors.has(result.lastId)) {
+        throw new ResellValidationError(["Ozon 在线商品分页游标无效，已停止读取，避免返回不完整的店铺商品列表"]);
+      }
+      seenCursors.add(result.lastId);
       lastId = result.lastId;
     }
     const metadata = new Map<string, OzonProductInfo>();
@@ -609,6 +615,43 @@ export class ResellModule {
     return enrichedItems
       .filter((item) => input.visibility !== "VISIBLE" || item.archived !== true)
       .map((item) => ({ ...item, sales30d: salesBySku.get(item.sku ?? "") ?? 0 }));
+  }
+
+  /** Returns the persisted per-store product snapshot, refreshing it at most once per day unless forced. */
+  public async getOnlineProductsPage(input: { storeId: string; visibility?: string; productIds?: string[]; forceRefresh?: boolean }): Promise<{ items: OzonListedProduct[]; readAt: string }> {
+    const visibility = input.visibility ?? "ALL";
+    if (input.productIds?.length) {
+      return { items: await this.listOnlineProducts(input), readAt: new Date().toISOString() };
+    }
+
+    const now = Date.now();
+    if (!input.forceRefresh) {
+      const cached = this.database.prepare<[string, string], { items_json: string; read_at_ms: number }>(
+        "SELECT items_json, read_at_ms FROM online_products_cache WHERE store_id = ? AND visibility = ?",
+      ).get(input.storeId, visibility);
+      if (cached && now - cached.read_at_ms < ONLINE_PRODUCTS_CACHE_TTL_MS) {
+        try {
+          const items = JSON.parse(cached.items_json) as OzonListedProduct[];
+          if (Array.isArray(items)) return { items, readAt: new Date(cached.read_at_ms).toISOString() };
+        } catch {
+          // 缓存内容损坏时继续从 Ozon 重新读取。
+        }
+      }
+    }
+
+    const items = await this.listOnlineProducts({ ...input, visibility });
+    const readAtMs = Date.now();
+    this.database.prepare(
+      `INSERT INTO online_products_cache (store_id, visibility, items_json, read_at_ms)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(store_id, visibility) DO UPDATE SET items_json = excluded.items_json, read_at_ms = excluded.read_at_ms`,
+    ).run(input.storeId, visibility, JSON.stringify(items), readAtMs);
+    return { items, readAt: new Date(readAtMs).toISOString() };
+  }
+
+  /** Clears a store's snapshots after product data is changed locally or through Seller API. */
+  public invalidateOnlineProductsCache(storeId: string): void {
+    this.database.prepare("DELETE FROM online_products_cache WHERE store_id = ?").run(storeId);
   }
 
   /** Returns locally synced, non-cancelled units by Ozon SKU for the last 30 days. */
@@ -653,6 +696,7 @@ export class ResellModule {
         else deleteStatement.run(input.storeId, edit.productId);
       }
     })();
+    this.invalidateOnlineProductsCache(input.storeId);
     return { updated };
   }
 
@@ -684,6 +728,7 @@ export class ResellModule {
         skipped.push({ productId: edit.productId, reason: error instanceof Error ? error.message : "更新价格失败" });
       }
     }
+    if (updated.length) this.invalidateOnlineProductsCache(input.storeId);
     return { updated, skipped };
   }
 
@@ -709,6 +754,7 @@ export class ResellModule {
         skipped.push({ productId: item.productId, reason: error instanceof Error ? error.message : "更新库存失败" });
       }
     }
+    if (updated.length) this.invalidateOnlineProductsCache(input.storeId);
     return { updated, skipped };
   }
 
@@ -734,6 +780,7 @@ export class ResellModule {
       try { await client.archiveProducts([product.productId]); archived.push(product.productId); }
       catch (error) { skipped.push({ productId, reason: error instanceof Error ? error.message : "归档失败" }); }
     }
+    if (archived.length) this.invalidateOnlineProductsCache(input.storeId);
     return { archived, skipped };
   }
 
@@ -1600,6 +1647,8 @@ export class ResellModule {
 
   private setTaskProductId(id: string, productId: string): void {
     this.database.prepare("UPDATE resell_tasks SET product_id = ?, updated_at_ms = ? WHERE id = ?").run(productId, Date.now(), id);
+    const task = this.database.prepare<[string], { store_id: string }>("SELECT store_id FROM resell_tasks WHERE id = ?").get(id);
+    if (task) this.invalidateOnlineProductsCache(task.store_id);
   }
 
   private setTaskCurrency(id: string, currency: string): void {

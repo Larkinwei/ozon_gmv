@@ -14,8 +14,8 @@ const operationsNavGroups: Array<{ label: string; items: OperationsNavLink[] }> 
   {
     label: "商品分析",
     items: [
-      { label: "选品分析", to: "/operations/selection", icon: BarChart3 },
       { label: "前台价格监控", to: "/operations/storefront-prices", icon: Tags },
+      { label: "选品分析", to: "/operations/selection", icon: BarChart3 },
     ],
   },
   {

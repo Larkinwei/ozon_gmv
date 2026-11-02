@@ -5346,6 +5346,12 @@ td {
 .storefront-price-store-select { display: grid; min-width: 220px; gap: 6px; color: var(--muted); font-size: 12px; }
 .storefront-price-store-select select, .storefront-price-job-select select { min-height: 44px; padding: 0 12px; color: var(--text); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
 .storefront-price-panel { min-width: 0; padding: 16px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px; }
+.storefront-price-tabs { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding: 4px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 10px; scrollbar-width: thin; }
+.storefront-price-tabs button { display: inline-flex; min-height: 40px; flex: 0 0 auto; align-items: center; gap: 8px; padding: 0 14px; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.storefront-price-tabs button:hover { color: var(--text); background: var(--surface-soft); }
+.storefront-price-tabs button.is-active { color: var(--text); background: var(--surface-raised); border-color: var(--border); }
+.storefront-price-tabs button span { min-width: 20px; padding: 2px 6px; color: var(--muted); background: var(--surface); border-radius: 999px; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
+.storefront-price-tabs button.is-active span { color: #bfdbfe; background: rgb(59 130 246 / 16%); }
 .storefront-price-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .storefront-price-toolbar > button, .storefront-price-pagination button, .storefront-price-job-summary button { min-height: 42px; }
 .storefront-price-search { display: flex; min-width: min(320px, 100%); min-height: 42px; align-items: center; gap: 8px; box-sizing: border-box; padding: 0 10px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
@@ -5360,12 +5366,20 @@ td {
 .storefront-price-table th { position: sticky; top: 0; z-index: 1; color: var(--muted); background: #0b1425; font-weight: 500; white-space: nowrap; }
 .storefront-price-table tr:last-child td { border-bottom: 0; }
 .storefront-price-product { display: flex; min-width: 210px; align-items: center; gap: 10px; }
-.storefront-price-product img, .storefront-price-product-placeholder { width: 42px; height: 42px; flex: 0 0 42px; object-fit: contain; border-radius: 6px; background: var(--surface-raised); }
+.storefront-price-product-image { width: 42px; height: 42px; flex: 0 0 42px; border-radius: 6px; background: var(--surface-raised); }
+.storefront-price-product-placeholder { width: 42px; height: 42px; flex: 0 0 42px; border-radius: 6px; background: var(--surface-raised); }
 .storefront-price-product-placeholder { display: grid; place-items: center; color: var(--muted); font-size: 10px; }
 .storefront-price-product > span:last-child, .storefront-price-product > span:last-child > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storefront-price-public-link, .storefront-price-sku-link { display: inline-flex; min-width: 0; align-items: center; gap: 4px; color: var(--primary); text-decoration: none; }
 .storefront-price-public-link { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storefront-price-public-link:hover, .storefront-price-sku-link:hover { text-decoration: underline; }
+.storefront-price-public-link:focus-visible, .storefront-price-sku-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+.storefront-price-value { display: inline-block; padding: 2px 6px; border-radius: 5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storefront-price-value.is-green { color: #86efac; background: rgb(34 197 94 / 10%); }
+.storefront-price-value.is-black-label { color: #c4b5fd; background: rgb(167 139 250 / 10%); }
+.storefront-price-value.is-backend { color: #93c5fd; background: rgb(59 130 246 / 10%); }
+.storefront-price-value.is-difference { color: #fcd34d; background: rgb(245 158 11 / 12%); }
+.storefront-price-value.is-muted { color: var(--muted); background: var(--surface-raised); }
 .storefront-price-product small, .storefront-price-name + small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
 .storefront-price-name { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storefront-price-job-select { display: grid; max-width: 460px; gap: 6px; margin: 12px 0; color: var(--muted); font-size: 12px; }
@@ -5399,6 +5413,8 @@ td {
   .storefront-price-toolbar > button { flex: 1 1 140px; }
   .storefront-price-selected { width: 100%; }
   .storefront-price-panel { padding: 12px; }
+  .storefront-price-tabs { margin-inline: -2px; }
+  .storefront-price-tabs button { min-height: 44px; padding-inline: 12px; }
 }
 
 @media (max-width: 1024px) {

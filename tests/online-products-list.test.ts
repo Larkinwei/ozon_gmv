@@ -35,9 +35,12 @@ describe("online product list", () => {
       "item-online-product-test", "posting-online-product-test", "sku-visible", "offer-visible", "商品", 3,
     );
 
+    let productListCalls = 0;
+    let productInfoCalls = 0;
     const fetchImplementation: typeof fetch = async (input) => {
       const url = new URL(String(input));
       if (url.pathname === "/v3/product/list") {
+        productListCalls += 1;
         return new Response(JSON.stringify({ result: {
           items: [
             { product_id: "product-visible", offer_id: "offer-visible", archived: false },
@@ -48,6 +51,7 @@ describe("online product list", () => {
         } }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.pathname === "/v3/product/info/list") {
+        productInfoCalls += 1;
         return new Response(JSON.stringify({ items: [
           { product_id: "product-visible", offer_id: "offer-visible", sku: "sku-visible", product_name: "在线商品", is_archived: false, created_at: "2026-10-20T12:00:00Z" },
           { product_id: "product-archived", offer_id: "offer-archived", sku: "sku-archived", product_name: "归档商品", is_archived: true, created_at: "2026-10-21T12:00:00Z" },
@@ -59,7 +63,8 @@ describe("online product list", () => {
     const module = new ResellModule(context.config, context.database, stores, new MyDataModule(context.database), images, { fetchImplementation });
 
     try {
-      const products = await module.listOnlineProducts({ storeId, visibility: "VISIBLE" });
+      const page = await module.getOnlineProductsPage({ storeId, visibility: "VISIBLE" });
+      const products = page.items;
       expect(products).toHaveLength(1);
       expect(products[0]).toMatchObject({
         productId: "product-visible",
@@ -67,6 +72,71 @@ describe("online product list", () => {
         sales30d: 3,
         createdAt: "2026-10-20T12:00:00Z",
       });
+
+      const cachedPage = await module.getOnlineProductsPage({ storeId, visibility: "VISIBLE" });
+      expect(cachedPage.readAt).toBe(page.readAt);
+      expect(productListCalls).toBe(1);
+      expect(productInfoCalls).toBe(1);
+
+      const refreshedPage = await module.getOnlineProductsPage({ storeId, visibility: "VISIBLE", forceRefresh: true });
+      expect(refreshedPage.readAt).not.toBe(page.readAt);
+      expect(productListCalls).toBe(2);
+      expect(productInfoCalls).toBe(2);
+    } finally {
+      context.cleanup();
+    }
+  });
+
+  it("reads all product-list cursor pages instead of stopping after a fixed page cap", async () => {
+    const context = createTestDatabase();
+    const storeId = "77777777-7777-4777-8777-777777777777";
+    const stores = new StoresRepository(context.database);
+    await stores.create({
+      id: storeId,
+      name: "多页商品测试店铺",
+      clientId: "client",
+      apiKeyCiphertext: encryptSecret("secret", context.config.ENCRYPTION_KEY),
+      color: "#3B82F6",
+      fulfillmentModes: ["FBS"],
+      apiKeyExpiresAt: null,
+    });
+
+    const productCount = 1_010;
+    let productListPageCalls = 0;
+    let productInfoBatchCalls = 0;
+    const fetchImplementation: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const body = JSON.parse(String(init?.body ?? "{}")) as { last_id?: string };
+      if (url.pathname === "/v3/product/list") {
+        productListPageCalls += 1;
+        const offset = body.last_id ? Number(body.last_id) : 0;
+        const page = Array.from({ length: Math.min(1000, productCount - offset) }, (_, index) => offset + index);
+        return new Response(JSON.stringify({ result: {
+          items: page.map((index) => ({ product_id: `product-${index}`, offer_id: `offer-${index}`, archived: false })),
+          last_id: offset + page.length < productCount ? String(offset + page.length) : "",
+        } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.pathname === "/v3/product/info/list") {
+        productInfoBatchCalls += 1;
+        const requested = JSON.parse(String(init?.body ?? "{}")) as { product_id?: string[] };
+        return new Response(JSON.stringify({ items: (requested.product_id ?? []).map((productId) => ({
+          product_id: productId,
+          offer_id: productId.replace("product-", "offer-"),
+          product_name: productId,
+          is_archived: false,
+        })) }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected Ozon API request: ${url.pathname}`);
+    };
+    const images = new ResellImageService(context.database, { putObject: async () => ({ objectKey: "unused", publicUrl: "https://example.com/image.jpg" }) } as never);
+    const module = new ResellModule(context.config, context.database, stores, new MyDataModule(context.database), images, { fetchImplementation });
+
+    try {
+      const products = await module.listOnlineProducts({ storeId, visibility: "VISIBLE" });
+      expect(products).toHaveLength(productCount);
+      expect(products.at(-1)?.productId).toBe(`product-${productCount - 1}`);
+      expect(productListPageCalls).toBe(2);
+      expect(productInfoBatchCalls).toBe(2);
     } finally {
       context.cleanup();
     }

@@ -50,6 +50,8 @@
 .publish-online-tabs button.is-active strong { color: #fff; background: #245fd0; }
 .publish-online-sync-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding-bottom: 12px; }
 .publish-online-sync-actions > span { margin-right: auto; color: var(--muted, #8998ac); font-size: 13px; }
+.publish-online-sync-actions > .icon-button { display: inline-flex; min-height: 40px; align-items: center; gap: 7px; padding: 0 12px; }
+.publish-online-sync-actions > .icon-button::after { content: "刷新商品列表"; }
 .publish-records-sync-message { margin: 0; padding: 10px 20px; border-bottom: 1px solid var(--border, #2b3a50); color: #8bd4ad; font-size: 13px; }
 .publish-online-batch-menu { position: relative; }
 .publish-online-batch-menu summary { list-style: none; cursor: pointer; }

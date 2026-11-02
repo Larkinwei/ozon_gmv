@@ -36,6 +36,8 @@ describe("OperationsCenterLayout", () => {
     expect(screen.getByRole("link", { name: "本机设置" })).toHaveAttribute("href", "/settings");
     expect(screen.getByText("商品分析")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "选品分析" })).toHaveAttribute("href", "/operations/selection");
+    expect(screen.getByRole("link", { name: "前台价格监控" })).toHaveAttribute("href", "/operations/storefront-prices");
+    expect(screen.getByRole("link", { name: "前台价格监控" }).compareDocumentPosition(screen.getByRole("link", { name: "选品分析" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("link", { name: "商品上架" })).toHaveAttribute("href", "/operations/publish/workbench");
     expect(screen.getByRole("link", { name: "发布任务" })).toHaveAttribute("href", "/operations/publish/tasks");
     expect(screen.getByText("财务分析")).toBeInTheDocument();

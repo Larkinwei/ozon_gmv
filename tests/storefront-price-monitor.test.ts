@@ -28,16 +28,16 @@ describe("Ozon storefront price monitor", () => {
       },
     });
 
-    expect(result).toEqual({ sku: "123456789", greenPrice: "1254.00", blackPrice: "1350.00" });
+    expect(result).toEqual({ sku: "123456789", greenPrice: "1254.00", blackPrice: "1350.00", frontCurrencyCode: "RUB" });
   });
 
   it("does not invent a SKU or price when public page fields are absent", () => {
-    expect(parseOzonStorefrontPricePayload({ widgetStates: {} })).toEqual({ sku: null, greenPrice: null, blackPrice: null });
+    expect(parseOzonStorefrontPricePayload({ widgetStates: {} })).toEqual({ sku: null, greenPrice: null, blackPrice: null, frontCurrencyCode: null });
   });
 
   it("parses the compact result returned by the browser collector", () => {
     expect(parseOzonStorefrontPricePayload({ sku: "123456789", greenPrice: "1 254,00 ₽", blackPrice: 1350 }))
-      .toEqual({ sku: "123456789", greenPrice: "1254.00", blackPrice: "1350.00" });
+      .toEqual({ sku: "123456789", greenPrice: "1254.00", blackPrice: "1350.00", frontCurrencyCode: "RUB" });
   });
 
   it("returns paged job items and requeues interrupted work on service restart", async () => {
@@ -83,8 +83,42 @@ describe("Ozon storefront price monitor", () => {
     expect(service.recordBrowserResult(job.id, itemId, { sku: "123456789", greenPrice: "1254", blackPrice: "1350" }, null)).toBe(true);
     expect(service.getJob(job.id)?.items[0]).toMatchObject({ status: "success", greenPrice: "1254.00", blackPrice: "1350.00" });
     expect(service.listHistory("store-1", "product-1")).toHaveLength(1);
-    expect(service.listLatest({ storeId: "store-1", search: "", page: 1, pageSize: 20 }).items[0])
+    expect(service.listLatest({ storeId: "store-1", search: "", page: 1, pageSize: 20, frontPrice: "all", difference: "all", sort: "latest", rubPerCny: 100 }).items[0])
       .toMatchObject({ sku: "123456789", greenPrice: "1254.00", blackPrice: "1350.00" });
+  });
+
+  it("filters and sorts latest snapshots by normalized front-price difference", () => {
+    const context = createContext();
+    const service = new StorefrontPriceMonitorService(context.database);
+    const records = [
+      { sku: "100000001", label: "sku-low", green: "90", backend: "100" },
+      { sku: "100000002", label: "sku-high", green: "120", backend: "100" },
+      { sku: "100000003", label: "sku-equal", green: "100", backend: "100" },
+    ];
+
+    records.forEach((record, index) => {
+      const job = service.createJob({ id: "store-1", name: "店铺 A" }, [{
+        productId: `product-${index}`,
+        sku: record.sku,
+        offerId: `offer-${index}`,
+        productName: `商品 ${index}`,
+        imageUrl: null,
+        backendPrice: record.backend,
+        currencyCode: "RUB",
+      }]);
+      service.recordBrowserResult(job.id, job.items[0]!.id, {
+        sku: record.sku,
+        greenPrice: record.green,
+        blackPrice: record.green,
+        currencyCode: "RUB",
+      }, null);
+    });
+
+    const common = { storeId: "store-1", search: "", page: 1, pageSize: 20, frontPrice: "all" as const, rubPerCny: 100 };
+    expect(service.listLatest({ ...common, difference: "higher", sort: "latest" }).items.map((item) => item.sku)).toEqual(["100000002"]);
+    expect(service.listLatest({ ...common, difference: "all", sort: "differenceAsc" }).items.map((item) => item.sku)).toEqual(["100000003", "100000001", "100000002"]);
+    expect(service.listLatest({ ...common, difference: "all", sort: "differenceDesc" }).items.map((item) => item.sku)).toEqual(["100000002", "100000001", "100000003"]);
+    expect(service.listLatest({ ...common, difference: "all", sort: "greenDesc" }).items.map((item) => item.sku)).toEqual(["100000002", "100000003", "100000001"]);
   });
 
   it("allows failed items to be retried or deleted without touching successful rows", () => {

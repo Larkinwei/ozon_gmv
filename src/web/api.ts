@@ -822,9 +822,10 @@ export interface OnlineProductPage {
 }
 
 /** Reads current product identifiers and stock-channel flags from one Ozon store. */
-export async function fetchOnlineProducts(storeId: string, visibility: OnlineProductPage["visibility"] = "ALL", productIds?: string[]): Promise<OnlineProductPage> {
+export async function fetchOnlineProducts(storeId: string, visibility: OnlineProductPage["visibility"] = "ALL", productIds?: string[], forceRefresh = false): Promise<OnlineProductPage> {
   const params = new URLSearchParams({ storeId, visibility });
   if (productIds?.length) params.set("productIds", productIds.join(","));
+  if (forceRefresh) params.set("refresh", "true");
   return apiFetch(`/api/selection/publish/online-products?${params.toString()}`);
 }
 
@@ -897,6 +898,11 @@ export async function createStorefrontPriceJob(input: { storeId: string; product
   return apiFetch("/api/operations/storefront-prices/jobs", { method: "POST", body: JSON.stringify(input) });
 }
 
+/** Creates a collection job from every currently online product in the selected store. */
+export async function createStorefrontPriceJobForStore(storeId: string): Promise<StorefrontPriceJob> {
+  return apiFetch("/api/operations/storefront-prices/jobs/all", { method: "POST", body: JSON.stringify({ storeId }) });
+}
+
 /** Returns pending SKUs that the collector extension should process. */
 export async function fetchStorefrontPriceJobQueue(id: string): Promise<StorefrontPriceQueueItem[]> {
   return (await apiFetch<{ items: StorefrontPriceQueueItem[] }>(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/queue`)).items;
@@ -928,8 +934,24 @@ export async function updateStorefrontPriceJob(id: string, action: "pause" | "re
 }
 
 /** Reads the newest saved front-end price snapshot for each product. */
-export async function fetchLatestStorefrontPrices(input: { storeId: string; search?: string; page?: number; pageSize?: number }): Promise<{ items: StorefrontPriceSnapshot[]; total: number }> {
-  const params = new URLSearchParams({ storeId: input.storeId, search: input.search ?? "", page: String(input.page ?? 1), pageSize: String(input.pageSize ?? 100) });
+export async function fetchLatestStorefrontPrices(input: {
+  storeId: string;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+  frontPrice?: "all" | "available" | "missing";
+  difference?: "all" | "higher" | "lower" | "equal" | "unavailable";
+  sort?: "latest" | "differenceDesc" | "differenceAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
+}): Promise<{ items: StorefrontPriceSnapshot[]; total: number }> {
+  const params = new URLSearchParams({
+    storeId: input.storeId,
+    search: input.search ?? "",
+    page: String(input.page ?? 1),
+    pageSize: String(input.pageSize ?? 100),
+    frontPrice: input.frontPrice ?? "all",
+    difference: input.difference ?? "all",
+    sort: input.sort ?? "latest",
+  });
   return apiFetch(`/api/operations/storefront-prices/latest?${params.toString()}`);
 }
 
