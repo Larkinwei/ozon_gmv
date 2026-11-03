@@ -55,6 +55,7 @@ export interface StorefrontPriceSnapshotView extends StorefrontPriceProduct {
   greenPrice: string | null;
   blackPrice: string | null;
   frontCurrencyCode: string | null;
+  discountRate: number | null;
   capturedAt: string;
 }
 
@@ -97,6 +98,7 @@ interface ItemRow {
 
 interface SnapshotRow extends Omit<ItemRow, "status" | "error"> {
   captured_at_ms: number;
+  discount_rate?: number | null;
 }
 
 interface OzonPricePayload {
@@ -407,6 +409,29 @@ export class StorefrontPriceMonitorService {
     return job ? { job, item: { id: itemId, sku: item.sku } } : null;
   }
 
+  /** Requeues every retryable failed or empty-price item in one persisted job. */
+  public retryFailedItems(jobId: string): { job: StorefrontPriceJobView; retriedCount: number } | null {
+    const jobExists = this.database.prepare("SELECT 1 FROM storefront_price_jobs WHERE id = ?").get(jobId);
+    if (!jobExists) return null;
+
+    const retriedCount = this.database.transaction(() => {
+      const result = this.database.prepare(
+        `UPDATE storefront_price_job_items
+         SET status = 'queued', green_price = NULL, black_price = NULL,
+           front_currency_code = NULL, error = NULL, captured_at_ms = NULL
+         WHERE job_id = ? AND status IN ('failed', 'no_data') AND sku IS NOT NULL`,
+      ).run(jobId);
+      if (result.changes > 0) {
+        this.database.prepare("UPDATE storefront_price_jobs SET status = 'queued', finished_at_ms = NULL WHERE id = ?").run(jobId);
+        this.recount(jobId);
+      }
+      return result.changes;
+    })();
+
+    const job = this.getJob(jobId);
+    return job ? { job, retriedCount } : null;
+  }
+
   public deleteFailedItem(jobId: string, itemId: string): StorefrontPriceJobView | null {
     const result = this.database.prepare("DELETE FROM storefront_price_job_items WHERE job_id = ? AND id = ? AND status IN ('failed', 'no_data')").run(jobId, itemId);
     if (result.changes === 0) return null;
@@ -470,7 +495,7 @@ export class StorefrontPriceMonitorService {
     pageSize: number;
     frontPrice: "all" | "available" | "missing";
     difference: "all" | "higher" | "lower" | "equal" | "unavailable";
-    sort: "latest" | "differenceDesc" | "differenceAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
+    sort: "latest" | "differenceDesc" | "differenceAsc" | "discountDesc" | "discountAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
     rubPerCny: number | null;
   }): { items: StorefrontPriceSnapshotView[]; total: number } {
     const pattern = `%${input.search.trim()}%`;
@@ -494,6 +519,8 @@ export class StorefrontPriceMonitorService {
       latest: "captured_at_ms DESC",
       differenceDesc: "(price_difference IS NULL), ABS(price_difference) DESC, captured_at_ms DESC",
       differenceAsc: "(price_difference IS NULL), ABS(price_difference) ASC, captured_at_ms DESC",
+      discountDesc: "(discount_rate IS NULL), discount_rate DESC, captured_at_ms DESC",
+      discountAsc: "(discount_rate IS NULL), discount_rate ASC, captured_at_ms DESC",
       greenDesc: "(green_cny IS NULL), green_cny DESC, captured_at_ms DESC",
       greenAsc: "(green_cny IS NULL), green_cny ASC, captured_at_ms DESC",
       backendDesc: "(backend_cny IS NULL), backend_cny DESC, captured_at_ms DESC",
@@ -506,7 +533,10 @@ export class StorefrontPriceMonitorService {
         SELECT ranked.*, ${greenCny} AS green_cny, ${backendCny} AS backend_cny
         FROM ranked WHERE row_number = 1
       ), priced AS (
-        SELECT latest.*, ROUND(green_cny - backend_cny, 2) AS price_difference FROM latest
+        SELECT latest.*, ROUND(green_cny - backend_cny, 2) AS price_difference,
+          CASE WHEN backend_cny > 0 AND green_cny IS NOT NULL
+            THEN ROUND(ABS(green_cny - backend_cny) * 100.0 / backend_cny, 2) END AS discount_rate
+        FROM latest
       ), filtered AS (SELECT * FROM priced WHERE ${filterSql})`;
     const rateParams = [rate, rate, rate, rate];
     const rows = this.database.prepare(`${cte} SELECT * FROM filtered ORDER BY ${sortSql[input.sort]} LIMIT ? OFFSET ?`)
@@ -536,6 +566,7 @@ export class StorefrontPriceMonitorService {
       greenPrice: row.green_price,
       blackPrice: row.black_price,
       frontCurrencyCode: row.front_currency_code,
+      discountRate: row.discount_rate ?? null,
       capturedAt: new Date(row.captured_at_ms).toISOString(),
     };
   }

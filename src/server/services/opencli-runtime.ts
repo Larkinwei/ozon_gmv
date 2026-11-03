@@ -7,6 +7,14 @@ import { dirname, join } from "node:path";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
 const OPENCLI_VERSION = "2.0.2";
 const DEFAULT_COMMAND_TIMEOUT_MS = 130_000;
+const OPENCLI_VERSION_TIMEOUT_MS = 5_000;
+
+interface OpenCliInvocation {
+  command: string;
+  prefix: string[];
+}
+
+const openCliMajorVersionCache = new Map<string, Promise<number | null>>();
 
 interface OpenCliWireError {
   code?: string;
@@ -42,6 +50,25 @@ interface OpenCliDoctorData {
   issues?: string[];
 }
 
+/** Parses JSON output from OpenCLI 2.x and the plain doctor report used by global OpenCLI 1.x. */
+export function parseOpenCliDoctorOutput(output: string): OpenCliDoctorData {
+  try {
+    return JSON.parse(output) as OpenCliDoctorData;
+  } catch {
+    const cliVersion = output.match(/opencli v([^\s]+)/iu)?.[1];
+    const extensionVersion = output.match(/Extension:\s*connected\s*\(v([^\s)]+)\)/iu)?.[1];
+    const connectedProfiles = output.match(/^\s*[^\r\n]*:\s*connected(?:\s+v[^\s]+)?\s*$/gimu) ?? [];
+    return {
+      ...(cliVersion ? { cliVersion } : {}),
+      daemonRunning: /\[OK\]\s*Daemon:\s*running/iu.test(output),
+      extensionConnected: /\[OK\]\s*Extension:\s*connected/iu.test(output),
+      ...(extensionVersion ? { extensionVersion } : {}),
+      connectivity: { ok: /\[OK\]\s*Connectivity:\s*connected/iu.test(output) },
+      profiles: connectedProfiles.map(() => ({ extensionConnected: true })),
+    };
+  }
+}
+
 /** Resolves the pinned OpenCLI copy installed beside the GMV application. */
 export function bundledOpenCliPath(): string | null {
   try {
@@ -53,16 +80,23 @@ export function bundledOpenCliPath(): string | null {
 
 /** Keeps a global OpenCLI fallback for unpackaged developer environments. */
 export function defaultOpenCliPath(): string {
+  if (process.platform !== "win32") {
+    const globalExecutable = process.env.PATH?.split(":")
+      .map((directory) => join(directory, "opencli"))
+      .find(existsSync);
+    return globalExecutable ?? join(homedir(), ".npm-global", "bin", "opencli");
+  }
   const bundled = bundledOpenCliPath();
   if (bundled) return bundled;
-  if (process.platform !== "win32") return join(homedir(), ".npm-global", "bin", "opencli");
   const located = spawnSync("where.exe", ["opencli.cmd"], { encoding: "utf8", windowsHide: true });
   return located.status === 0 ? located.stdout.split(/\r?\n/u).find(Boolean) ?? "opencli.cmd" : "opencli.cmd";
 }
 
-function openCliInvocation(configuredExecutable: string | null | undefined): { command: string; prefix: string[] } {
-  const bundled = bundledOpenCliPath();
-  if (bundled) return { command: process.execPath, prefix: [bundled] };
+function openCliInvocation(configuredExecutable: string | null | undefined): OpenCliInvocation {
+  if (process.platform === "win32") {
+    const bundled = bundledOpenCliPath();
+    if (bundled) return { command: process.execPath, prefix: [bundled] };
+  }
 
   const executable = configuredExecutable?.trim() || defaultOpenCliPath();
   if (/\.m?js$/iu.test(executable) && existsSync(executable)) {
@@ -78,18 +112,57 @@ function openCliInvocation(configuredExecutable: string | null | undefined): { c
 }
 
 const browserCommands = new Set([
-  "back", "bind", "check", "chrome", "click", "close", "cookies", "download", "eval", "explore", "extract",
-  "fill", "frames", "get", "hover", "keys", "network", "open", "reload", "screenshot", "scroll", "select",
-  "snapshot", "tab", "type", "unbind", "upload", "wait",
+  "analyze", "back", "bind", "check", "chrome", "click", "close", "cookies", "dblclick", "dialog", "download",
+  "eval", "explore", "extract", "fill", "find", "focus", "frames", "get", "hover", "init", "keys", "network",
+  "open", "reload", "screenshot", "scroll", "select", "snapshot", "state", "tab", "type", "unbind", "uncheck",
+  "upload", "verify", "wait",
 ]);
 
-/** Converts the former positional session syntax used by GMV to OpenCLI 2.x arguments. */
-function normalizeArguments(argumentsList: string[]): string[] {
+/** Selects the browser session syntax required by the detected OpenCLI major version. */
+export function normalizeOpenCliArguments(argumentsList: string[], majorVersion: number): string[] {
   if (argumentsList[0] !== "browser" || argumentsList.length < 3 || argumentsList.includes("--session")) return argumentsList;
+  if (majorVersion < 2) return argumentsList;
   const session = argumentsList[1]!;
   const command = argumentsList[2]!;
   if (browserCommands.has(session) || !browserCommands.has(command)) return argumentsList;
   return ["browser", command, ...argumentsList.slice(3), "--session", session];
+}
+
+/** Reads and caches the CLI major version so batch collection does not repeat version probes. */
+function openCliMajorVersion(invocation: OpenCliInvocation): Promise<number | null> {
+  const cacheKey = JSON.stringify([invocation.command, invocation.prefix]);
+  const cached = openCliMajorVersionCache.get(cacheKey);
+  if (cached) return cached;
+
+  const pending = new Promise<number | null>((resolve) => {
+    const child = spawn(invocation.command, [...invocation.prefix, "--version"], {
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const output: Buffer[] = [];
+    let settled = false;
+    const finish = (value: number | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, OPENCLI_VERSION_TIMEOUT_MS);
+    child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => output.push(chunk));
+    child.once("error", () => finish(null));
+    child.once("close", () => {
+      const versionText = Buffer.concat(output).toString("utf8");
+      const major = Number.parseInt(versionText.match(/(?:^|\s)v?(\d+)\.\d+/u)?.[1] ?? "", 10);
+      finish(Number.isInteger(major) ? major : null);
+    });
+  });
+  openCliMajorVersionCache.set(cacheKey, pending);
+  return pending;
 }
 
 function wireEnvelope(output: string): OpenCliWireEnvelope | null {
@@ -116,15 +189,19 @@ function friendlyOpenCliError(error: OpenCliWireError | undefined, fallback: str
   return new Error(details || fallback);
 }
 
-/** Runs the bundled CLI without a command shell and unwraps OpenCLI 2.x JSON output. */
-export function runOpenCli(
+/** Runs the platform-selected CLI without a command shell and unwraps OpenCLI 2.x JSON output. */
+export async function runOpenCli(
   configuredExecutable: string | null | undefined,
   argumentsList: string[],
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<string> {
+  const invocation = openCliInvocation(configuredExecutable);
+  const majorVersion = argumentsList[0] === "browser" ? await openCliMajorVersion(invocation) : null;
+  const normalizedArguments = majorVersion === null
+    ? argumentsList
+    : normalizeOpenCliArguments(argumentsList, majorVersion);
   return new Promise((resolve, reject) => {
-    const invocation = openCliInvocation(configuredExecutable);
-    const child = spawn(invocation.command, [...invocation.prefix, ...normalizeArguments(argumentsList)], {
+    const child = spawn(invocation.command, [...invocation.prefix, ...normalizedArguments], {
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -144,7 +221,7 @@ export function runOpenCli(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      reject(new Error("内置 OpenCLI 无法启动，请重新安装或更新 GMV。"));
+      reject(new Error("OpenCLI 无法启动。Windows 请重新安装或更新 GMV，macOS 请确认已全局安装 OpenCLI。"));
     });
     child.once("close", (code) => {
       if (settled) return;
@@ -170,7 +247,7 @@ export function runOpenCli(
 export async function diagnoseOpenCliBridge(configuredExecutable?: string | null): Promise<OpenCliBridgeStatus> {
   try {
     const output = await runOpenCli(configuredExecutable, ["doctor"], 25_000);
-    const report = JSON.parse(output) as OpenCliDoctorData;
+    const report = parseOpenCliDoctorOutput(output);
     const connectedProfiles = report.profiles?.filter((profile) => profile.extensionConnected !== false).length ?? 0;
     const incompatible = report.issues?.some((issue) => /CLI version incompatible/iu.test(issue)) === true;
     const ready = report.extensionConnected === true && report.connectivity?.ok === true && !incompatible;

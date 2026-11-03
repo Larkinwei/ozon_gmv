@@ -27,7 +27,7 @@ const latestQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   frontPrice: z.enum(["all", "available", "missing"]).default("all"),
   difference: z.enum(["all", "higher", "lower", "equal", "unavailable"]).default("all"),
-  sort: z.enum(["latest", "differenceDesc", "differenceAsc", "greenDesc", "greenAsc", "backendDesc", "backendAsc"]).default("latest"),
+  sort: z.enum(["latest", "differenceDesc", "differenceAsc", "discountDesc", "discountAsc", "greenDesc", "greenAsc", "backendDesc", "backendAsc"]).default("latest"),
 });
 const historyQuerySchema = z.object({ storeId: z.string().uuid(), productId: z.string().trim().min(1).max(100) });
 const jobDetailQuerySchema = z.object({
@@ -110,6 +110,19 @@ export function registerStorefrontPriceRoutes(
     const retried = monitor.retryItem(params.id, params.itemId);
     if (retried) monitor.startCollection(params.id);
     return retried ? retried : reply.code(409).send({ error: "ITEM_NOT_RETRYABLE", message: "仅失败或无前台价格且 SKU 有效的商品可以重新采集" });
+  });
+
+  app.post("/api/operations/storefront-prices/jobs/:id/retry-failed", { preHandler: requireSession }, async (request, reply) => {
+    const { id } = jobIdSchema.parse(request.params);
+    const retried = monitor.retryFailedItems(id);
+    if (!retried) {
+      return reply.code(404).send({ error: "JOB_NOT_FOUND", message: "采集任务不存在" });
+    }
+    if (retried.retriedCount === 0) {
+      return reply.code(409).send({ error: "NO_RETRYABLE_ITEMS", message: "当前任务没有可批量重试的失败商品" });
+    }
+    monitor.startCollection(id);
+    return retried;
   });
 
   app.delete("/api/operations/storefront-prices/jobs/:id/items/:itemId", { preHandler: requireSession }, async (request, reply) => {

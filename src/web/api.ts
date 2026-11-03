@@ -869,6 +869,7 @@ export type StorefrontPriceJobSummary = Omit<StorefrontPriceJob, "items" | "item
 export interface StorefrontPriceSnapshot extends Omit<StorefrontPriceItem, "status" | "error"> {
   greenPrice: string | null;
   blackPrice: string | null;
+  discountRate: number | null;
   capturedAt: string;
 }
 
@@ -939,6 +940,11 @@ export async function retryStorefrontPriceItem(id: string, itemId: string): Prom
   return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}/retry`, { method: "POST" });
 }
 
+/** Requeues every retryable failed or empty-price item in a collection job. */
+export async function retryFailedStorefrontPriceItems(id: string): Promise<{ job: StorefrontPriceJob; retriedCount: number }> {
+  return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/retry-failed`, { method: "POST" });
+}
+
 /** Deletes only a failed or no-price item from a persisted collection job. */
 export async function deleteStorefrontPriceItem(id: string, itemId: string): Promise<StorefrontPriceJob> {
   return apiFetch(`/api/operations/storefront-prices/jobs/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}`, { method: "DELETE" });
@@ -957,7 +963,7 @@ export async function fetchLatestStorefrontPrices(input: {
   pageSize?: number;
   frontPrice?: "all" | "available" | "missing";
   difference?: "all" | "higher" | "lower" | "equal" | "unavailable";
-  sort?: "latest" | "differenceDesc" | "differenceAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
+  sort?: "latest" | "differenceDesc" | "differenceAsc" | "discountDesc" | "discountAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
 }): Promise<{ items: StorefrontPriceSnapshot[]; total: number }> {
   const params = new URLSearchParams({
     storeId: input.storeId,

@@ -14,6 +14,7 @@ import {
   fetchStorefrontPriceHistory,
   fetchStorefrontPriceJob,
   fetchStorefrontPriceJobs,
+  retryFailedStorefrontPriceItems,
   retryStorefrontPriceItem,
   updateStorefrontPriceJob,
   type StorefrontPriceItemStatus,
@@ -25,13 +26,32 @@ import { OrderImagePreview } from "../components/OrderImagePreview";
 const PAGE_SIZE = 20;
 // 在线商品列表在 24 小时内复用页面缓存；手动刷新始终强制重新读取。
 const ONLINE_PRODUCTS_CACHE_MS = 24 * 60 * 60 * 1000;
+const LAST_STORE_KEY = "ozon-gmv:storefront-price-last-store-id";
 type ProductSort = "newest" | "sales30d" | "priceDesc" | "priceAsc";
 type MonitorSection = "products" | "jobs" | "latest";
-type LatestSort = "latest" | "differenceDesc" | "differenceAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
+type LatestSort = "latest" | "differenceDesc" | "differenceAsc" | "discountDesc" | "discountAsc" | "greenDesc" | "greenAsc" | "backendDesc" | "backendAsc";
 const productSortLabels: Record<ProductSort, string> = { newest: "最新上架优先", sales30d: "近30天已同步销量", priceDesc: "后台售价从高到低", priceAsc: "后台售价从低到高" };
 const statusLabels: Record<StorefrontPriceJobStatus, string> = { queued: "排队中", running: "采集中", paused: "已暂停", completed: "已完成", cancelled: "已取消" };
 const itemStatusLabels: Record<StorefrontPriceItemStatus, string> = { queued: "等待中", running: "采集中", success: "已采集", failed: "失败", no_data: "无前台价格", cancelled: "已取消" };
-const latestSortLabels: Record<LatestSort, string> = { latest: "最新采集优先", differenceDesc: "差异金额从高到低", differenceAsc: "差异金额从低到高", greenDesc: "绿标价从高到低", greenAsc: "绿标价从低到高", backendDesc: "后台售价从高到低", backendAsc: "后台售价从低到高" };
+const latestSortLabels: Record<LatestSort, string> = { latest: "最新采集优先", differenceDesc: "差异金额从高到低", differenceAsc: "差异金额从低到高", discountDesc: "折扣率从高到低", discountAsc: "折扣率从低到高", greenDesc: "绿标价从高到低", greenAsc: "绿标价从低到高", backendDesc: "后台售价从高到低", backendAsc: "后台售价从低到高" };
+
+/** Reads the last monitor store from local browser storage without making storage availability a requirement. */
+function readLastStoreId(): string {
+  try {
+    return window.localStorage.getItem(LAST_STORE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** Persists only the selected store ID locally; no credentials or product data are stored. */
+function rememberStoreId(storeId: string): void {
+  try {
+    window.localStorage.setItem(LAST_STORE_KEY, storeId);
+  } catch {
+    // Storage may be disabled by the browser; store selection still works for this page session.
+  }
+}
 
 function amountInCny(value: string | null, currency: string | null, rubPerCny: string | null): number | null {
   if (value === null || !currency) return null;
@@ -54,6 +74,10 @@ function priceDifference(front: string | null, frontCurrency: string | null, bac
   const backendCny = amountInCny(backend, currency, rubPerCny);
   if (frontCny === null || backendCny === null) return "—";
   return money(Math.abs(frontCny - backendCny).toFixed(2), "CNY", rubPerCny);
+}
+
+function formatDiscountRate(rate: number | null): string {
+  return rate === null || !Number.isFinite(rate) ? "—" : `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(rate)}%`;
 }
 
 interface PriceDifferenceProps {
@@ -83,7 +107,7 @@ function publicProductUrl(sku: string): string {
 /** Provides batch collection, latest-price comparison, and per-product history. */
 export default function StorefrontPriceMonitorPage(): React.JSX.Element {
   const queryClient = useQueryClient();
-  const [storeId, setStoreId] = useState("");
+  const [storeId, setStoreId] = useState(readLastStoreId);
   const [section, setSection] = useState<MonitorSection>("products");
   const [search, setSearch] = useState("");
   const [latestSearch, setLatestSearch] = useState("");
@@ -102,13 +126,29 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
   const browserStatusQuery = useQuery({
     queryKey: ["storefront-prices", "browser-status"],
     queryFn: fetchStorefrontPriceBrowserStatus,
+    enabled: false,
     staleTime: 30_000,
     retry: false,
   });
   const stores = (storesQuery.data ?? []).filter((store) => store.enabled && store.platform === "ozon");
   useEffect(() => {
-    if (!stores.some((store) => store.id === storeId)) setStoreId(stores[0]?.id ?? "");
+    if (!stores.length) return;
+    if (stores.some((store) => store.id === storeId)) {
+      rememberStoreId(storeId);
+      return;
+    }
+    const rememberedStoreId = readLastStoreId();
+    const nextStoreId = stores.some((store) => store.id === rememberedStoreId) ? rememberedStoreId : stores[0]!.id;
+    setStoreId(nextStoreId);
+    rememberStoreId(nextStoreId);
   }, [storeId, stores]);
+
+  function selectStore(nextStoreId: string): void {
+    setStoreId(nextStoreId);
+    if (nextStoreId) rememberStoreId(nextStoreId);
+    setSelectedProducts([]);
+    setLatestPage(1);
+  }
 
   const productsQuery = useQuery({ queryKey: ["storefront-prices", "products", storeId], queryFn: () => fetchOnlineProducts(storeId, "VISIBLE"), enabled: Boolean(storeId), staleTime: ONLINE_PRODUCTS_CACHE_MS, gcTime: ONLINE_PRODUCTS_CACHE_MS, refetchInterval: ONLINE_PRODUCTS_CACHE_MS });
   const refreshProductsMutation = useMutation({
@@ -195,6 +235,14 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
       await queryClient.invalidateQueries({ queryKey: ["storefront-prices"] });
     },
   });
+  const retryFailedMutation = useMutation({
+    mutationFn: (id: string) => retryFailedStorefrontPriceItems(id),
+    onSuccess: async ({ job }) => {
+      setJobId(job.id);
+      setJobPage(1);
+      await queryClient.invalidateQueries({ queryKey: ["storefront-prices"] });
+    },
+  });
   const deleteItemMutation = useMutation({
     mutationFn: ({ id, itemId }: { id: string; itemId: string }) => deleteStorefrontPriceItem(id, itemId),
     onSuccess: async (updatedJob) => {
@@ -221,16 +269,16 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
     <main className="admin-main storefront-price-page">
       <header className="finance-page-header storefront-price-header">
         <div><p className="eyebrow">STOREFRONT PRICE MONITOR</p><h1>前台价格监控</h1><p>批量查看自有在线商品的绿标价、黑标价，并与 Seller 后台售价对比。系统会识别前台实际币种：卢布按当前汇率换算成人民币，人民币不换算{rubPerCny ? `（¥1 = ₽${rubPerCny}${exchangeRateQuery.data?.effectiveDate ? `，${exchangeRateQuery.data.effectiveDate}` : ""}）` : "（当前汇率不可用时不转换卢布价格）"}；差额以人民币计算。</p></div>
-        <div className="storefront-price-store-select"><label htmlFor="storefront-price-store">目标店铺</label><select id="storefront-price-store" value={storeId} onChange={(event) => { setStoreId(event.target.value); setSelectedProducts([]); setLatestPage(1); }} disabled={stores.length === 0}><option value="">请选择 Ozon 店铺</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></div>
+        <div className="storefront-price-store-select"><label htmlFor="storefront-price-store">目标店铺</label><select id="storefront-price-store" value={storeId} onChange={(event) => selectStore(event.target.value)} disabled={stores.length === 0}><option value="">请选择 Ozon 店铺</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></div>
       </header>
 
       {storesQuery.isError && <div className="storefront-price-alert is-error" role="alert"><AlertCircle size={17} />店铺列表读取失败，请刷新后重试。</div>}
       {stores.length === 0 && !storesQuery.isLoading && <div className="storefront-price-empty">没有已启用的 Ozon 店铺，请先到店铺管理中配置。</div>}
-      <div className={`storefront-price-alert storefront-price-browser-status ${browserStatusQuery.data ? browserStatusQuery.data.ready ? "is-ready" : "is-error" : ""}`} role="status">
+      {(browserStatusQuery.isFetching || browserStatusQuery.data || browserStatusQuery.isError) && <div className={`storefront-price-alert storefront-price-browser-status ${browserStatusQuery.data ? browserStatusQuery.data.ready ? "is-ready" : "is-error" : ""}`} role="status">
         {browserStatusQuery.data?.ready ? <Check size={17} /> : <AlertCircle size={17} />}
-        <span><strong>{browserStatusQuery.isFetching ? "正在检测浏览器连接…" : browserStatusQuery.data?.ready ? "浏览器连接正常" : "浏览器连接未就绪"}</strong><small>{browserStatusQuery.data?.message ?? (browserStatusQuery.isError ? "OpenCLI 检测请求失败，请稍后重试。" : "正在启动内置 OpenCLI 并检测 Chrome 或 Microsoft Edge 扩展。")}</small></span>
+        <span><strong>{browserStatusQuery.isFetching ? "正在检测浏览器连接…" : browserStatusQuery.data?.ready ? "浏览器连接正常" : "浏览器连接未就绪"}</strong><small>{browserStatusQuery.data?.message ?? (browserStatusQuery.isError ? "OpenCLI 检测请求失败，请稍后重试。" : "正在检测 OpenCLI 与 Chrome 或 Microsoft Edge 扩展连接。")}</small></span>
         <button className="secondary-button compact-button" type="button" onClick={() => void browserStatusQuery.refetch()} disabled={browserStatusQuery.isFetching}><RefreshCw size={15} className={browserStatusQuery.isFetching ? "is-spinning" : undefined} />重新检测</button>
-      </div>
+      </div>}
 
       <div className="storefront-price-tabs" role="tablist" aria-label="前台价格监控内容">
         <button type="button" role="tab" aria-selected={section === "products"} className={section === "products" ? "is-active" : ""} onClick={() => setSection("products")}>在线商品{productsQuery.data ? <span>{productsQuery.data.count}</span> : null}</button>
@@ -265,12 +313,13 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
         <div className="finance-panel-heading"><div><p className="eyebrow">COLLECTION JOBS</p><h2 id="storefront-job-title">采集任务</h2></div><span>由本机服务通过 OpenCLI 串行采集；关闭 GMV 页面不停止，Chrome 需保持运行</span></div>
         {(jobsQuery.data?.length ?? 0) > 0 && <label className="storefront-price-job-select">查看任务<select value={jobId} onChange={(event) => { setJobId(event.target.value); setJobPage(1); }}>{jobsQuery.data!.map((item) => <option key={item.id} value={item.id}>{item.storeName} · {statusLabels[item.status]} · {item.completedCount}/{item.totalCount} · {time(item.createdAt)}</option>)}</select></label>}
         {jobsQuery.isLoading ? <div className="storefront-price-empty">正在读取任务…</div> : !jobsQuery.data?.length ? <div className="storefront-price-empty">还没有价格采集任务。</div> : jobQuery.isLoading ? <div className="storefront-price-empty">正在读取任务进度…</div> : job ? <>
-          <div className="storefront-price-job-summary"><span className={`storefront-price-status status-${job.status}`}>{job.status === "completed" ? <Check size={14} /> : job.status === "running" ? <RefreshCw size={14} /> : <Clock3 size={14} />}{statusLabels[job.status]}</span><strong>{job.storeName}</strong><span>{job.completedCount} / {job.totalCount} 完成</span><span>成功 {job.successCount} · 失败 {job.failedCount} · 无前台价格 {job.noDataCount}</span>{job.status === "running" && <button className="secondary-button" type="button" onClick={() => actionMutation.mutate({ id: job.id, action: "pause" })}><Pause size={15} />暂停</button>}{job.status === "paused" && <button className="secondary-button" type="button" onClick={() => actionMutation.mutate({ id: job.id, action: "resume" })}><Play size={15} />继续</button>}{["queued", "running", "paused"].includes(job.status) && <button className="secondary-button is-danger" type="button" onClick={() => actionMutation.mutate({ id: job.id, action: "cancel" })}><Square size={14} />取消</button>}</div>
+          <div className="storefront-price-job-summary"><span className={`storefront-price-status status-${job.status}`}>{job.status === "completed" ? <Check size={14} /> : job.status === "running" ? <RefreshCw size={14} /> : <Clock3 size={14} />}{statusLabels[job.status]}</span><strong>{job.storeName}</strong><span>{job.completedCount} / {job.totalCount} 完成</span><span>成功 {job.successCount} · 失败 {job.failedCount} · 无前台价格 {job.noDataCount}</span>{job.failedCount + job.noDataCount > 0 && <button className="secondary-button" type="button" onClick={() => retryFailedMutation.mutate(job.id)} disabled={retryFailedMutation.isPending}><RefreshCw size={15} className={retryFailedMutation.isPending ? "is-spinning" : undefined} />{retryFailedMutation.isPending ? "正在批量重试…" : `批量重试（${job.failedCount + job.noDataCount}）`}</button>}{job.status === "running" && <button className="secondary-button" type="button" onClick={() => actionMutation.mutate({ id: job.id, action: "pause" })}><Pause size={15} />暂停</button>}{job.status === "paused" && <button className="secondary-button" type="button" onClick={() => actionMutation.mutate({ id: job.id, action: "resume" })}><Play size={15} />继续</button>}{["queued", "running", "paused"].includes(job.status) && <button className="secondary-button is-danger" type="button" onClick={() => actionMutation.mutate({ id: job.id, action: "cancel" })}><Square size={14} />取消</button>}</div>
           <div className="storefront-price-progress" role="progressbar" aria-valuenow={job.completedCount} aria-valuemin={0} aria-valuemax={job.totalCount}><span style={{ width: `${job.totalCount ? Math.round(100 * job.completedCount / job.totalCount) : 0}%` }} /></div>
           <div className="storefront-price-table-wrap"><table className="storefront-price-table"><thead><tr><th>商品 / SKU</th><th>采集状态</th><th>绿标价（¥）</th><th>黑标价（¥）</th><th>后台售价（¥）</th><th>价格差异</th><th>结果说明</th><th>操作</th></tr></thead><tbody>{job.items.map((item) => <tr key={item.id}><td><span className="storefront-price-name">{item.productName || item.offerId}</span><small>{item.sku || "SKU 无法确认"} · {item.offerId}</small></td><td><span className={`storefront-price-item-status item-${item.status}`}>{itemStatusLabels[item.status]}</span></td><td><span className="storefront-price-value is-green">{money(item.greenPrice, item.frontCurrencyCode, rubPerCny)}</span></td><td><span className="storefront-price-value is-black-label">{money(item.blackPrice, item.frontCurrencyCode, rubPerCny)}</span></td><td><span className="storefront-price-value is-backend">{money(item.backendPrice, item.currencyCode, rubPerCny)}</span></td><td><PriceDifference front={item.greenPrice} frontCurrency={item.frontCurrencyCode} backend={item.backendPrice} currency={item.currencyCode} rubPerCny={rubPerCny} /></td><td className="storefront-price-error-cell">{item.error || "—"}</td><td>{["failed", "no_data"].includes(item.status) && <div className="storefront-price-row-actions"><button className="secondary-button" type="button" onClick={() => retryMutation.mutate({ id: job.id, itemId: item.id })} disabled={retryMutation.isPending} aria-label={`重试 ${item.productName || item.sku}`}><RefreshCw size={14} />重试</button><button className="secondary-button is-danger" type="button" onClick={() => deleteItemMutation.mutate({ id: job.id, itemId: item.id })} disabled={deleteItemMutation.isPending} aria-label={`删除 ${item.productName || item.sku}`}><Trash2 size={14} />删除</button></div>}</td></tr>)}</tbody></table></div>
           {job.itemTotal > PAGE_SIZE && <div className="storefront-price-pagination"><button className="secondary-button" type="button" onClick={() => setJobPage((page) => Math.max(1, page - 1))} disabled={jobPage <= 1}><ChevronLeft size={16} />上一页</button><span>{jobPage} / {Math.ceil(job.itemTotal / PAGE_SIZE)}</span><button className="secondary-button" type="button" onClick={() => setJobPage((page) => Math.min(Math.ceil(job.itemTotal / PAGE_SIZE), page + 1))} disabled={jobPage >= Math.ceil(job.itemTotal / PAGE_SIZE)}>下一页<ChevronRight size={16} /></button></div>}
         </> : <div className="storefront-price-empty is-error">任务详情读取失败：{jobQuery.error instanceof Error ? jobQuery.error.message : "请重试"}</div>}
         {actionMutation.isError && <p className="storefront-price-error" role="alert">任务操作失败：{actionMutation.error instanceof Error ? actionMutation.error.message : "请稍后重试"}</p>}
+        {retryFailedMutation.isError && <p className="storefront-price-error" role="alert">批量重试失败：{retryFailedMutation.error instanceof Error ? retryFailedMutation.error.message : "请稍后重试"}</p>}
       </section>}
 
       {section === "latest" && <section className="storefront-price-panel" role="tabpanel" aria-labelledby="storefront-latest-title">
@@ -281,7 +330,7 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
           <label className="storefront-price-sort">价格差异<select aria-label="价格差异筛选" value={differenceFilter} onChange={(event) => { setDifferenceFilter(event.target.value as typeof differenceFilter); setLatestPage(1); }}><option value="all">全部</option><option value="higher">绿标高于后台</option><option value="lower">绿标低于后台</option><option value="equal">绿标等于后台</option><option value="unavailable">无法比较</option></select></label>
           <label className="storefront-price-sort">排序<select aria-label="采集结果排序" value={latestSort} onChange={(event) => { setLatestSort(event.target.value as LatestSort); setLatestPage(1); }}>{Object.entries(latestSortLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         </div>
-        {latestQuery.isLoading ? <div className="storefront-price-empty">正在读取历史快照…</div> : latestQuery.isError ? <div className="storefront-price-empty is-error">历史快照读取失败。</div> : !latest?.items.length ? <div className="storefront-price-empty">采集成功后，商品最新价格会显示在这里。</div> : <div className="storefront-price-table-wrap"><table className="storefront-price-table"><thead><tr><th>商品 / SKU</th><th>绿标价（¥）</th><th>黑标价（¥）</th><th>Seller 后台售价（¥）</th><th>价格差异</th><th>采集时间</th><th>历史</th></tr></thead><tbody>{latest.items.map((item) => <tr key={item.id}><td><div className="storefront-price-product"><OrderImagePreview src={item.imageUrl} alt={`${item.productName || item.offerId} 商品图`} fallbackLabel="商品暂无主图" width={44} height={44} className="storefront-price-product-image" placeholderClassName="storefront-price-product-placeholder" objectFit="contain" /><span><b>{item.productName || item.offerId}</b><small>{item.sku ? <a className="storefront-price-sku-link" href={publicProductUrl(item.sku)} target="_blank" rel="noreferrer" title="打开 Ozon 前台商品页">{item.sku}<ExternalLink size={11} /></a> : "无有效 SKU"} · {item.offerId}</small></span></div></td><td><span className="storefront-price-value is-green">{money(item.greenPrice, item.frontCurrencyCode, rubPerCny)}</span></td><td><span className="storefront-price-value is-black-label">{money(item.blackPrice, item.frontCurrencyCode, rubPerCny)}</span></td><td><span className="storefront-price-value is-backend">{money(item.backendPrice, item.currencyCode, rubPerCny)}</span></td><td><PriceDifference front={item.greenPrice} frontCurrency={item.frontCurrencyCode} backend={item.backendPrice} currency={item.currencyCode} rubPerCny={rubPerCny} /></td><td>{time(item.capturedAt)}</td><td><button className="secondary-button" type="button" onClick={() => setHistoryProductId(item.productId)}>查看历史</button></td></tr>)}</tbody></table></div>}
+        {latestQuery.isLoading ? <div className="storefront-price-empty">正在读取历史快照…</div> : latestQuery.isError ? <div className="storefront-price-empty is-error">历史快照读取失败。</div> : !latest?.items.length ? <div className="storefront-price-empty">采集成功后，商品最新价格会显示在这里。</div> : <div className="storefront-price-table-wrap storefront-price-latest-table-wrap"><table className="storefront-price-table storefront-price-latest-table"><colgroup><col className="latest-col-product" /><col className="latest-col-price" /><col className="latest-col-price latest-col-black" /><col className="latest-col-price" /><col className="latest-col-difference" /><col className="latest-col-rate" /><col className="latest-col-time" /><col className="latest-col-history" /></colgroup><thead><tr><th>商品 / SKU</th><th>绿标价（¥）</th><th className="latest-col-black">黑标价（¥）</th><th>Seller 后台售价（¥）</th><th>价格差异</th><th>折扣率</th><th>采集时间</th><th>历史</th></tr></thead><tbody>{latest.items.map((item) => <tr key={item.id}><td><div className="storefront-price-product"><OrderImagePreview src={item.imageUrl} alt={`${item.productName || item.offerId} 商品图`} fallbackLabel="商品暂无主图" width={44} height={44} className="storefront-price-product-image" placeholderClassName="storefront-price-product-placeholder" objectFit="contain" /><span><b title={item.productName || item.offerId}>{item.productName || item.offerId}</b><small title={`${item.sku || "无有效 SKU"} · ${item.offerId}`}>{item.sku ? <a className="storefront-price-sku-link" href={publicProductUrl(item.sku)} target="_blank" rel="noreferrer" title="打开 Ozon 前台商品页">{item.sku}<ExternalLink size={11} /></a> : "无有效 SKU"} · {item.offerId}</small></span></div></td><td><span className="storefront-price-value is-green">{money(item.greenPrice, item.frontCurrencyCode, rubPerCny)}</span></td><td className="latest-col-black"><span className="storefront-price-value is-black-label">{money(item.blackPrice, item.frontCurrencyCode, rubPerCny)}</span></td><td><span className="storefront-price-value is-backend">{money(item.backendPrice, item.currencyCode, rubPerCny)}</span></td><td><PriceDifference front={item.greenPrice} frontCurrency={item.frontCurrencyCode} backend={item.backendPrice} currency={item.currencyCode} rubPerCny={rubPerCny} /></td><td><span className={`storefront-price-value ${item.discountRate === null ? "is-muted" : "is-discount"}`}>{formatDiscountRate(item.discountRate)}</span></td><td>{time(item.capturedAt)}</td><td><button className="secondary-button" type="button" onClick={() => setHistoryProductId(item.productId)}>查看历史</button></td></tr>)}</tbody></table></div>}
         {latest && latest.total > PAGE_SIZE && <div className="storefront-price-pagination"><button className="secondary-button" type="button" onClick={() => setLatestPage((page) => Math.max(1, page - 1))} disabled={latestPage <= 1}><ChevronLeft size={16} />上一页</button><span>{latestPage} / {Math.ceil(latest.total / PAGE_SIZE)}</span><button className="secondary-button" type="button" onClick={() => setLatestPage((page) => Math.min(Math.ceil(latest.total / PAGE_SIZE), page + 1))} disabled={latestPage >= Math.ceil(latest.total / PAGE_SIZE)}>下一页<ChevronRight size={16} /></button></div>}
       </section>}
 

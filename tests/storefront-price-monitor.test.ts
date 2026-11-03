@@ -118,6 +118,9 @@ describe("Ozon storefront price monitor", () => {
     expect(service.listLatest({ ...common, difference: "higher", sort: "latest" }).items.map((item) => item.sku)).toEqual(["100000002"]);
     expect(service.listLatest({ ...common, difference: "all", sort: "differenceAsc" }).items.map((item) => item.sku)).toEqual(["100000003", "100000001", "100000002"]);
     expect(service.listLatest({ ...common, difference: "all", sort: "differenceDesc" }).items.map((item) => item.sku)).toEqual(["100000002", "100000001", "100000003"]);
+    expect(service.listLatest({ ...common, difference: "all", sort: "discountDesc" }).items.map((item) => item.sku)).toEqual(["100000002", "100000001", "100000003"]);
+    expect(service.listLatest({ ...common, difference: "all", sort: "discountAsc" }).items.map((item) => item.sku)).toEqual(["100000003", "100000001", "100000002"]);
+    expect(service.listLatest({ ...common, difference: "all", sort: "discountDesc" }).items.map((item) => item.discountRate)).toEqual([20, 10, 0]);
     expect(service.listLatest({ ...common, difference: "all", sort: "greenDesc" }).items.map((item) => item.sku)).toEqual(["100000002", "100000003", "100000001"]);
   });
 
@@ -143,5 +146,31 @@ describe("Ozon storefront price monitor", () => {
     expect(service.listQueuedItems(job.id)).toEqual([{ id: first.id, sku: "123456789" }]);
     expect(service.deleteFailedItem(job.id, second.id)?.totalCount).toBe(1);
     expect(service.getJob(job.id)?.items[0]).toMatchObject({ id: first.id, status: "queued" });
+  });
+
+  it("retries every failed or empty-price item in one job", () => {
+    const context = createContext();
+    const service = new StorefrontPriceMonitorService(context.database);
+    const job = service.createJob({ id: "store-1", name: "店铺 A" }, ["123456789", "987654321", "456789123"].map((sku, index) => ({
+      productId: `product-${index}`,
+      sku,
+      offerId: `offer-${index}`,
+      productName: `商品 ${index}`,
+      imageUrl: null,
+      backendPrice: "100.00",
+      currencyCode: "RUB",
+    })));
+    service.recordBrowserResult(job.id, job.items[0]!.id, null, "OpenCLI 采集失败");
+    service.recordBrowserResult(job.id, job.items[1]!.id, { sku: "987654321", greenPrice: null, blackPrice: null }, null);
+    service.recordBrowserResult(job.id, job.items[2]!.id, { sku: "456789123", greenPrice: "90.00", blackPrice: "100.00", currencyCode: "RUB" }, null);
+
+    const retried = service.retryFailedItems(job.id);
+
+    expect(retried?.retriedCount).toBe(2);
+    expect(service.listQueuedItems(job.id)).toEqual([
+      { id: job.items[0]!.id, sku: "123456789" },
+      { id: job.items[1]!.id, sku: "987654321" },
+    ]);
+    expect(service.getJob(job.id)?.items.find((item) => item.id === job.items[2]!.id)?.status).toBe("success");
   });
 });

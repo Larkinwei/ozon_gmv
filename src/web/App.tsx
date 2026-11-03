@@ -124,7 +124,7 @@ export function App(): React.JSX.Element {
         <Route path="/wallboard" element={<DashboardPage wallboard />} />
         <Route path="/stores" element={<StoresPage />} />
         <Route path="/operations" element={<OperationsCenterLayout />}>
-          <Route index element={<Navigate to="selection" replace />} />
+          <Route index element={<Navigate to="storefront-prices" replace />} />
           <Route path="selection" element={<SelectionPage />} />
           <Route path="storefront-prices" element={<StorefrontPriceMonitorPage />} />
           <Route path="publish" element={<Navigate to="/operations/publish/collection" replace />} />
