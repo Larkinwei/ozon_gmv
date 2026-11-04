@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PerformanceAdsService } from "../src/server/services/performance-ads-service";
 import { SettingsRepository } from "../src/server/db/settings-repository";
 import { StoresRepository } from "../src/server/db/stores-repository";
+import type { PerformanceAdsCampaign, PerformanceAdsDiagnostic } from "../src/shared/contracts";
 import { createTestDatabase } from "./test-context";
 
 describe("PerformanceAdsService", () => {
@@ -69,12 +70,27 @@ describe("PerformanceAdsService", () => {
     expect(requests.some((request) => request.path === "/api/client/statistics/products/sku" && request.method === "POST")).toBe(true);
     expect(context.database.prepare("SELECT COUNT(*) AS count FROM performance_ad_daily_metrics WHERE store_id = ?").get("store-1")).toMatchObject({ count: 2 });
 
-    const report = await service.list("store-1", "2026-11-02", "2026-11-02") as {
-      campaigns: Array<{ campaignId?: string; state?: string }>;
-    };
+    context.database.prepare(`INSERT INTO storefront_price_snapshots
+      (id, store_id, product_id, sku, offer_id, product_name, image_url, backend_price, green_price, black_price, currency_code, captured_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("snapshot-1", "store-1", "product-1", "776655", "SKU-1", "测试商品", "https://img.example/item.jpg", "100", null, null, "RUB", Date.now());
+
+    const report = await service.list("store-1", "2026-11-01", "2026-11-03");
     expect(report.campaigns[0]).toMatchObject({
       campaignId: "123",
       state: "campaign_state_running",
+    });
+    expect(report.totals.expense).toBe("3.50");
+    expect(report.trend).toHaveLength(3);
+    expect(report.trend.map((point) => point.date)).toEqual(["2026-11-01", "2026-11-02", "2026-11-03"]);
+    expect(report.trend[0]).toMatchObject({ expense: "0.00", clicks: 0, orders: 0 });
+    expect(report.trend[1]).toMatchObject({ expense: "3.50", sales: "20.00" });
+    expect(report.skus[0]?.product).toMatchObject({
+      ozonSku: "776655",
+      offerId: "SKU-1",
+      name: "测试商品",
+      imageUrl: "https://img.example/item.jpg",
+      productUrl: "https://www.ozon.ru/product/776655/",
     });
 
     await service.sync("store-1", "2026-11-02", "2026-11-02");
@@ -111,5 +127,45 @@ describe("PerformanceAdsService", () => {
     await service.save("store-1", { clientId: "client-id", clientSecret: "secret-value" });
     await expect(service.test("store-1")).resolves.toMatchObject({ ok: true });
     expect(campaignAttempts).toBe(2);
+    service.stop();
+  });
+
+  it("diagnoses only running campaigns and includes their state in each card", () => {
+    const context = createTestDatabase();
+    contexts.push(context);
+    const service = new PerformanceAdsService(
+      context.config,
+      context.database,
+      new StoresRepository(context.database),
+      { createFetch: () => fetch } as never,
+      new SettingsRepository(context.database),
+    );
+    const campaign = (campaignId: string, state: string): PerformanceAdsCampaign => ({
+      campaignId,
+      name: `活动 ${campaignId}`,
+      state,
+      type: "",
+      impressions: 2_000,
+      clicks: 20,
+      orders: 0,
+      expense: "200.00",
+      sales: "0.00",
+      ctr: 1,
+      avgCpc: 10,
+      drr: null,
+    });
+    const buildDiagnostics = (service as unknown as {
+      buildDiagnostics(campaigns: PerformanceAdsCampaign[]): PerformanceAdsDiagnostic[];
+    }).buildDiagnostics.bind(service);
+
+    const diagnostics = buildDiagnostics([
+      campaign("running", "campaign_state_running"),
+      campaign("archived", "campaign_state_archived"),
+    ]);
+
+    expect(diagnostics.length).toBeGreaterThan(0);
+    expect(diagnostics.every((item) => item.campaignId === "running")).toBe(true);
+    expect(diagnostics.every((item) => item.campaignState === "campaign_state_running")).toBe(true);
+    service.stop();
   });
 });

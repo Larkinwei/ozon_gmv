@@ -1763,3 +1763,63 @@ export interface AiRelayStatusView {
   available: boolean;
   modelAlias: string;
 }
+
+export interface PerformanceAdsMetric {
+  impressions: number;
+  clicks: number;
+  orders: number;
+  expense: string;
+  sales: string;
+  ctr: number;
+  avgCpc: number;
+  drr: number | null;
+}
+
+export interface PerformanceAdsCampaign extends PerformanceAdsMetric {
+  campaignId: string;
+  name: string;
+  state: string;
+  type: string;
+}
+
+export interface PerformanceAdsSkuProduct {
+  ozonSku: string | null;
+  offerId: string | null;
+  name: string | null;
+  imageUrl: string | null;
+  productUrl: string | null;
+}
+
+export interface PerformanceAdsSku extends PerformanceAdsMetric {
+  sku: string;
+  campaignId: string;
+  campaignName: string;
+  product: PerformanceAdsSkuProduct;
+}
+
+export interface PerformanceAdsTrendPoint extends PerformanceAdsMetric {
+  date: string;
+}
+
+export interface PerformanceAdsDiagnostic {
+  id: string;
+  severity: "warning" | "info";
+  kind: "no_orders" | "high_drr" | "low_ctr" | "high_cpc" | "no_delivery";
+  campaignId: string;
+  campaignName: string;
+  campaignState: string;
+  title: string;
+  detail: string;
+  recommendation: string;
+}
+
+export interface PerformanceAdsDataView {
+  campaigns: PerformanceAdsCampaign[];
+  skus: PerformanceAdsSku[];
+  totals: PerformanceAdsMetric;
+  trend: PerformanceAdsTrendPoint[];
+  diagnostics: PerformanceAdsDiagnostic[];
+  from: string;
+  to: string;
+  skuHistoryLimited: boolean;
+}

@@ -78,6 +78,7 @@ import type {
   AiRelayStatusView,
   AiRelaySettingsView,
   AiRelayTestResult,
+  PerformanceAdsDataView,
   AiProductSourceView,
   FinanceExceptionView,
   FinanceCoverageView,
@@ -907,14 +908,7 @@ export interface PerformanceAdsConfig {
   initialBackfillDone: boolean;
 }
 
-export interface PerformanceAdsData {
-  campaigns: Array<Record<string, unknown>>;
-  skus: Array<Record<string, unknown>>;
-  totals: Record<string, unknown>;
-  from: string;
-  to: string;
-  skuHistoryLimited: boolean;
-}
+export type PerformanceAdsData = PerformanceAdsDataView;
 
 /** Reads the per-store Performance API credential state without returning secrets. */
 export function fetchPerformanceAdsConfig(storeId: string): Promise<PerformanceAdsConfig> {
@@ -942,8 +936,8 @@ export function syncPerformanceAds(storeId: string, from: string, to: string): P
 }
 
 /** Loads campaign and SKU report rows attributed by Ozon for the selected report dates. */
-export function fetchPerformanceAdsData(storeId: string, from: string, to: string, state = ""): Promise<PerformanceAdsData> {
-  const params = new URLSearchParams({ from, to, state });
+export function fetchPerformanceAdsData(storeId: string, from: string, to: string, state = "", campaignId = ""): Promise<PerformanceAdsData> {
+  const params = new URLSearchParams({ from, to, state, campaignId });
   return apiFetch(`/api/operations/ads/${encodeURIComponent(storeId)}/data?${params}`);
 }
 

@@ -6,9 +6,17 @@ import type { StoreRecord, StoresRepository } from "../db/stores-repository";
 import type { ProxySettingsService } from "./proxy-settings-service";
 import { decryptSecret, encryptSecret } from "../security/encryption";
 import { SettingsRepository } from "../db/settings-repository";
+import type {
+  PerformanceAdsCampaign,
+  PerformanceAdsDataView,
+  PerformanceAdsDiagnostic,
+  PerformanceAdsMetric,
+  PerformanceAdsSku,
+  PerformanceAdsTrendPoint,
+} from "../../shared/contracts";
 
 const API_BASE = "https://api-performance.ozon.ru";
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
 const REQUEST_GAP_MS = 750;
 const RATE_LIMIT_RETRY_COUNT = 4;
@@ -40,6 +48,14 @@ interface Credentials {
 interface TokenCache {
   token: string;
   expiresAt: number;
+}
+
+interface MetricTotals {
+  impressions: number;
+  clicks: number;
+  orders: number;
+  expense: number;
+  sales: number;
 }
 
 function settingKey(storeId: string, field: "client_id" | "client_secret"): string {
@@ -178,35 +194,60 @@ export class PerformanceAdsService {
     return { accepted: true, message: "已在后台开始首次 30 天广告报表同步" };
   }
 
-  public async list(storeId: string, from: string, to: string, state?: string): Promise<Record<string, unknown>> {
+  /** Reads persisted campaign and SKU reports and enriches exact local product matches. */
+  public async list(storeId: string, from: string, to: string, state?: string, campaignId?: string): Promise<PerformanceAdsDataView> {
     await this.requireStore(storeId);
     this.validateDates(from, to);
-    const campaigns = this.database.prepare(`SELECT c.*, c.campaign_id AS campaignId,
+    const campaigns = this.database.prepare(`SELECT c.*, c.campaign_id AS campaignId, c.campaign_type AS type,
       COALESCE(SUM(CAST(m.expense AS REAL)), 0) AS expense,
       COALESCE(SUM(CAST(m.sales AS REAL)), 0) AS sales, COALESCE(SUM(m.impressions), 0) AS impressions,
       COALESCE(SUM(m.clicks), 0) AS clicks, COALESCE(SUM(m.orders), 0) AS orders
       FROM performance_ad_campaigns c LEFT JOIN performance_ad_daily_metrics m
       ON m.store_id = c.store_id AND m.campaign_id = c.campaign_id AND m.metric_date BETWEEN ? AND ? AND m.sku = ''
       WHERE c.store_id = ? AND (? = '' OR c.state = ?) GROUP BY c.store_id, c.campaign_id ORDER BY expense DESC`).all(from, to, storeId, state ?? "", state ?? "") as Array<Record<string, unknown>>;
-    const skus = this.database.prepare(`SELECT m.sku, m.campaign_id AS campaignId, c.name AS campaignName,
+    const skuQuery = `SELECT m.sku, m.campaign_id AS campaignId, c.name AS campaignName,
       SUM(m.impressions) AS impressions, SUM(m.clicks) AS clicks, SUM(m.orders) AS orders,
       SUM(CAST(m.expense AS REAL)) AS expense, SUM(CAST(m.sales AS REAL)) AS sales
       FROM performance_ad_daily_metrics m LEFT JOIN performance_ad_campaigns c
       ON c.store_id = m.store_id AND c.campaign_id = m.campaign_id
-      WHERE m.store_id = ? AND m.metric_date BETWEEN ? AND ? AND m.sku <> ''
-      GROUP BY m.sku, m.campaign_id ORDER BY expense DESC`).all(storeId, from, to) as Array<Record<string, unknown>>;
-    const totals = campaigns.reduce<{ impressions: number; clicks: number; orders: number; expense: number; sales: number }>((sum, row) => ({
+      WHERE m.store_id = ? AND m.metric_date BETWEEN ? AND ? AND m.sku <> '' AND (? = '' OR m.campaign_id = ?)
+      GROUP BY m.sku, m.campaign_id ORDER BY expense DESC`;
+    const skus = this.database.prepare(skuQuery).all(storeId, from, to, campaignId ?? "", campaignId ?? "") as Array<Record<string, unknown>>;
+    const totals = campaigns.reduce<MetricTotals>((sum, row) => ({
       impressions: sum.impressions + Number(row.impressions), clicks: sum.clicks + Number(row.clicks),
       orders: sum.orders + Number(row.orders), expense: sum.expense + Number(row.expense), sales: sum.sales + Number(row.sales),
     }), { impressions: 0, clicks: 0, orders: 0, expense: 0, sales: 0 });
+    const campaignRows = campaigns.map((row): PerformanceAdsCampaign => ({
+      ...this.formatMetricRow(row),
+      campaignId: String(row.campaignId),
+      name: String(row.name ?? "未命名活动"),
+      state: String(row.state ?? "unknown"),
+      type: String(row.type ?? ""),
+    }));
+    const trendRows = this.database.prepare(`SELECT metric_date AS date,
+      SUM(CAST(expense AS REAL)) AS expense, SUM(CAST(sales AS REAL)) AS sales,
+      SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(orders) AS orders
+      FROM performance_ad_daily_metrics WHERE store_id = ? AND metric_date BETWEEN ? AND ? AND sku = ''
+      AND (? = '' OR campaign_id = ?) GROUP BY metric_date ORDER BY metric_date`).all(storeId, from, to, campaignId ?? "", campaignId ?? "") as Array<Record<string, unknown>>;
+    const trendByDate = new Map(trendRows.map((row) => [String(row.date), row]));
+    const trend: PerformanceAdsTrendPoint[] = [];
+    for (let date = from; date <= to; date = this.nextDate(date)) {
+      const row = trendByDate.get(date) ?? {};
+      trend.push({ ...this.formatMetricRow({ ...row, date }), date });
+    }
+    const diagnostics = this.buildDiagnostics(campaignRows);
+    const enrichedSkus = this.enrichSkuRows(storeId, skus);
     return {
-      campaigns: campaigns.map((row) => this.formatMetricRow(row)),
-      skus: skus.map((row) => this.formatMetricRow(row)), totals: this.formatMetricRow(totals),
+      campaigns: campaignRows,
+      skus: enrichedSkus,
+      totals: this.formatMetricRow(totals),
+      trend,
+      diagnostics,
       from, to, skuHistoryLimited: from < this.yesterday(),
     };
   }
 
-  /** Starts 30-minute recent-data refreshes and a one-time 30-day backfill for configured stores. */
+  /** Starts hourly recent-data refreshes and a one-time 30-day backfill for configured stores. */
   public start(): void {
     if (this.timer) return;
     void this.syncConfiguredStores();
@@ -389,10 +430,121 @@ export class PerformanceAdsService {
       .run(storeId, status, started, finished, error, Number(complete));
   }
 
-  private formatMetricRow(row: Record<string, unknown>): Record<string, unknown> {
+  /** Enriches report values only through exact identifiers scoped to the selected store. */
+  private enrichSkuRows(storeId: string, rows: Array<Record<string, unknown>>): PerformanceAdsSku[] {
+    if (!rows.length) return [];
+    const keys = [...new Set(rows.map((row) => String(row.sku ?? "")).filter(Boolean))];
+    type ProductInfo = { sku: string | null; offerId: string | null; name: string | null; imageUrl: string | null };
+    const bySku = new Map<string, ProductInfo>();
+    const byOfferId = new Map<string, ProductInfo>();
+    const index = (map: Map<string, ProductInfo>, key: unknown, value: ProductInfo): void => {
+      const normalized = String(key ?? "");
+      if (!normalized) return;
+      const current = map.get(normalized) ?? { sku: null, offerId: null, name: null, imageUrl: null };
+      map.set(normalized, {
+        sku: current.sku ?? value.sku,
+        offerId: current.offerId ?? value.offerId,
+        name: current.name ?? value.name,
+        imageUrl: current.imageUrl ?? value.imageUrl,
+      });
+    };
+    // Keep IN clauses bounded for stores with large SKU reports.
+    for (let offset = 0; offset < keys.length; offset += 200) {
+      const batch = keys.slice(offset, offset + 200);
+      const placeholders = batch.map(() => "?").join(",");
+      const snapshots = this.database.prepare(`SELECT sku, offer_id AS offerId, product_name AS name, image_url AS imageUrl
+        FROM storefront_price_snapshots WHERE store_id = ? AND (sku IN (${placeholders}) OR offer_id IN (${placeholders}))
+        ORDER BY captured_at_ms DESC`).all(storeId, ...batch, ...batch) as Array<Record<string, unknown>>;
+      const images = this.database.prepare(`SELECT sku, offer_id AS offerId, primary_image_url AS imageUrl
+        FROM product_images WHERE store_id = ? AND (sku IN (${placeholders}) OR offer_id IN (${placeholders}))
+        ORDER BY refreshed_at_ms DESC`).all(storeId, ...batch, ...batch) as Array<Record<string, unknown>>;
+      const orderProducts = this.database.prepare(`SELECT i.sku, i.offer_id AS offerId, i.name
+        FROM posting_items i JOIN postings p ON p.id = i.posting_id
+        WHERE p.store_id = ? AND (i.sku IN (${placeholders}) OR i.offer_id IN (${placeholders}))
+        ORDER BY p.order_at_ms DESC`).all(storeId, ...batch, ...batch) as Array<Record<string, unknown>>;
+      for (const row of [...snapshots, ...images, ...orderProducts]) {
+        const value = {
+          sku: row.sku ? String(row.sku) : null,
+          offerId: row.offerId ? String(row.offerId) : null,
+          name: row.name ? String(row.name) : null,
+          imageUrl: row.imageUrl ? String(row.imageUrl) : null,
+        };
+        index(bySku, row.sku, value);
+        index(byOfferId, row.offerId, value);
+      }
+    }
+    return rows.map((row): PerformanceAdsSku => {
+      const reportSku = String(row.sku ?? "");
+      const match = bySku.get(reportSku) ?? byOfferId.get(reportSku);
+      const ozonSku = match?.sku ?? (/^\d+$/.test(reportSku) ? reportSku : null);
+      return {
+        ...this.formatMetricRow(row),
+        sku: reportSku,
+        campaignId: String(row.campaignId ?? ""),
+        campaignName: String(row.campaignName ?? row.campaignId ?? ""),
+        product: {
+          ozonSku,
+          offerId: match?.offerId ?? (!/^\d+$/.test(reportSku) ? reportSku : null),
+          name: match?.name ?? null,
+          imageUrl: match?.imageUrl ?? null,
+          productUrl: ozonSku ? `https://www.ozon.ru/product/${encodeURIComponent(ozonSku)}/` : null,
+        },
+      };
+    });
+  }
+
+  /** Produces actionable diagnostics only for running campaigns that operators can still adjust. */
+  private buildDiagnostics(campaigns: PerformanceAdsCampaign[]): PerformanceAdsDiagnostic[] {
+    const runningCampaigns = campaigns.filter((row) => row.state === "campaign_state_running");
+    const validDrr = runningCampaigns.filter((row) => row.orders > 0 && row.sales !== "0.00").map((row) => row.drr).filter((value): value is number => value !== null && Number.isFinite(value));
+    const validCtr = runningCampaigns.filter((row) => row.impressions > 0).map((row) => row.ctr).filter(Number.isFinite);
+    const validCpc = runningCampaigns.filter((row) => row.clicks > 0).map((row) => row.avgCpc).filter(Number.isFinite);
+    const median = (values: number[]): number => {
+      if (!values.length) return 0;
+      const ordered = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(ordered.length / 2);
+      return ordered.length % 2 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2;
+    };
+    const drrLimit = Math.max(30, median(validDrr) * 1.5);
+    const ctrLimit = Math.min(0.5, median(validCtr) * 0.5);
+    const cpcLimit = median(validCpc) * 1.5;
+    const diagnostics: PerformanceAdsDiagnostic[] = [];
+    const add = (campaign: PerformanceAdsCampaign, kind: PerformanceAdsDiagnostic["kind"], title: string, detail: string, recommendation: string): void => {
+      diagnostics.push({ id: `${campaign.campaignId}:${kind}`, severity: kind === "no_delivery" ? "info" : "warning", kind,
+        campaignId: campaign.campaignId, campaignName: campaign.name, campaignState: campaign.state, title, detail, recommendation });
+    };
+    for (const campaign of runningCampaigns) {
+      const expense = Number(campaign.expense);
+      if (expense > 0 && campaign.clicks >= 10 && campaign.orders === 0) {
+        add(campaign, "no_orders", "有点击但无归因订单", `消耗 ${campaign.expense} ₽，点击 ${campaign.clicks} 次，归因订单为 0。`, "检查商品页转化、库存、价格及归因延迟。");
+      }
+      if (campaign.drr !== null && campaign.drr > drrLimit) {
+        add(campaign, "high_drr", "DRR 偏高", `当前 DRR ${campaign.drr.toFixed(2)}%，诊断阈值 ${drrLimit.toFixed(2)}%。`, "检查广告成本与归因销售额，评估投放商品和出价。");
+      }
+      if (campaign.impressions >= 1_000 && campaign.ctr < ctrLimit) {
+        add(campaign, "low_ctr", "点击率偏低", `曝光 ${campaign.impressions} 次，CTR ${campaign.ctr.toFixed(2)}%，诊断阈值 ${ctrLimit.toFixed(2)}%。`, "检查主图、标题、价格和受众匹配度。");
+      }
+      if (campaign.clicks >= 10 && expense >= 100 && campaign.avgCpc > cpcLimit) {
+        add(campaign, "high_cpc", "平均点击费用偏高", `平均 CPC ${campaign.avgCpc.toFixed(2)} ₽，店铺中位值 ${median(validCpc).toFixed(2)} ₽。`, "检查竞价策略和流量竞争情况。");
+      }
+      if (campaign.impressions === 0) {
+        add(campaign, "no_delivery", "投放中但没有曝光", "活动状态为投放中，但所选日期范围内曝光为 0。", "检查预算、出价、商品审核状态和报表同步时间。");
+      }
+    }
+    return diagnostics;
+  }
+
+  /** Advances an ISO report date by one calendar day without local-time drift. */
+  private nextDate(date: string): string {
+    const value = new Date(`${date}T00:00:00.000Z`);
+    value.setUTCDate(value.getUTCDate() + 1);
+    return value.toISOString().slice(0, 10);
+  }
+
+  private formatMetricRow(row: Record<string, unknown> | MetricTotals): PerformanceAdsMetric {
     const impressions = Number(row.impressions ?? 0), clicks = Number(row.clicks ?? 0);
     const expense = Number(row.expense ?? 0), sales = Number(row.sales ?? 0);
-    return { ...row, expense: expense.toFixed(2), sales: sales.toFixed(2), ctr: impressions ? clicks / impressions * 100 : 0,
+    return { impressions, clicks, orders: Number(row.orders ?? 0), expense: expense.toFixed(2), sales: sales.toFixed(2), ctr: impressions ? clicks / impressions * 100 : 0,
       avgCpc: clicks ? expense / clicks : 0, drr: sales ? expense / sales * 100 : null };
   }
 

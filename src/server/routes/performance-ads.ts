@@ -21,7 +21,7 @@ export function registerPerformanceAdsRoutes(app: FastifyInstance, service: Perf
     return service.sync((request.params as { storeId: string }).storeId, from, to);
   });
   app.get("/api/operations/ads/:storeId/data", { preHandler: requireSession }, async (request) => {
-    const query = z.object({ from: z.string().date(), to: z.string().date(), state: z.string().optional() }).parse(request.query);
-    return service.list((request.params as { storeId: string }).storeId, query.from, query.to, query.state);
+    const query = z.object({ from: z.string().date(), to: z.string().date(), state: z.string().optional(), campaignId: z.string().optional() }).parse(request.query);
+    return service.list((request.params as { storeId: string }).storeId, query.from, query.to, query.state, query.campaignId);
   });
 }

@@ -269,7 +269,7 @@ export default function StorefrontPriceMonitorPage(): React.JSX.Element {
     <main className="admin-main storefront-price-page">
       <header className="finance-page-header storefront-price-header">
         <div><p className="eyebrow">STOREFRONT PRICE MONITOR</p><h1>前台价格监控</h1><p>批量查看自有在线商品的绿标价、黑标价，并与 Seller 后台售价对比。系统会识别前台实际币种：卢布按当前汇率换算成人民币，人民币不换算{rubPerCny ? `（¥1 = ₽${rubPerCny}${exchangeRateQuery.data?.effectiveDate ? `，${exchangeRateQuery.data.effectiveDate}` : ""}）` : "（当前汇率不可用时不转换卢布价格）"}；差额以人民币计算。</p></div>
-        <div className="storefront-price-store-select"><label htmlFor="storefront-price-store">目标店铺</label><select id="storefront-price-store" value={storeId} onChange={(event) => selectStore(event.target.value)} disabled={stores.length === 0}><option value="">请选择 Ozon 店铺</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></div>
+        <div className="storefront-price-store-select operations-store-select"><label htmlFor="storefront-price-store">目标店铺</label><select id="storefront-price-store" value={storeId} onChange={(event) => selectStore(event.target.value)} disabled={stores.length === 0}><option value="">请选择 Ozon 店铺</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></div>
       </header>
 
       {storesQuery.isError && <div className="storefront-price-alert is-error" role="alert"><AlertCircle size={17} />店铺列表读取失败，请刷新后重试。</div>}
