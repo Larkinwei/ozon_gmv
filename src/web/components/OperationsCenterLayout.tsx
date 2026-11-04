@@ -1,4 +1,4 @@
-import { BarChart3, Bot, Calculator, ChevronDown, CircleDollarSign, ClipboardCheck, ClipboardList, Download, Menu, PackageCheck, PackagePlus, Workflow, Boxes, Share2, Tags } from "lucide-react";
+import { BarChart3, Bot, Calculator, ChevronDown, CircleDollarSign, ClipboardCheck, ClipboardList, Download, Menu, PackageCheck, PackagePlus, Workflow, Boxes, Share2, Tags, Megaphone } from "lucide-react";
 import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
@@ -15,6 +15,7 @@ const operationsNavGroups: Array<{ label: string; items: OperationsNavLink[] }> 
     label: "商品分析",
     items: [
       { label: "前台价格监控", to: "/operations/storefront-prices", icon: Tags },
+      { label: "广告监测", to: "/operations/ads", icon: Megaphone },
       { label: "选品分析", to: "/operations/selection", icon: BarChart3 },
     ],
   },

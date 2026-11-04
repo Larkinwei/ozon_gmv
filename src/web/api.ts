@@ -895,6 +895,58 @@ export interface StorefrontPriceBrowserStatus {
   message: string;
 }
 
+export interface PerformanceAdsConfig {
+  storeId: string;
+  storeName: string;
+  configured: boolean;
+  clientIdMasked: string | null;
+  status: "idle" | "syncing" | "success" | "failed";
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  lastError: string | null;
+  initialBackfillDone: boolean;
+}
+
+export interface PerformanceAdsData {
+  campaigns: Array<Record<string, unknown>>;
+  skus: Array<Record<string, unknown>>;
+  totals: Record<string, unknown>;
+  from: string;
+  to: string;
+  skuHistoryLimited: boolean;
+}
+
+/** Reads the per-store Performance API credential state without returning secrets. */
+export function fetchPerformanceAdsConfig(storeId: string): Promise<PerformanceAdsConfig> {
+  return apiFetch(`/api/operations/ads/${encodeURIComponent(storeId)}/config`);
+}
+
+/** Saves encrypted Performance API credentials for one selected Ozon store. */
+export function savePerformanceAdsConfig(storeId: string, input: { clientId?: string; clientSecret?: string }): Promise<PerformanceAdsConfig> {
+  return apiFetch(`/api/operations/ads/${encodeURIComponent(storeId)}/config`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+/** Validates credentials against the selected store's Performance API account. */
+export function testPerformanceAdsConfig(storeId: string): Promise<{ ok: true; message: string }> {
+  return apiFetch(`/api/operations/ads/${encodeURIComponent(storeId)}/test`, { method: "POST" });
+}
+
+/** Starts the first 30-day report backfill in the background after credentials are verified. */
+export function startPerformanceAdsBackfill(storeId: string): Promise<{ accepted: boolean; message: string }> {
+  return apiFetch(`/api/operations/ads/${encodeURIComponent(storeId)}/backfill`, { method: "POST" });
+}
+
+/** Starts a persisted, idempotent campaign and recent SKU report synchronization. */
+export function syncPerformanceAds(storeId: string, from: string, to: string): Promise<Record<string, unknown>> {
+  return apiFetch(`/api/operations/ads/${encodeURIComponent(storeId)}/sync`, { method: "POST", body: JSON.stringify({ from, to }) });
+}
+
+/** Loads campaign and SKU report rows attributed by Ozon for the selected report dates. */
+export function fetchPerformanceAdsData(storeId: string, from: string, to: string, state = ""): Promise<PerformanceAdsData> {
+  const params = new URLSearchParams({ from, to, state });
+  return apiFetch(`/api/operations/ads/${encodeURIComponent(storeId)}/data?${params}`);
+}
+
 /** Checks the bundled OpenCLI and the Browser Bridge connection in Chrome or Edge. */
 export async function fetchStorefrontPriceBrowserStatus(): Promise<StorefrontPriceBrowserStatus> {
   return apiFetch("/api/operations/storefront-prices/browser-status");

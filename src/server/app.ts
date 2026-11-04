@@ -39,6 +39,7 @@ import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
 import { registerStoreOperationsRoutes } from "./routes/store-operations";
 import { registerStorefrontPriceRoutes } from "./routes/storefront-prices";
+import { registerPerformanceAdsRoutes } from "./routes/performance-ads";
 import { registerToolsRoutes } from "./routes/tools";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
 import { registerWallboardReadonlyRoutes } from "./routes/wallboard-readonly";
@@ -47,6 +48,7 @@ import { SelectionModule } from "./selection/selection-module";
 import { WordstatClient } from "./selection/wordstat-client";
 import { OrderNotificationService } from "./services/order-notification-service";
 import { StorefrontPriceMonitorService } from "./services/storefront-price-monitor";
+import { PerformanceAdsService } from "./services/performance-ads-service";
 import type { ProxySettingsService } from "./services/proxy-settings-service";
 import type { SyncService } from "./services/sync-service";
 import type { InventoryMonitorService } from "./services/inventory-monitor-service";
@@ -209,6 +211,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   const storeOperations = dependencies.storeOperations ?? new StoreOperationsService(config, stores, proxySettings);
   const finance = dependencies.finance ?? new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
   const storefrontPrices = new StorefrontPriceMonitorService(database, () => settings.get("selection.categories.opencli_path"));
+  const performanceAds = new PerformanceAdsService(config, database, stores, proxySettings, settings);
   const exchangeRate = dependencies.exchangeRate;
   const pricingScenarios = dependencies.pricingScenarios;
   const aiGateway = dependencies.aiGateway ?? new HttpAiGatewayClient(config, fetch, aiRelaySettings);
@@ -223,6 +226,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   ];
   resell.start();
   storefrontPrices.start();
+  performanceAds.start();
 
   registerSetupRoutes(app, config, administrators);
   registerAuthRoutes(app, config, administrators);
@@ -230,6 +234,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
   registerStorefrontPriceRoutes(app, storefrontPrices, stores, resell, exchangeRate);
+  registerPerformanceAdsRoutes(app, performanceAds);
   registerFinanceRoutes(app, finance);
   if (exchangeRate) registerAgentPricingRoutes(app, exchangeRate);
   if (exchangeRate && pricingScenarios) registerToolsRoutes(app, exchangeRate, pricingScenarios);
@@ -250,6 +255,7 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerHealthRoutes(app, database);
   app.addHook("onClose", async () => {
     await storefrontPrices.stop();
+    performanceAds.stop();
     resell.stop();
     notifications.close();
   });
