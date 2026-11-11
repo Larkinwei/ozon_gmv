@@ -22,6 +22,7 @@ const ResellPage = lazy(() => import("./pages/ResellPage"));
 const SetupPage = lazy(() => import("./pages/SetupPage"));
 const StoresPage = lazy(() => import("./pages/StoresPage"));
 const OrderSearchPage = lazy(() => import("./pages/OrderSearchPage"));
+const StockPrepPage = lazy(() => import("./pages/StockPrepPage"));
 
 function AppLoading(): React.JSX.Element {
   return (
@@ -142,6 +143,7 @@ export function App(): React.JSX.Element {
           <Route path="publish/tasks" element={<PublishTasksPage />} />
           <Route path="publish/resell/:sku" element={<ResellPage />} />
           <Route path="finance" element={<FinanceAnalysisPage />} />
+          <Route path="stock-prep" element={<StockPrepPage />} />
           <Route path="ai" element={<AiPage />} />
           <Route path="tools/pricing" element={<OperationsPricingPage />} />
         </Route>

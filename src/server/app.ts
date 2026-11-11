@@ -39,6 +39,7 @@ import { registerSetupRoutes } from "./routes/setup";
 import { registerStoreRoutes } from "./routes/stores";
 import { registerStoreOperationsRoutes } from "./routes/store-operations";
 import { registerStorefrontPriceRoutes } from "./routes/storefront-prices";
+import { registerStockPrepRoutes } from "./routes/stock-prep";
 import { registerPerformanceAdsRoutes } from "./routes/performance-ads";
 import { registerToolsRoutes } from "./routes/tools";
 import { registerWallboardManagementRoutes, registerWallboardPairingRoutes } from "./routes/wallboard";
@@ -64,6 +65,7 @@ import { ResellImageService } from "./selection/resell-image-service";
 import { PublishDraftsModule } from "./selection/publish-drafts";
 import { OssImageStorageService } from "./services/oss-image-storage-service";
 import { AiRelaySettingsService } from "./services/ai-relay-settings-service";
+import { StockPrepService } from "./services/stock-prep-service";
 import { WildberriesApiError } from "./wildberries/client";
 import type { AiProductContext, AiProductSourceView } from "../shared/contracts";
 
@@ -234,6 +236,8 @@ export async function buildAdminApp(dependencies: AppDependencies): Promise<Fast
   registerStoreRoutes(app, config, stores, syncService);
   registerStoreOperationsRoutes(app, storeOperations);
   registerStorefrontPriceRoutes(app, storefrontPrices, stores, resell, exchangeRate);
+  const stockPrep = new StockPrepService(database, settings, config);
+  registerStockPrepRoutes(app, stockPrep, stores, syncService);
   registerPerformanceAdsRoutes(app, performanceAds);
   registerFinanceRoutes(app, finance);
   if (exchangeRate) registerAgentPricingRoutes(app, exchangeRate);

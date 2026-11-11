@@ -276,6 +276,53 @@ export async function fetchStores(): Promise<StoreView[]> {
   return DEMO_MODE ? demoStores : apiFetch("/api/stores");
 }
 
+export interface StockPrepOrderKey { postingNumber: string; offerId: string }
+export interface StockPrepOrder { postingNumber: string; offerId: string; productName: string; quantity: number; state: string; error: string | null; selectedByDefault: boolean }
+export interface StockPrepGroup { offerUrl: string | null; offerId: string; skuId: string | null; status: string; quantity: number; error: string | null; orders: StockPrepOrder[] }
+export interface StockPrepScan { storeId: string; groups: StockPrepGroup[] }
+export interface StockPrepBatch { id: string; status: string; total_count: number; completed_count: number; items: Array<{id:string;offer_id:string;sku_id:string;quantity:number;status:string;error:string|null}> }
+export interface StockPrepConnection { platform: string; feishu: { connected: boolean; profile: string | null; userName: string | null; message: string; appIdConfigured: boolean; appSecretConfigured: boolean; authorization: { state: string; url?: string; qrCode?: string; message?: string } | null }; configuredStoreCount: number; browserBridge: { ready: boolean; message: string } }
+
+export async function fetchStockPrepConnection(): Promise<StockPrepConnection> {
+  return apiFetch("/api/stock-prep/connection");
+}
+
+export async function saveStockPrepFeishuApp(appId: string, appSecret: string): Promise<{ configured: boolean }> {
+  return apiFetch("/api/stock-prep/connection/app", { method: "PUT", body: JSON.stringify({ appId, appSecret }) });
+}
+
+export async function beginStockPrepFeishuAuthorization(): Promise<{ verificationUrl: string; qrCode: string }> {
+  return apiFetch("/api/stock-prep/connection/authorize", { method: "POST" });
+}
+
+export async function scanStockPrep(storeId: string): Promise<StockPrepScan> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/scan`, { method: "POST" });
+}
+
+export async function saveStockPrepSource(storeId: string, url: string): Promise<{ url: string; tableId: string }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/source`, { method: "PUT", body: JSON.stringify({ url }) });
+}
+
+export async function fetchStockPrepState(storeId: string): Promise<{ source: { url: string } | null; latestBatch: StockPrepBatch | null; connection: StockPrepConnection }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}`);
+}
+
+export async function createStockPrepBatch(storeId: string, keys: StockPrepOrderKey[]): Promise<{ id: string; status: string }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/batches`, { method: "POST", body: JSON.stringify({ keys }) });
+}
+
+export async function fetchStockPrepBatch(id: string): Promise<StockPrepBatch> {
+  return apiFetch(`/api/stock-prep/batches/${encodeURIComponent(id)}`);
+}
+
+export async function resetStockPrepOrders(storeId: string, keys: StockPrepOrderKey[]): Promise<{ resetCount: number }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/reset`, { method: "POST", body: JSON.stringify({ keys }) });
+}
+
+export async function resolveUncertainStockPrepOrders(storeId: string, keys: StockPrepOrderKey[]): Promise<{ resolvedCount: number }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/resolve-no-add`, { method: "POST", body: JSON.stringify({ keys }) });
+}
+
 export async function fetchWallboardStoreOptions(): Promise<WallboardStoreOption[]> {
   return DEMO_MODE
     ? demoStores.map(({ id, name, platform, color }) => ({ id, name, platform, color }))
