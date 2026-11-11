@@ -33,6 +33,21 @@ interface Mapping {
   skuId: string;
 }
 
+interface StockPrepBatchItemRow {
+  id: string;
+  offer_url: string;
+  offer_id: string;
+  sku_id: string;
+  quantity: number;
+  order_keys_json: string;
+}
+
+interface ResolvedSkuTarget extends StockPrepBatchItemRow {
+  productId: string;
+  attributes: string[];
+  cartKey: string;
+}
+
 interface StockPrepStoreRow {
   source_url: string;
   base_token: string;
@@ -133,7 +148,10 @@ export class StockPrepService {
 
   /** Reports verified Feishu OAuth and Browser Bridge health without exposing credentials. */
   public async getConnectionState(): Promise<Record<string, unknown>> {
-    const profile = this.getFeishuProfile();
+    let profile = this.getFeishuProfile();
+    if ((this.runtime.platform ?? process.platform) === "win32") {
+      profile = await this.resolveWindowsFeishuProfile() ?? profile;
+    }
     let feishu: Record<string, unknown> = { connected: false, profile, userName: null, message: "尚未完成飞书授权" };
     if (profile) {
       try {
@@ -165,13 +183,9 @@ export class StockPrepService {
 
   /** Starts Feishu's device authorization and continues polling in the server process. */
   public async beginFeishuAuthorization(): Promise<{ verificationUrl: string; qrCode: string }> {
-    const profile = this.getFeishuProfile();
+    let profile = this.getFeishuProfile();
+    if ((this.runtime.platform ?? process.platform) === "win32") profile = await this.resolveWindowsFeishuProfile(true);
     if (!profile) throw new Error("请先配置飞书 App ID 与 App Secret");
-    if (this.settings.get(PROFILE_KEY)) {
-      const appId = this.settings.get(APP_ID_KEY)!;
-      const secret = decryptSecret(this.settings.get(APP_SECRET_KEY)!, this.config.ENCRYPTION_KEY);
-      await this.feishu(["profile", "add", "--name", profile, "--app-id", appId, "--app-secret-stdin"], undefined, secret, false);
-    }
     const started = parseCli<{ verification_url: string; device_code: string }>(await this.feishu(["auth", "login", "--domain", "base", "--no-wait", "--json"], profile));
     if (!started.verification_url || !started.device_code) throw new Error("飞书没有返回设备授权链接");
     const qrCode = await QRCode.toDataURL(started.verification_url, { margin: 1, width: 220 });
@@ -341,6 +355,27 @@ export class StockPrepService {
     return "ozon-team-wiki";
   }
 
+  /** Reuses an existing Lark CLI profile for this App ID, avoiding duplicate App ID registration. */
+  private async resolveWindowsFeishuProfile(createIfMissing = false): Promise<string | null> {
+    const appId = this.settings.get(APP_ID_KEY);
+    const secretValue = this.settings.get(APP_SECRET_KEY);
+    if (!appId || !secretValue) return null;
+    try {
+      const profiles = JSON.parse(await this.feishu(["profile", "list"], undefined, undefined, false)) as Array<{ name?: string; appId?: string }>;
+      const existing = profiles.find((item) => item.appId === appId && item.name);
+      if (existing?.name) {
+        this.settings.set(PROFILE_KEY, existing.name);
+        return existing.name;
+      }
+    } catch { /* A new profile may not exist yet; create it below only when requested. */ }
+    if (!createIfMissing) return null;
+    const profile = `ozon-stock-prep-${randomUUID().slice(0, 8)}`;
+    const secret = decryptSecret(secretValue, this.config.ENCRYPTION_KEY);
+    await this.feishu(["profile", "add", "--name", profile, "--app-id", appId, "--app-secret-stdin"], undefined, secret, false);
+    this.settings.set(PROFILE_KEY, profile);
+    return profile;
+  }
+
   private getFeishuCliPath(): string {
     const packageJson = require.resolve("@larksuite/cli/package.json");
     return join(dirname(packageJson), "bin", (this.runtime.platform ?? process.platform) === "win32" ? "lark-cli.exe" : "lark-cli");
@@ -368,97 +403,173 @@ export class StockPrepService {
   private async processBatch(batchId: string, storeId: string): Promise<void> {
     const now = Date.now();
     this.database.prepare("UPDATE stock_prep_batches SET status='running',started_at_ms=? WHERE id=?").run(now, batchId);
+    const session = `stock-prep-${batchId.slice(0, 8)}`;
+    let cartMutationStarted = false;
     try {
-      const items = this.database.prepare("SELECT * FROM stock_prep_batch_items WHERE batch_id=? ORDER BY created_at_ms").all(batchId) as Array<{ id: string; offer_url: string; offer_id: string; sku_id: string; quantity: number; order_keys_json: string }>;
+      const items = this.database.prepare("SELECT * FROM stock_prep_batch_items WHERE batch_id=? ORDER BY created_at_ms").all(batchId) as StockPrepBatchItemRow[];
+      const targets: ResolvedSkuTarget[] = [];
       for (const item of items) {
         try {
-          const result = await this.addToCart(item.offer_url, item.sku_id, item.quantity);
-          this.database.prepare("UPDATE stock_prep_batch_items SET status='added',cart_before=?,cart_after=?,updated_at_ms=? WHERE id=?").run(result.before, result.after, Date.now(), item.id);
-          const update = this.database.prepare("UPDATE stock_prep_order_states SET state='added',error=NULL,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND batch_id=?");
-          for (const key of JSON.parse(item.order_keys_json) as string[]) { const [postingNumber, offerId] = key.split("\u0000") as [string, string]; update.run(Date.now(), storeId, postingNumber, offerId, batchId); }
+          targets.push(await this.resolveSkuTarget(session, item));
+        } catch (error) {
+          this.finishBatchItem(batchId, storeId, item, "failed", error instanceof Error ? error.message : "1688 SKU 解析失败");
+        }
+      }
+
+      const before = targets.length ? await this.cartQuantities(session, targets) : new Map<string, number>();
+      const attempted: ResolvedSkuTarget[] = [];
+      for (const target of targets) {
+        try {
+          await this.addResolvedSku(session, target);
+          attempted.push(target);
+          cartMutationStarted = true;
         } catch (error) {
           const uncertain = error instanceof Error && error.message.startsWith("UNCERTAIN:");
           const message = error instanceof Error ? error.message.replace(/^UNCERTAIN:/u, "") : "1688 加购失败";
-          this.database.prepare("UPDATE stock_prep_batch_items SET status=?,error=?,updated_at_ms=? WHERE id=?").run(uncertain ? "uncertain" : "failed", message, Date.now(), item.id);
-          const update = this.database.prepare("UPDATE stock_prep_order_states SET state=?,error=?,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND batch_id=?");
-          for (const key of JSON.parse(item.order_keys_json) as string[]) { const [postingNumber, offerId] = key.split("\u0000") as [string, string]; update.run(uncertain ? "uncertain" : "failed", message, Date.now(), storeId, postingNumber, offerId, batchId); }
+          if (uncertain) {
+            attempted.push(target);
+            cartMutationStarted = true;
+          }
+          else this.finishBatchItem(batchId, storeId, target, "failed", message);
         }
-        this.database.prepare("UPDATE stock_prep_batches SET completed_count=completed_count+1 WHERE id=?").run(batchId);
+      }
+
+      const attemptedByCartKey = new Map<string, ResolvedSkuTarget[]>();
+      for (const target of attempted) {
+        const group = attemptedByCartKey.get(target.cartKey) ?? [];
+        group.push(target);
+        attemptedByCartKey.set(target.cartKey, group);
+      }
+      const expectedMinimums = new Map([...attemptedByCartKey].map(([cartKey, group]) => [
+        cartKey,
+        (before.get(cartKey) ?? 0) + group.reduce((sum, target) => sum + target.quantity, 0),
+      ]));
+      const after = attempted.length ? await this.cartQuantities(session, attempted, expectedMinimums) : new Map<string, number>();
+      for (const [cartKey, group] of attemptedByCartKey) {
+        const beforeQuantity = before.get(cartKey) ?? 0;
+        const afterQuantity = after.get(cartKey) ?? 0;
+        const expectedDelta = group.reduce((sum, target) => sum + target.quantity, 0);
+        for (const target of group) {
+          if (afterQuantity - beforeQuantity === expectedDelta) {
+            this.finishBatchItem(batchId, storeId, target, "added", null, beforeQuantity, afterQuantity);
+          } else {
+            this.finishBatchItem(batchId, storeId, target, "uncertain", `购物车目标规格数量从 ${beforeQuantity} 变为 ${afterQuantity}，整批增量预期 ${expectedDelta}`, beforeQuantity, afterQuantity);
+          }
+        }
       }
       const failed = this.database.prepare("SELECT COUNT(*) AS count FROM stock_prep_batch_items WHERE batch_id=? AND status<>'added'").get(batchId) as { count: number };
       this.database.prepare("UPDATE stock_prep_batches SET status=?,finished_at_ms=? WHERE id=?").run(failed.count ? "completed_with_errors" : "completed", Date.now(), batchId);
-    } finally { this.batchRunning = false; }
-  }
-
-  private async addToCart(url: string, skuId: string, quantity: number): Promise<{ before: number; after: number }> {
-    const session = `stock-prep-${randomUUID().slice(0, 8)}`;
-    const run = (args: string[]): Promise<string> => this.runBrowser(session, args);
-    let clickStarted = false;
-    try {
-      const expectedOfferId = extractOfferId(url);
-      if (!expectedOfferId) throw new Error("1688 商品链接格式无效");
-      const pageUrl = `https://detail.1688.com/offer/${expectedOfferId}.html`;
-      await run(["open", pageUrl]);
-      const detail = parseCli<{ url: string; sku: { sku1?: string; sku2?: string }; title: string }>(await run(["eval", `(() => { const scripts=[...document.scripts].map(x=>x.textContent||'').join('\\n'); const match=scripts.match(/\\{[^{}]*"skuId"\\s*:\\s*${skuId}[^{}]*\\}/); if(!match) return {url:location.href,title:document.title,sku:null}; return {url:location.href,title:document.title,sku:JSON.parse(match[0])}; })()`]));
-      if (detail.url !== pageUrl || !detail.sku || String((detail.sku as unknown as { skuId: number }).skuId) !== skuId) throw new Error("页面商品或 SKU ID 与飞书映射不一致");
-      const sku = detail.sku;
-      await run(["open", "https://cart.1688.com/cart.htm"]);
-      const before = await this.cartQuantity(session, expectedOfferId, sku.sku1 ?? "", sku.sku2 ?? "");
-      await run(["open", pageUrl]);
-      const setup = `(() => { const exact=(e,t)=>e.textContent?.trim()===t; const color=${JSON.stringify(sku.sku1 ?? "")}; const size=${JSON.stringify(sku.sku2 ?? "")}; if(color){const button=[...document.querySelectorAll('.sku-filter-button')].find(e=>exact(e.querySelector('.label-name')||e,color)); if(!button)throw new Error('商品颜色规格不存在: '+color); if(!button.classList.contains('active'))button.click()} const rows=[...document.querySelectorAll('.expand-view-item')]; const row=size?rows.find(e=>exact(e.querySelector('.item-label')||e,size)):rows[0]; if(!row)throw new Error('商品尺码规格不存在: '+size); const input=row.querySelector('input.ant-input-number-input'); if(!input)throw new Error('目标规格数量框不存在'); return {url:location.href,color,size,inputIndex:[...document.querySelectorAll('input.ant-input-number-input')].indexOf(input)}; })()`;
-      const selected = parseCli<{ url: string; color: string; size: string; inputIndex: number }>(await run(["eval", setup]));
-      if (selected.url !== pageUrl || selected.color !== (sku.sku1 ?? "") || selected.size !== (sku.sku2 ?? "") || selected.inputIndex < 0) {
-        throw new Error(`未能确认目标规格：${JSON.stringify({ selected, expectedColor: sku.sku1 ?? "", expectedSize: sku.sku2 ?? "" })}`);
-      }
-      const filled = parseCli<{ filled: boolean; verified: boolean; actual: string }>(await run(["fill", "--nth", String(selected.inputIndex), "input.ant-input-number-input", String(quantity)]));
-      if (!filled.filled || !filled.verified || Number(filled.actual) !== quantity) throw new Error(`未能将加购数量输入目标规格：${JSON.stringify({ filled, expectedQuantity: quantity })}`);
-      clickStarted = true;
-      const click = parseCli<{ clicked: boolean }>(await run(["click", "--role", "button", "--name", "加采购车"]));
-      if (!click.clicked) { clickStarted = false; throw new Error("加采购车按钮未匹配或未执行"); }
-      await run(["open", "https://cart.1688.com/cart.htm"]);
-      const after = await this.cartQuantity(session, expectedOfferId, sku.sku1 ?? "", sku.sku2 ?? "", before + quantity);
-      if (after - before !== quantity) throw new Error(`UNCERTAIN:购物车数量从 ${before} 变为 ${after}，增量预期 ${quantity}`);
-      return { before, after };
     } catch (error) {
-      if (error instanceof Error && !error.message.startsWith("UNCERTAIN:") && clickStarted) throw new Error(`UNCERTAIN:${error.message}`);
-      throw error;
+      const message = error instanceof Error ? error.message : "1688 购物车校验失败";
+      const unfinished = this.database.prepare("SELECT * FROM stock_prep_batch_items WHERE batch_id=? AND status IN ('queued','running')").all(batchId) as StockPrepBatchItemRow[];
+      for (const item of unfinished) this.finishBatchItem(batchId, storeId, item, cartMutationStarted ? "uncertain" : "failed", message);
+      this.database.prepare("UPDATE stock_prep_batches SET status='completed_with_errors',finished_at_ms=? WHERE id=?").run(Date.now(), batchId);
     } finally {
       await this.runBrowser(session, ["close"]).catch(() => undefined);
+      this.batchRunning = false;
     }
   }
 
-  private async cartQuantity(session: string, offerId: string, color: string, size: string, minimumQuantity = 1): Promise<number> {
-    const selector = `(() => {
-      const offerId = ${JSON.stringify(offerId)};
-      const color = ${JSON.stringify(color)};
-      const size = ${JSON.stringify(size)};
-      const isCartPage = location.hostname === "cart.1688.com" && location.pathname === "/cart.htm";
-      const groups = [...document.querySelectorAll("[class*=groupRoot]")];
-      const matchingGroups = groups.filter((group) => [...group.querySelectorAll('a[href*="detail.1688.com/offer/"]')]
-        .some((link) => new URL(link.href).pathname === "/offer/" + offerId + ".html"));
-      const rows = matchingGroups.flatMap((group) => [...group.querySelectorAll("[class*=item--container]")])
-        .filter((row) => {
-          const labels = [...row.querySelectorAll("[class*=skuTitle]")].map((item) => item.textContent?.trim() ?? "").join(" ");
-          return (!color || labels.includes(color)) && (!size || labels.includes(size));
-        });
-      const quantity = rows.map((row) => {
-        const input = row.querySelector("[class*=quantityWrapper] input");
-        return input ? Number(input.value) : null;
-      }).filter((value) => value !== null && Number.isFinite(value))
-        .reduce((sum, value) => sum + value, 0);
-      return { loaded: isCartPage && Boolean(document.querySelector("#cartV2Header")), quantity };
-    })()`;
+  private async resolveSkuTarget(session: string, item: StockPrepBatchItemRow): Promise<ResolvedSkuTarget> {
+    const productId = extractOfferId(item.offer_url);
+    if (!productId) throw new Error("1688 商品链接格式无效");
+    const pageUrl = `https://detail.1688.com/offer/${productId}.html`;
+    await this.runBrowser(session, ["open", pageUrl]);
+    const detail = parseCli<{ url: string; skuId: string | null; attributes: string[] }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+      const desiredSkuId=${JSON.stringify(item.sku_id)};
+      const decode=(value)=>{const node=document.createElement('textarea');node.innerHTML=String(value??'');return node.value.trim()};
+      const scripts=[...document.scripts].map((node)=>node.textContent||'').join('\n');
+      const matches=scripts.match(/\{[^{}]*"skuId"\s*:\s*"?\d+"?[^{}]*\}/g)||[];
+      const sku=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).find((value)=>value&&String(value.skuId)===desiredSkuId);
+      if(!sku)return {url:location.href,skuId:null,attributes:[]};
+      const explicit=[sku.sku1,sku.sku2].map(decode).filter(Boolean);
+      const specAttrs=decode(sku.specAttrs).split(/\s*>\s*/u).map((value)=>value.trim()).filter(Boolean);
+      return {url:location.href,skuId:String(sku.skuId),attributes:explicit.length>=2?explicit:specAttrs};
+    })()`]));
+    if (detail.url !== pageUrl || detail.skuId !== item.sku_id) throw new Error(`页面中未找到目标 SKU ID：${item.sku_id}`);
+    if (detail.attributes.length < 2 || detail.attributes.some((value) => !value.trim())) throw new Error(`SKU ${item.sku_id} 的规格信息不完整，已阻止加购`);
+    const attributes = detail.attributes.map((value) => value.trim());
+    return { ...item, productId, attributes, cartKey: `${productId}\u0000${attributes.join("\u0000")}` };
+  }
 
+  private async addResolvedSku(session: string, target: ResolvedSkuTarget): Promise<void> {
+    const pageUrl = `https://detail.1688.com/offer/${target.productId}.html`;
+    const [color, size] = target.attributes;
+    let clickStarted = false;
+    try {
+      this.database.prepare("UPDATE stock_prep_batch_items SET status='running',updated_at_ms=? WHERE id=? AND status='queued'").run(Date.now(), target.id);
+      await this.runBrowser(session, ["open", pageUrl]);
+      const colorResult = parseCli<{ found: boolean }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+        const target=${JSON.stringify(color)};const exact=(value)=>value?.textContent?.trim()===target;
+        const button=[...document.querySelectorAll('.sku-filter-button')].find((node)=>exact(node.querySelector('.label-name')||node));
+        if(!button)return {found:false};if(!button.classList.contains('active'))button.click();return {found:true};
+      })()`]));
+      if (!colorResult.found) throw new Error(`商品颜色规格不存在：${color}`);
+      await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
+      const selected = parseCli<{ url: string; color: string | null; size: string; skuId: string | null; inputIndex: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+        const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};
+        const active=[...document.querySelectorAll('.sku-filter-button')].find((node)=>node.classList.contains('active'));
+        const activeColor=(active?.querySelector('.label-name')||active)?.textContent?.trim()||null;
+        const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>(node.querySelector('.item-label')||node).textContent?.trim()===expectedSize);
+        const input=row?.querySelector('input.ant-input-number-input');
+        const decode=(value)=>{const node=document.createElement('textarea');node.innerHTML=String(value??'');return node.value.trim()};
+        const scripts=[...document.scripts].map((node)=>node.textContent||'').join('\n');
+        const matches=scripts.match(/\{[^{}]*"skuId"\s*:\s*"?\d+"?[^{}]*\}/g)||[];
+        const sku=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).find((value)=>{if(!value)return false;const explicit=[value.sku1,value.sku2].map(decode).filter(Boolean);const attrs=explicit.length>=2?explicit:decode(value.specAttrs).split(/\s*>\s*/u).map((part)=>part.trim()).filter(Boolean);return attrs[0]===expectedColor&&attrs[1]===expectedSize});
+        return {url:location.href,color:activeColor,size:row?(row.querySelector('.item-label')||row).textContent?.trim()||'':'',skuId:sku?String(sku.skuId):null,inputIndex:input?[...document.querySelectorAll('input.ant-input-number-input')].indexOf(input):-1};
+      })()`]));
+      if (selected.url !== pageUrl || selected.color !== color || selected.size !== size || selected.skuId !== target.sku_id || selected.inputIndex < 0) {
+        throw new Error(`目标规格校验失败，预期 SKU ${target.sku_id}，页面识别 SKU ${selected.skuId ?? "无"}`);
+      }
+      const filled = parseCli<{ filled: boolean; verified: boolean; actual: string }>(await this.runBrowser(session, ["fill", "--nth", String(selected.inputIndex), "input.ant-input-number-input", String(target.quantity)]));
+      if (!filled.filled || !filled.verified || Number(filled.actual) !== target.quantity) throw new Error(`未能将加购数量输入目标 SKU ${target.sku_id}`);
+      clickStarted = true;
+      const click = parseCli<{ clicked: boolean }>(await this.runBrowser(session, ["click", "--role", "button", "--name", "加采购车"]));
+      if (!click.clicked) { clickStarted = false; throw new Error("加采购车按钮未匹配或未执行"); }
+    } catch (error) {
+      if (error instanceof Error && clickStarted && !error.message.startsWith("UNCERTAIN:")) throw new Error(`UNCERTAIN:${error.message}`);
+      throw error;
+    }
+  }
+
+  private async cartQuantities(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>()): Promise<Map<string, number>> {
+    await this.runBrowser(session, ["open", "https://cart.1688.com/cart.htm"]);
+    const serialized = targets.map((target) => ({ key: target.cartKey, productId: target.productId, attributes: target.attributes }));
+    const selector = String.raw`(() => {
+      const targets=${JSON.stringify(serialized)};
+      const normalize=(value)=>String(value??'').split(/\s*(?:;|；|>)\s*/u).map((part)=>part.trim()).filter(Boolean);
+      const isCartPage=location.hostname==='cart.1688.com'&&location.pathname==='/cart.htm';
+      const groups=[...document.querySelectorAll('[class*=groupRoot]')];const quantities={};
+      for(const target of targets){
+        const matchingGroups=groups.filter((group)=>[...group.querySelectorAll('a[href*="detail.1688.com/offer/"]')].some((link)=>new URL(link.href).pathname==='/offer/'+target.productId+'.html'));
+        const rows=matchingGroups.flatMap((group)=>[...group.querySelectorAll('[class*=item--container]')]).filter((row)=>{const labels=normalize([...row.querySelectorAll('[class*=skuTitle]')].map((node)=>node.textContent?.trim()??'').join(';'));return labels.length===target.attributes.length&&labels.every((label,index)=>label===target.attributes[index])});
+        quantities[target.key]=rows.map((row)=>Number(row.querySelector('[class*=quantityWrapper] input')?.value??NaN)).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
+      }
+      return {loaded:isCartPage&&Boolean(document.querySelector('#cartV2Header')),quantities};
+    })()`;
     let loaded = false;
-    let quantity = 0;
+    let quantities: Record<string, number> = {};
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      const result = parseCli<{ loaded: boolean; quantity: number }>(await this.runBrowser(session, ["eval", selector]));
+      const result = parseCli<{ loaded: boolean; quantities: Record<string, number> }>(await this.runBrowser(session, ["eval", selector]));
       loaded = result.loaded;
-      quantity = result.quantity;
-      if (loaded && quantity >= minimumQuantity) return quantity;
+      quantities = result.quantities;
+      if (loaded && [...minimums].every(([key, minimum]) => (quantities[key] ?? 0) >= minimum)) break;
       if (attempt < 11) await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(500);
     }
     if (!loaded) throw new Error("1688 购物车页面未能加载");
-    return quantity;
+    return new Map(Object.entries(quantities));
   }
+
+  private finishBatchItem(batchId: string, storeId: string, item: StockPrepBatchItemRow, status: "added" | "failed" | "uncertain", error: string | null, cartBefore: number | null = null, cartAfter: number | null = null): void {
+    const updated = this.database.prepare("UPDATE stock_prep_batch_items SET status=?,cart_before=?,cart_after=?,error=?,updated_at_ms=? WHERE id=? AND status IN ('queued','running')")
+      .run(status, cartBefore, cartAfter, error, Date.now(), item.id);
+    if (!updated.changes) return;
+    const updateOrder = this.database.prepare("UPDATE stock_prep_order_states SET state=?,error=?,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND batch_id=?");
+    for (const key of JSON.parse(item.order_keys_json) as string[]) {
+      const [postingNumber, offerId] = key.split("\u0000") as [string, string];
+      updateOrder.run(status, error, Date.now(), storeId, postingNumber, offerId, batchId);
+    }
+    this.database.prepare("UPDATE stock_prep_batches SET completed_count=completed_count+1 WHERE id=?").run(batchId);
+  }
+
 }

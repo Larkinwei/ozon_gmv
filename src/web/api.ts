@@ -280,7 +280,7 @@ export interface StockPrepOrderKey { postingNumber: string; offerId: string }
 export interface StockPrepOrder { postingNumber: string; offerId: string; productName: string; quantity: number; state: string; error: string | null; selectedByDefault: boolean }
 export interface StockPrepGroup { offerUrl: string | null; offerId: string; skuId: string | null; status: string; quantity: number; error: string | null; orders: StockPrepOrder[] }
 export interface StockPrepScan { storeId: string; groups: StockPrepGroup[] }
-export interface StockPrepBatch { id: string; status: string; total_count: number; completed_count: number; items: Array<{id:string;offer_id:string;sku_id:string;quantity:number;status:string;error:string|null}> }
+export interface StockPrepBatch { id: string; status: string; total_count: number; completed_count: number; items: Array<{id:string;offer_id:string;sku_id:string;quantity:number;status:string;error:string|null;order_keys_json?:string}> }
 export interface StockPrepConnection { platform: string; feishu: { connected: boolean; profile: string | null; userName: string | null; message: string; appIdConfigured: boolean; appSecretConfigured: boolean; authorization: { state: string; url?: string; qrCode?: string; message?: string } | null }; configuredStoreCount: number; browserBridge: { ready: boolean; message: string } }
 
 export async function fetchStockPrepConnection(): Promise<StockPrepConnection> {

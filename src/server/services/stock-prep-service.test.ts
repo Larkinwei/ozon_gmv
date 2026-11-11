@@ -43,6 +43,9 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
   }
   const appConfig = { ENCRYPTION_KEY: "a".repeat(64) } as AppConfig;
   let cartQuantity = 2;
+  let cartOpenCount = 0;
+  let addClickCount = 0;
+  let pendingQuantity = 0;
   const service = new StockPrepService(database, new SettingsRepository(database as never), appConfig, {
     platform: "darwin",
     sleep: async () => undefined,
@@ -51,20 +54,37 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
     openCli: async (_session, args) => {
       const [action, value] = args;
       const script = value;
-      if (action === "open") return JSON.stringify({ url: value });
-      if (action === "eval" && script?.includes("groupRoot")) {
-        return JSON.stringify({ loaded: true, quantity: cartQuantity });
+      if (action === "eval" && script) expect(() => new Function(`return ${script};`)).not.toThrow();
+      if (action === "open") {
+        if (value === "https://cart.1688.com/cart.htm") cartOpenCount += 1;
+        return JSON.stringify({ url: value });
       }
-      if (action === "eval" && script?.includes("document.scripts")) return JSON.stringify({ url: `https://detail.1688.com/offer/747713283348.html`, title: "Test", sku: { skuId: Number(skuId), sku1: "蓝底叶子", sku2: "XXL" } });
-      if (action === "eval" && script?.includes("sku-filter-button")) return JSON.stringify({ url: "https://detail.1688.com/offer/747713283348.html", color: "蓝底叶子", size: "XXL", inputIndex: 3 });
-      if (action === "fill") return JSON.stringify({ filled: true, verified: behavior !== "pre-click-failure", actual: behavior === "pre-click-failure" ? "0" : "3" });
-      if (action === "click" && args.includes("加采购车")) { if (behavior === "success") cartQuantity += 3; return JSON.stringify({ clicked: true }); }
+      if (action === "eval" && script?.includes("const targets=")) {
+        const serialized = script.match(/const targets=(\[.*?\]);\s*const normalize/su)?.[1];
+        const targets = serialized ? JSON.parse(serialized) as Array<{ key: string }> : [];
+        return JSON.stringify({ loaded: true, quantities: Object.fromEntries(targets.map((target) => [target.key, cartQuantity])) });
+      }
+      if (action === "eval" && script?.includes("desiredSkuId")) {
+        expect(script).toContain("specAttrs");
+        return JSON.stringify({ url: `https://detail.1688.com/offer/747713283348.html`, skuId, attributes: ["蓝底叶子", "XXL"] });
+      }
+      if (action === "eval" && script?.includes("const target=") && script?.includes("sku-filter-button")) return JSON.stringify({ found: true });
+      if (action === "eval" && script?.includes("expectedColor")) return JSON.stringify({ url: "https://detail.1688.com/offer/747713283348.html", color: "蓝底叶子", size: "XXL", skuId, inputIndex: 3 });
+      if (action === "fill") {
+        pendingQuantity = Number(args.at(-1));
+        return JSON.stringify({ filled: true, verified: behavior !== "pre-click-failure", actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity) });
+      }
+      if (action === "click" && args.includes("加采购车")) {
+        addClickCount += 1;
+        if (behavior === "success") cartQuantity += pendingQuantity;
+        return JSON.stringify({ clicked: true });
+      }
       if (action === "wait") return "Text appeared";
       if (action === "close") return "";
       throw new Error(`unexpected OpenCLI invocation: ${args.join(" ").slice(0, 120)}`);
     },
   });
-  return { database, service };
+  return { database, service, metrics: { cartOpenCount: () => cartOpenCount, addClickCount: () => addClickCount } };
 }
 
 afterEach(() => { for (const database of databases.splice(0)) database.close(); });
@@ -98,13 +118,15 @@ describe("StockPrepService", () => {
   });
 
   it("adds the selected quantities once, verifies the cart delta, and supports manual state rollback", async () => {
-    const { database, service } = fixture();
+    const { database, service, metrics } = fixture();
     const scan = await service.scan(storeId);
     const orders = scan.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
     const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed");
     expect((result.items as Array<{ quantity: number; cart_before: number; cart_after: number }>)[0]).toMatchObject({ quantity: 3, cart_before: 2, cart_after: 5 });
+    expect(metrics.cartOpenCount()).toBe(2);
+    expect(metrics.addClickCount()).toBe(1);
     expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='added'").get()).toMatchObject({ count: 2 });
     expect(service.resetOrders(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).toBe(2);
     expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='pending'").get()).toMatchObject({ count: 2 });
@@ -125,5 +147,20 @@ describe("StockPrepService", () => {
         expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='failed'").get()).toMatchObject({ count: 2 });
       }
     }
+  });
+
+  it("consolidates multiple Ozon SKUs mapped to the same 1688 SKU and verifies one cart delta", async () => {
+    const { service, metrics } = fixture([
+      ["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId],
+      ["UNMAPPED", `[${offerUrl}](${offerUrl})`, skuId],
+    ]);
+    const scan = await service.scan(storeId);
+    const orders = scan.groups.flatMap((group) => group.orders).filter((order) => order.state === "pending");
+    const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
+    const result = await waitForBatch(service, batch.id);
+    expect(result.status).toBe("completed");
+    expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 4, cart_before: 2, cart_after: 6 })]);
+    expect(metrics.cartOpenCount()).toBe(2);
+    expect(metrics.addClickCount()).toBe(1);
   });
 });
