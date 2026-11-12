@@ -12,8 +12,8 @@ import { runOpenCli, defaultOpenCliPath } from "./opencli-runtime";
 
 export type StockPrepState = "pending" | "adding" | "added" | "failed" | "uncertain" | "unmatched";
 
-export interface StockPrepOrderView { postingNumber: string; offerId: string; productName: string; quantity: number; state: StockPrepState; error: string | null; selectedByDefault: boolean }
-export interface StockPrepGroupView { offerUrl: string | null; offerId: string; skuId: string | null; status: StockPrepState; quantity: number; orders: StockPrepOrderView[]; error: string | null }
+export interface StockPrepOrderView { postingNumber: string; offerId: string; productName: string; imageUrl: string | null; quantity: number; state: StockPrepState; error: string | null; selectedByDefault: boolean }
+export interface StockPrepGroupView { offerUrl: string | null; offerId: string; skuId: string | null; imageUrl: string | null; status: StockPrepState; quantity: number; orders: StockPrepOrderView[]; error: string | null }
 export interface StockPrepScanView { storeId: string; groups: StockPrepGroupView[] }
 
 interface OrderRow {
@@ -23,6 +23,7 @@ interface OrderRow {
   offer_id: string;
   name: string;
   quantity: number;
+  image_url: string | null;
   state: StockPrepState | null;
   error: string | null;
 }
@@ -46,6 +47,16 @@ interface ResolvedSkuTarget extends StockPrepBatchItemRow {
   productId: string;
   attributes: string[];
   cartKey: string;
+  supplierName: string;
+  dropship: boolean;
+}
+
+type CartModeQuantities = { wholesale: number; dropship: number };
+
+interface BrowserFrame {
+  index: number;
+  url: string;
+  name: string;
 }
 
 interface StockPrepStoreRow {
@@ -71,6 +82,9 @@ interface CliEnvelope<T> {
 const APP_ID_KEY = "stock-prep.feishu.app_id";
 const APP_SECRET_KEY = "stock-prep.feishu.app_secret";
 const PROFILE_KEY = "stock-prep.feishu.profile";
+const DROPSHIP_SUPPLIERS_KEY = "stock-prep.dropship-suppliers";
+const ORDER_SYNC_CACHE_KEY_PREFIX = "stock-prep.order-sync-at.";
+const ORDER_SYNC_CACHE_TTL_MS = 60 * 60 * 1000;
 const require = createRequire(import.meta.url);
 
 function parseCli<T>(output: string): T {
@@ -168,6 +182,7 @@ export class StockPrepService {
       feishu: { ...feishu, appIdConfigured: Boolean(this.settings.get(APP_ID_KEY)), appSecretConfigured: Boolean(this.settings.get(APP_SECRET_KEY)), authorization: this.authorization },
       configuredStoreCount: sourceCount.count,
       browserBridge: bridge,
+      dropshipSuppliers: this.getDropshipSuppliers(),
     };
   }
 
@@ -204,6 +219,33 @@ export class StockPrepService {
     return row ? { url: row.source_url } : null;
   }
 
+  /** Returns whether Ozon order data was synchronized for this store within the last hour. */
+  public hasFreshOrderSyncCache(storeId: string, now = Date.now()): boolean {
+    const refreshedAt = Number(this.settings.get(`${ORDER_SYNC_CACHE_KEY_PREFIX}${storeId}`));
+    return Number.isSafeInteger(refreshedAt) && refreshedAt > 0 && refreshedAt <= now && now - refreshedAt < ORDER_SYNC_CACHE_TTL_MS;
+  }
+
+  /** Persists the successful order synchronization time across page visits and service restarts. */
+  public markOrderSyncCacheFresh(storeId: string, refreshedAt = Date.now()): void {
+    this.settings.set(`${ORDER_SYNC_CACHE_KEY_PREFIX}${storeId}`, String(refreshedAt));
+  }
+
+  /** Returns the supplier names routed to the 1688 dropship cart. */
+  public getDropshipSuppliers(): string[] {
+    try {
+      const value: unknown = JSON.parse(this.settings.get(DROPSHIP_SUPPLIERS_KEY) ?? "[]");
+      return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))] : [];
+    } catch { return []; }
+  }
+
+  /** Stores the local 1688 supplier-name allowlist. */
+  public saveDropshipSupplierNames(names: string[]): string[] {
+    const normalized = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+    if (normalized.length > 100 || normalized.some((name) => name.length > 120)) throw new Error("供应商名单最多 100 家，每个名称不超过 120 个字符");
+    this.settings.set(DROPSHIP_SUPPLIERS_KEY, JSON.stringify(normalized));
+    return normalized;
+  }
+
   public async saveStoreSource(storeId: string, url: string): Promise<{ url: string; tableId: string }> {
     const profile = this.getFeishuProfile();
     if (!profile) throw new Error("尚未连接飞书 CLI，请先在本机完成飞书授权");
@@ -228,8 +270,9 @@ export class StockPrepService {
     const source = this.database.prepare("SELECT source_url,base_token,table_id FROM store_sku_sources WHERE store_id=?").get(storeId) as StockPrepStoreRow | undefined;
     if (!source) throw new Error("请先为该店铺配置飞书 SKU 映射表");
     const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,pi.offer_id,pi.name,pi.quantity,
-        states.state,states.error
+        image.primary_image_url AS image_url,states.state,states.error
       FROM postings p JOIN stores s ON s.id=p.store_id JOIN posting_items pi ON pi.posting_id=p.id
+      LEFT JOIN product_images image ON image.store_id=p.store_id AND image.sku=pi.sku
       LEFT JOIN stock_prep_order_states states ON states.store_id=p.store_id AND states.posting_number=p.posting_number AND states.offer_id=pi.offer_id
       WHERE p.store_id=? AND s.platform='ozon' AND p.fulfillment_mode IN ('FBS','RFBS')
         AND p.status='awaiting_packaging' AND p.cancelled_at_ms IS NULL
@@ -241,25 +284,24 @@ export class StockPrepService {
     const groups = new Map<string, StockPrepGroupView>();
     for (const row of rows) {
       const mapping = mappingByOffer.get(row.offer_id);
-      const mapped = mapping && mappingCounts.get(row.offer_id) === 1 && valid1688Url(mapping.url) && /^\d+$/u.test(mapping.skuId);
-      let state = row.state ?? (mapped ? "pending" : "unmatched");
-      const mappingError = "飞书映射缺失、重复或无效";
-      if (!row.state) {
+      const mappingError = !mapping ? "飞书未找到该货号" : mappingCounts.get(row.offer_id) !== 1 ? "飞书货号重复" : !valid1688Url(mapping.url) ? "1688 商品链接无效" : !/^\d+$/u.test(mapping.skuId) ? "1688 SKU ID 无效" : null;
+      const validMapping = mapping && !mappingError ? mapping : null;
+      const mapped = validMapping !== null;
+      const orderState = row.state;
+      const state: StockPrepState = mapped ? (orderState === "unmatched" ? "pending" : orderState ?? "pending") : orderState === "added" || orderState === "adding" || orderState === "failed" || orderState === "uncertain" ? orderState : "unmatched";
+      if (!orderState) {
         this.database.prepare(`INSERT INTO stock_prep_order_states (store_id,posting_number,offer_id,state,error,updated_at_ms) VALUES (?,?,?,?,?,?)`)
           .run(storeId, row.posting_number, row.offer_id, state, mapped ? null : mappingError, Date.now());
-      } else if (row.state === "unmatched" && mapped) {
-        state = "pending";
-        this.database.prepare("UPDATE stock_prep_order_states SET state='pending',error=NULL,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND state='unmatched'")
-          .run(Date.now(), storeId, row.posting_number, row.offer_id);
-      } else if (row.state === "pending" && !mapped) {
-        state = "unmatched";
-        this.database.prepare("UPDATE stock_prep_order_states SET state='unmatched',error=?,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND state='pending'")
-          .run(mappingError, Date.now(), storeId, row.posting_number, row.offer_id);
+      } else if (orderState === "pending" || orderState === "unmatched") {
+        this.database.prepare("UPDATE stock_prep_order_states SET state=?,error=?,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=?")
+          .run(state, mapped ? null : mappingError, Date.now(), storeId, row.posting_number, row.offer_id);
       }
-      const groupKey = mapped ? `${mapping.url}\u0000${mapping.skuId}` : `unmatched:${row.offer_id}`;
-      const group = groups.get(groupKey) ?? { offerUrl: mapped ? mapping.url : null, offerId: row.offer_id, skuId: mapped ? mapping.skuId : null, status: state, quantity: 0, orders: [], error: mapped ? row.error : "飞书映射缺失、重复或无效" };
+      const groupKey = validMapping ? `${validMapping.url}\u0000${validMapping.skuId}` : `unmatched:${row.offer_id}`;
+      const currentError = mapped ? (state === "pending" ? null : row.error) : mappingError;
+      const group = groups.get(groupKey) ?? { offerUrl: validMapping?.url ?? null, offerId: row.offer_id, skuId: validMapping?.skuId ?? null, imageUrl: row.image_url, status: state, quantity: 0, orders: [], error: currentError };
+      group.imageUrl ??= row.image_url;
       group.quantity += row.quantity;
-      group.orders.push({ postingNumber: row.posting_number, offerId: row.offer_id, productName: row.name, quantity: row.quantity, state, error: mapped ? row.error : mappingError, selectedByDefault: state === "pending" });
+      group.orders.push({ postingNumber: row.posting_number, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, state, error: currentError, selectedByDefault: state === "pending" });
       if (group.status !== state) group.status = group.status === "unmatched" || state === "unmatched" ? "unmatched" : "pending";
       groups.set(groupKey, group);
     }
@@ -416,7 +458,7 @@ export class StockPrepService {
         }
       }
 
-      const before = targets.length ? await this.cartQuantities(session, targets) : new Map<string, number>();
+      const before = targets.length ? await this.cartQuantitiesByMode(session, targets) : new Map<string, CartModeQuantities>();
       const attempted: ResolvedSkuTarget[] = [];
       for (const target of targets) {
         try {
@@ -442,18 +484,24 @@ export class StockPrepService {
       }
       const expectedMinimums = new Map([...attemptedByCartKey].map(([cartKey, group]) => [
         cartKey,
-        (before.get(cartKey) ?? 0) + group.reduce((sum, target) => sum + target.quantity, 0),
+        (before.get(cartKey)?.[group[0]!.dropship ? "dropship" : "wholesale"] ?? 0) + group.reduce((sum, target) => sum + target.quantity, 0),
       ]));
-      const after = attempted.length ? await this.cartQuantities(session, attempted, expectedMinimums) : new Map<string, number>();
+      const after: Map<string, CartModeQuantities> = attempted.length ? await this.cartQuantitiesByMode(session, attempted, expectedMinimums) : new Map();
       for (const [cartKey, group] of attemptedByCartKey) {
-        const beforeQuantity = before.get(cartKey) ?? 0;
-        const afterQuantity = after.get(cartKey) ?? 0;
+        const dropship = group[0]!.dropship;
+        const mode = dropship ? "dropship" : "wholesale";
+        const otherMode = dropship ? "wholesale" : "dropship";
+        const beforeQuantity = before.get(cartKey)?.[mode] ?? 0;
+        const afterQuantity = after.get(cartKey)?.[mode] ?? 0;
+        const otherCartUnchanged = (after.get(cartKey)?.[otherMode] ?? 0) === (before.get(cartKey)?.[otherMode] ?? 0);
         const expectedDelta = group.reduce((sum, target) => sum + target.quantity, 0);
         for (const target of group) {
-          if (afterQuantity - beforeQuantity === expectedDelta) {
+          if (afterQuantity - beforeQuantity === expectedDelta && otherCartUnchanged) {
             this.finishBatchItem(batchId, storeId, target, "added", null, beforeQuantity, afterQuantity);
           } else {
-            this.finishBatchItem(batchId, storeId, target, "uncertain", `购物车目标规格数量从 ${beforeQuantity} 变为 ${afterQuantity}，整批增量预期 ${expectedDelta}`, beforeQuantity, afterQuantity);
+            const otherBefore = before.get(cartKey)?.[otherMode] ?? 0;
+            const otherAfter = after.get(cartKey)?.[otherMode] ?? 0;
+            this.finishBatchItem(batchId, storeId, target, "uncertain", `目标购物车数量从 ${beforeQuantity} 变为 ${afterQuantity}，预期增加 ${expectedDelta}；另一购物车从 ${otherBefore} 变为 ${otherAfter}`, beforeQuantity, afterQuantity);
           }
         }
       }
@@ -475,21 +523,26 @@ export class StockPrepService {
     if (!productId) throw new Error("1688 商品链接格式无效");
     const pageUrl = `https://detail.1688.com/offer/${productId}.html`;
     await this.runBrowser(session, ["open", pageUrl]);
-    const detail = parseCli<{ url: string; skuId: string | null; attributes: string[] }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+    const detail = parseCli<{ url: string; skuId: string | null; attributes: string[]; supplierName: string }>(await this.runBrowser(session, ["eval", String.raw`(() => {
       const desiredSkuId=${JSON.stringify(item.sku_id)};
       const decode=(value)=>{const node=document.createElement('textarea');node.innerHTML=String(value??'');return node.value.trim()};
       const scripts=[...document.scripts].map((node)=>node.textContent||'').join('\n');
       const matches=scripts.match(/\{[^{}]*"skuId"\s*:\s*"?\d+"?[^{}]*\}/g)||[];
       const sku=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).find((value)=>value&&String(value.skuId)===desiredSkuId);
-      if(!sku)return {url:location.href,skuId:null,attributes:[]};
+      const normalizedScripts=scripts.replaceAll(String.fromCharCode(92)+'"','"');
+      const supplierNames=[...new Set([...normalizedScripts.matchAll(/"companyName"\s*:\s*"([^"]+)"/gu)].map((match)=>match[1]?.trim()).filter(Boolean))];
+      const supplierName=supplierNames.length===1?supplierNames[0]:'';
+      if(!sku)return {url:location.href,skuId:null,attributes:[],supplierName};
       const explicit=[sku.sku1,sku.sku2].map(decode).filter(Boolean);
       const specAttrs=decode(sku.specAttrs).split(/\s*>\s*/u).map((value)=>value.trim()).filter(Boolean);
-      return {url:location.href,skuId:String(sku.skuId),attributes:explicit.length>=2?explicit:specAttrs};
+      return {url:location.href,skuId:String(sku.skuId),attributes:explicit.length>=2?explicit:specAttrs,supplierName};
     })()`]));
     if (detail.url !== pageUrl || detail.skuId !== item.sku_id) throw new Error(`页面中未找到目标 SKU ID：${item.sku_id}`);
+    if (!detail.supplierName) throw new Error("无法识别 1688 供应商名称，已阻止加购");
     if (detail.attributes.length < 2 || detail.attributes.some((value) => !value.trim())) throw new Error(`SKU ${item.sku_id} 的规格信息不完整，已阻止加购`);
     const attributes = detail.attributes.map((value) => value.trim());
-    return { ...item, productId, attributes, cartKey: `${productId}\u0000${attributes.join("\u0000")}` };
+    const dropship = this.getDropshipSuppliers().some((name) => name.localeCompare(detail.supplierName, undefined, { sensitivity: "base" }) === 0);
+    return { ...item, productId, attributes, supplierName: detail.supplierName, dropship, cartKey: `${productId}\u0000${attributes.join("\u0000")}` };
   }
 
   private async addResolvedSku(session: string, target: ResolvedSkuTarget): Promise<void> {
@@ -499,6 +552,52 @@ export class StockPrepService {
     try {
       this.database.prepare("UPDATE stock_prep_batch_items SET status='running',updated_at_ms=? WHERE id=? AND status='queued'").run(Date.now(), target.id);
       await this.runBrowser(session, ["open", pageUrl]);
+      if (target.dropship) {
+        const opened = parseCli<{ clicked: boolean; count: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+          const buttons=[...document.querySelectorAll('button[data-click="DX_ORDER"]')].filter((button)=>button.innerText?.trim()==='代发下单'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
+          if(buttons.length!==1)return {clicked:false,count:buttons.length};buttons[0].click();return {clicked:true,count:1};
+        })()`]));
+        if (!opened.clicked || opened.count !== 1) throw new Error(`“代发下单”入口无法唯一确认（匹配 ${opened.count} 个）`);
+        const frameIndex = await this.findDropshipSkuFrame(session);
+        const frameArgs = (script: string): string[] => ["eval", script, "--frame", String(frameIndex)];
+        const colorResult = parseCli<{ found: boolean; active: boolean }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
+          const target=${JSON.stringify(color)};const button=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>(node.querySelector('.label-name')||node).textContent?.trim()===target);
+          if(!button)return {found:false,active:false};if(!button.classList.contains('active'))button.click();return {found:true,active:button.classList.contains('active')};
+        })()`)));
+        if (!colorResult.found || !colorResult.active) throw new Error(`代发弹层中不存在商品颜色规格：${color}`);
+        await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
+        const filled = parseCli<{ color: string | null; size: string; filled: boolean; actual: string }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
+          const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};const quantity=${target.quantity};
+          const active=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>node.classList.contains('active'));
+          const activeColor=(active?.querySelector('.label-name')||active)?.textContent?.trim()||null;
+          const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>(node.querySelector('.item-label')||node).textContent?.trim()===expectedSize);
+          const input=row?.querySelector('input.ant-input-number-input');if(!input)return {color:activeColor,size:'',filled:false,actual:''};
+          const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(!setter)return {color:activeColor,size:expectedSize,filled:false,actual:input.value};
+          setter.call(input,String(quantity));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:String(quantity)}));input.dispatchEvent(new Event('change',{bubbles:true}));input.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
+          return {color:activeColor,size:expectedSize,filled:true,actual:input.value};
+        })()`)));
+        if (filled.color !== color || filled.size !== size || !filled.filled || Number(filled.actual) !== target.quantity) {
+          throw new Error(`代发弹层未能确认目标规格或数量：${color} / ${size} × ${target.quantity}`);
+        }
+        await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(750);
+        const prepared = parseCli<{ buttonCount: number; colorActive: boolean; sizeFound: boolean; actual: string }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
+          const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};
+          const colorButton=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>(node.querySelector('.label-name')||node).textContent?.trim()===expectedColor);
+          const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>(node.querySelector('.item-label')||node).textContent?.trim()===expectedSize);
+          const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
+          return {buttonCount:buttons.length,colorActive:Boolean(colorButton?.classList.contains('active')),sizeFound:Boolean(row),actual:row?.querySelector('input.ant-input-number-input')?.value??''};
+        })()`)));
+        if (prepared.buttonCount !== 1 || !prepared.colorActive || !prepared.sizeFound || Number(prepared.actual) !== target.quantity) {
+          throw new Error(`代发弹层提交前校验失败：按钮 ${prepared.buttonCount} 个，规格 ${color} / ${size}，数量 ${prepared.actual || "空"}`);
+        }
+        clickStarted = true;
+        const click = parseCli<{ clicked: boolean; count: number }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
+          const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
+          if(buttons.length!==1)return {clicked:false,count:buttons.length};buttons[0].click();return {clicked:true,count:1};
+        })()`)));
+        if (!click.clicked || click.count !== 1) throw new Error(`代发弹层“加采购车”按钮无法唯一确认（匹配 ${click.count} 个）`);
+        return;
+      }
       const colorResult = parseCli<{ found: boolean }>(await this.runBrowser(session, ["eval", String.raw`(() => {
         const target=${JSON.stringify(color)};const exact=(value)=>value?.textContent?.trim()===target;
         const button=[...document.querySelectorAll('.sku-filter-button')].find((node)=>exact(node.querySelector('.label-name')||node));
@@ -523,6 +622,16 @@ export class StockPrepService {
       }
       const filled = parseCli<{ filled: boolean; verified: boolean; actual: string }>(await this.runBrowser(session, ["fill", "--nth", String(selected.inputIndex), "input.ant-input-number-input", String(target.quantity)]));
       if (!filled.filled || !filled.verified || Number(filled.actual) !== target.quantity) throw new Error(`未能将加购数量输入目标 SKU ${target.sku_id}`);
+      // The fixed footer button can sit below the OpenCLI viewport until it is scrolled into view.
+      const prepared = parseCli<{ buttonCount: number; visible: boolean }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+        const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
+        if(buttons.length!==1)return {buttonCount:buttons.length,visible:false};
+        const button=buttons[0];button.scrollIntoView({block:'center',behavior:'instant'});
+        const rect=button.getBoundingClientRect();
+        return {buttonCount:1,visible:rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=window.innerHeight&&rect.left>=0&&rect.right<=window.innerWidth};
+      })()`]));
+      if (prepared.buttonCount !== 1 || !prepared.visible) throw new Error(`普通加购按钮未能唯一定位或滚动到可见区域（匹配 ${prepared.buttonCount} 个）`);
+      await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(150);
       clickStarted = true;
       const click = parseCli<{ clicked: boolean }>(await this.runBrowser(session, ["click", "--role", "button", "--name", "加采购车"]));
       if (!click.clicked) { clickStarted = false; throw new Error("加采购车按钮未匹配或未执行"); }
@@ -532,13 +641,37 @@ export class StockPrepService {
     }
   }
 
-  private async cartQuantities(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>()): Promise<Map<string, number>> {
-    await this.runBrowser(session, ["open", "https://cart.1688.com/cart.htm"]);
+  /** Waits for the cross-origin 1688 dropship SKU drawer created by the product page. */
+  private async findDropshipSkuFrame(session: string): Promise<number> {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const frames = parseCli<BrowserFrame[]>(await this.runBrowser(session, ["frames"]));
+      const frame = frames.find(({ url, name }) => name === "fullscreen-drawer-iframe" && url.includes("/od-panel/sku-panel.html") && url.includes("actionType=dxOrder"));
+      if (frame) return frame.index;
+      if (attempt < 11) await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
+    }
+    throw new Error("1688 代发规格 iframe 未打开");
+  }
+
+  private async cartQuantitiesByMode(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>()): Promise<Map<string, CartModeQuantities>> {
+    const result = new Map(targets.map((target) => [target.cartKey, { wholesale: 0, dropship: 0 }]));
+    const modes = new Set(targets.flatMap((target) => target.dropship ? [false, true] : [false]));
+    for (const dropship of modes) {
+      const mode = dropship ? "dropship" : "wholesale";
+      const modeMinimums = new Map([...minimums].filter(([key]) => targets.some((target) => target.cartKey === key && target.dropship === dropship)));
+      const quantities = await this.cartQuantities(session, targets, modeMinimums, dropship);
+      for (const [key, quantity] of quantities) result.get(key)![mode] = quantity;
+    }
+    return result;
+  }
+
+  private async cartQuantities(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>(), dropship = false): Promise<Map<string, number>> {
+    await this.runBrowser(session, ["open", dropship ? "https://cart.1688.com/daixiao_cart.htm" : "https://cart.1688.com/cart.htm"]);
     const serialized = targets.map((target) => ({ key: target.cartKey, productId: target.productId, attributes: target.attributes }));
     const selector = String.raw`(() => {
       const targets=${JSON.stringify(serialized)};
       const normalize=(value)=>String(value??'').split(/\s*(?:;|；|>)\s*/u).map((part)=>part.trim()).filter(Boolean);
-      const isCartPage=location.hostname==='cart.1688.com'&&location.pathname==='/cart.htm';
+      const expectedPath=${JSON.stringify(dropship ? "/daixiao_cart.htm" : "/cart.htm")};
+      const isCartPage=location.hostname==='cart.1688.com'&&location.pathname===expectedPath;
       const groups=[...document.querySelectorAll('[class*=groupRoot]')];const quantities={};
       for(const target of targets){
         const matchingGroups=groups.filter((group)=>[...group.querySelectorAll('a[href*="detail.1688.com/offer/"]')].some((link)=>new URL(link.href).pathname==='/offer/'+target.productId+'.html'));

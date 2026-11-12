@@ -14,6 +14,12 @@ const orderKeys = z.object({ keys: z.array(z.object({ postingNumber: z.string().
 export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrepService, stores: StoresRepository, syncService: SyncService): void {
   app.get("/api/stock-prep/connection", { preHandler: requireSession }, async () => service.getConnectionState());
 
+  app.put("/api/stock-prep/dropship-suppliers", { preHandler: requireSession }, async (request, reply) => {
+    const input = z.object({ names: z.array(z.string().trim().min(1).max(120)).max(100) }).parse(request.body);
+    try { return { suppliers: service.saveDropshipSupplierNames(input.names) }; }
+    catch (error) { return reply.code(400).send({ error: "DROPSHIP_SUPPLIERS_INVALID", message: error instanceof Error ? error.message : "代发供应商名单无效" }); }
+  });
+
   app.put("/api/stock-prep/connection/app", { preHandler: requireSession }, async (request, reply) => {
     const input = z.object({ appId: z.string().min(1).max(100), appSecret: z.string().min(8).max(500) }).parse(request.body);
     try { service.configureFeishuApp(input.appId, input.appSecret); return { configured: true }; }
@@ -43,8 +49,12 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
 
   app.post("/api/stock-prep/stores/:storeId/scan", { preHandler: requireSession }, async (request, reply) => {
     const { storeId } = storeParams.parse(request.params);
+    const { forceRefresh } = z.object({ forceRefresh: z.boolean().optional() }).parse(request.body ?? {});
     try {
-      await syncService.syncStore(storeId, subDays(new Date(), 14), new Date(), ["FBS", "RFBS"]);
+      if (forceRefresh || !service.hasFreshOrderSyncCache(storeId)) {
+        await syncService.syncStore(storeId, subDays(new Date(), 14), new Date(), ["FBS", "RFBS"]);
+        service.markOrderSyncCacheFresh(storeId);
+      }
       return await service.scan(storeId);
     }
     catch (error) { return reply.code(422).send({ error: "STOCK_PREP_SCAN_FAILED", message: error instanceof Error ? error.message : "备货订单扫描失败" }); }
@@ -55,6 +65,7 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
     const input = orderKeys.parse(request.body);
     try {
       await syncService.syncStore(storeId, subDays(new Date(), 14), new Date(), ["FBS", "RFBS"]);
+      service.markOrderSyncCacheFresh(storeId);
       return reply.code(202).send(await service.createBatch(storeId, input.keys));
     }
     catch (error) { return reply.code(409).send({ error: "STOCK_PREP_BATCH_REJECTED", message: error instanceof Error ? error.message : "无法创建加购批次" }); }

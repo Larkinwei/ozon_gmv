@@ -6855,6 +6855,11 @@ td {
 .stock-prep-main { display: grid; gap: 16px; }
 .stock-prep-title { align-items: center; margin-bottom: 0; }
 .stock-prep-cache-hint { display: inline-block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.stock-prep-loading { display: flex; align-items: center; gap: 14px; padding: 18px; color: #bfdbfe; background: rgb(30 64 175 / 18%); border: 1px solid rgb(96 165 250 / 45%); border-radius: 10px; }
+.stock-prep-loading > svg { flex: 0 0 auto; color: #60a5fa; }
+.stock-prep-loading > div { display: grid; gap: 4px; }
+.stock-prep-loading strong { font-size: 14px; }
+.stock-prep-loading small { color: #a8b7ce; font-size: 12px; }
 .stock-prep-store-picker { display: flex; align-items: end; gap: 10px; min-width: min(420px, 48%); }
 .stock-prep-store-picker .field { flex: 1; min-width: 180px; margin: 0; }
 .stock-prep-store-picker > button { flex: 0 0 auto; }
@@ -6875,6 +6880,9 @@ td {
 .stock-prep-summary > div { display: flex; align-items: center; gap: 7px; padding: 7px 10px; color: var(--muted); background: var(--surface-soft); border-radius: 7px; font-size: 12px; }
 .stock-prep-summary > div strong { color: var(--text); }
 .stock-prep-summary > button { margin-left: auto; }
+.stock-prep-select-all { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.stock-prep-select-all input { width: 16px; height: 16px; accent-color: #3b82f6; }
+.stock-prep-loading--preflight { margin: 12px 0; }
 .stock-prep-groups { display: grid; gap: 12px; }
 .stock-prep-group { min-width: 0; padding: 16px; }
 .stock-prep-group > header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -6886,6 +6894,9 @@ td {
 .stock-prep-state--added { color: #86efac; border-color: rgb(34 197 94 / 30%); }
 .stock-prep-state--unmatched, .stock-prep-state--uncertain, .stock-prep-state--failed { color: #fcd34d; border-color: rgb(245 158 11 / 35%); }
 .stock-prep-sku, .stock-prep-warning { color: var(--muted); font-size: 12px; }
+.stock-prep-product { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+.stock-prep-product-image { display: block; width: 58px; height: 58px; border-radius: 8px; object-fit: cover; }
+.stock-prep-product-image--empty { display: grid; flex: 0 0 58px; place-items: center; color: var(--muted); background: var(--surface-soft); }
 .stock-prep-sku code { color: #bfdbfe; }
 .stock-prep-warning { display: flex; align-items: center; gap: 7px; color: #fcd34d; }
 .stock-prep-orders { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 12px; }

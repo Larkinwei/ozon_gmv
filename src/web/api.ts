@@ -277,11 +277,11 @@ export async function fetchStores(): Promise<StoreView[]> {
 }
 
 export interface StockPrepOrderKey { postingNumber: string; offerId: string }
-export interface StockPrepOrder { postingNumber: string; offerId: string; productName: string; quantity: number; state: string; error: string | null; selectedByDefault: boolean }
-export interface StockPrepGroup { offerUrl: string | null; offerId: string; skuId: string | null; status: string; quantity: number; error: string | null; orders: StockPrepOrder[] }
+export interface StockPrepOrder { postingNumber: string; offerId: string; productName: string; imageUrl: string | null; quantity: number; state: string; error: string | null; selectedByDefault: boolean }
+export interface StockPrepGroup { offerUrl: string | null; offerId: string; skuId: string | null; imageUrl: string | null; status: string; quantity: number; error: string | null; orders: StockPrepOrder[] }
 export interface StockPrepScan { storeId: string; groups: StockPrepGroup[] }
 export interface StockPrepBatch { id: string; status: string; total_count: number; completed_count: number; items: Array<{id:string;offer_id:string;sku_id:string;quantity:number;status:string;error:string|null;order_keys_json?:string}> }
-export interface StockPrepConnection { platform: string; feishu: { connected: boolean; profile: string | null; userName: string | null; message: string; appIdConfigured: boolean; appSecretConfigured: boolean; authorization: { state: string; url?: string; qrCode?: string; message?: string } | null }; configuredStoreCount: number; browserBridge: { ready: boolean; message: string } }
+export interface StockPrepConnection { platform: string; feishu: { connected: boolean; profile: string | null; userName: string | null; message: string; appIdConfigured: boolean; appSecretConfigured: boolean; authorization: { state: string; url?: string; qrCode?: string; message?: string } | null }; configuredStoreCount: number; browserBridge: { ready: boolean; message: string }; dropshipSuppliers: string[] }
 
 export async function fetchStockPrepConnection(): Promise<StockPrepConnection> {
   return apiFetch("/api/stock-prep/connection");
@@ -291,12 +291,16 @@ export async function saveStockPrepFeishuApp(appId: string, appSecret: string): 
   return apiFetch("/api/stock-prep/connection/app", { method: "PUT", body: JSON.stringify({ appId, appSecret }) });
 }
 
+export async function saveStockPrepDropshipSuppliers(names: string[]): Promise<{ suppliers: string[] }> {
+  return apiFetch("/api/stock-prep/dropship-suppliers", { method: "PUT", body: JSON.stringify({ names }) });
+}
+
 export async function beginStockPrepFeishuAuthorization(): Promise<{ verificationUrl: string; qrCode: string }> {
   return apiFetch("/api/stock-prep/connection/authorize", { method: "POST" });
 }
 
-export async function scanStockPrep(storeId: string): Promise<StockPrepScan> {
-  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/scan`, { method: "POST" });
+export async function scanStockPrep(storeId: string, forceRefresh = false): Promise<StockPrepScan> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/scan`, { method: "POST", body: JSON.stringify({ forceRefresh }) });
 }
 
 export async function saveStockPrepSource(storeId: string, url: string): Promise<{ url: string; tableId: string }> {

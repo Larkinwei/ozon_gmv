@@ -13,7 +13,7 @@ const offerUrl = "https://detail.1688.com/offer/747713283348.html";
 const skuId = "6103279203988";
 const databases: BetterSqlite3.Database[] = [];
 
-function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId]] as unknown[][], behavior: "success" | "pre-click-failure" | "uncertain" = "success") {
+function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId]] as unknown[][], behavior: "success" | "pre-click-failure" | "dropship-button-missing" | "uncertain" | "wrong-cart" = "success") {
   const database = new BetterSqlite3(":memory:");
   databases.push(database);
   database.exec(`
@@ -42,10 +42,14 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
     addItem.run(id, offerId, "Test product", quantity);
   }
   const appConfig = { ENCRYPTION_KEY: "a".repeat(64) } as AppConfig;
-  let cartQuantity = 2;
+  const cartQuantities = { wholesale: 2, dropship: 0 };
+  let currentCart: "wholesale" | "dropship" = "wholesale";
   let cartOpenCount = 0;
   let addClickCount = 0;
   let pendingQuantity = 0;
+  const selectedModes: string[] = [];
+  const addActions: string[] = [];
+  let dropshipDialog = false;
   const service = new StockPrepService(database, new SettingsRepository(database as never), appConfig, {
     platform: "darwin",
     sleep: async () => undefined,
@@ -56,17 +60,46 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       const script = value;
       if (action === "eval" && script) expect(() => new Function(`return ${script};`)).not.toThrow();
       if (action === "open") {
-        if (value === "https://cart.1688.com/cart.htm") cartOpenCount += 1;
+        if (value === "https://cart.1688.com/cart.htm") { cartOpenCount += 1; currentCart = "wholesale"; }
+        if (value === "https://cart.1688.com/daixiao_cart.htm") currentCart = "dropship";
         return JSON.stringify({ url: value });
       }
       if (action === "eval" && script?.includes("const targets=")) {
         const serialized = script.match(/const targets=(\[.*?\]);\s*const normalize/su)?.[1];
         const targets = serialized ? JSON.parse(serialized) as Array<{ key: string }> : [];
-        return JSON.stringify({ loaded: true, quantities: Object.fromEntries(targets.map((target) => [target.key, cartQuantity])) });
+        return JSON.stringify({ loaded: true, quantities: Object.fromEntries(targets.map((target) => [target.key, cartQuantities[currentCart]])) });
       }
       if (action === "eval" && script?.includes("desiredSkuId")) {
         expect(script).toContain("specAttrs");
-        return JSON.stringify({ url: `https://detail.1688.com/offer/747713283348.html`, skuId, attributes: ["蓝底叶子", "XXL"] });
+        return JSON.stringify({ url: `https://detail.1688.com/offer/747713283348.html`, skuId, attributes: ["蓝底叶子", "XXL"], supplierName: "安丘市鑫达尔服装厂" });
+      }
+      if (action === "eval" && script?.includes("const expected=") && script.includes("masthead--active")) {
+        selectedModes.push(script.match(/const expected="([^"]+)"/u)?.[1] ?? "unknown");
+        return JSON.stringify({ selected: true });
+      }
+      if (action === "eval" && script?.includes("button[data-click=\"DX_ORDER\"]")) {
+        dropshipDialog = true;
+        return JSON.stringify({ clicked: true, count: 1 });
+      }
+      if (action === "frames") {
+        return JSON.stringify(dropshipDialog ? [{ index: 6, name: "fullscreen-drawer-iframe", url: "https://air.1688.com/app/upkg-solution/od-panel/sku-panel.html?actionType=dxOrder" }] : []);
+      }
+      if (action === "eval" && args.includes("--frame") && script?.includes("found:false,active:false")) {
+        return JSON.stringify({ found: true, active: true });
+      }
+      if (action === "eval" && args.includes("--frame") && script?.includes("HTMLInputElement.prototype")) {
+        pendingQuantity = Number(script.match(/const quantity=(\d+)/u)?.[1] ?? 0);
+        return JSON.stringify({ color: "蓝底叶子", size: "XXL", filled: behavior !== "pre-click-failure", actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity) });
+      }
+      if (action === "eval" && args.includes("--frame") && script?.includes("buttonCount:buttons.length")) {
+        return JSON.stringify({ buttonCount: behavior === "dropship-button-missing" ? 0 : 1, colorActive: true, sizeFound: true, actual: String(pendingQuantity) });
+      }
+      if (action === "eval" && args.includes("--frame") && script?.includes("buttons[0].click()")) {
+        addClickCount += 1;
+        addActions.push("弹层加采购车");
+        if (behavior === "success") cartQuantities.dropship += pendingQuantity;
+        if (behavior === "wrong-cart") cartQuantities.wholesale += pendingQuantity;
+        return JSON.stringify({ clicked: true, count: 1 });
       }
       if (action === "eval" && script?.includes("const target=") && script?.includes("sku-filter-button")) return JSON.stringify({ found: true });
       if (action === "eval" && script?.includes("expectedColor")) return JSON.stringify({ url: "https://detail.1688.com/offer/747713283348.html", color: "蓝底叶子", size: "XXL", skuId, inputIndex: 3 });
@@ -74,17 +107,19 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
         pendingQuantity = Number(args.at(-1));
         return JSON.stringify({ filled: true, verified: behavior !== "pre-click-failure", actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity) });
       }
-      if (action === "click" && args.includes("加采购车")) {
+      if (action === "click" && pendingQuantity > 0 && (args.includes("加采购车") || args.includes("button"))) {
         addClickCount += 1;
-        if (behavior === "success") cartQuantity += pendingQuantity;
+        const actionName = args.includes("--nth") ? "弹层加采购车" : "加采购车";
+        addActions.push(actionName);
+        if (behavior === "success") cartQuantities[dropshipDialog ? "dropship" : "wholesale"] += pendingQuantity;
+        if (behavior === "wrong-cart") cartQuantities.wholesale += pendingQuantity;
         return JSON.stringify({ clicked: true });
       }
-      if (action === "wait") return "Text appeared";
       if (action === "close") return "";
       throw new Error(`unexpected OpenCLI invocation: ${args.join(" ").slice(0, 120)}`);
     },
   });
-  return { database, service, metrics: { cartOpenCount: () => cartOpenCount, addClickCount: () => addClickCount } };
+  return { database, service, metrics: { cartOpenCount: () => cartOpenCount, addClickCount: () => addClickCount, selectedModes, addActions, cartQuantities } };
 }
 
 afterEach(() => { for (const database of databases.splice(0)) database.close(); });
@@ -99,6 +134,16 @@ async function waitForBatch(service: StockPrepService, id: string): Promise<Reco
 }
 
 describe("StockPrepService", () => {
+  it("keeps the Ozon order snapshot fresh for one hour per store", () => {
+    const { service } = fixture();
+    const refreshedAt = 1_800_000_000_000;
+    expect(service.hasFreshOrderSyncCache(storeId, refreshedAt)).toBe(false);
+    service.markOrderSyncCacheFresh(storeId, refreshedAt);
+    expect(service.hasFreshOrderSyncCache(storeId, refreshedAt + 3_599_999)).toBe(true);
+    expect(service.hasFreshOrderSyncCache(storeId, refreshedAt + 3_600_000)).toBe(false);
+    expect(service.hasFreshOrderSyncCache("another-store", refreshedAt + 1000)).toBe(false);
+  });
+
   it("filters orders and marks missing, duplicated or invalid mappings unmatched", async () => {
     const { service } = fixture([
       ["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId],
@@ -113,8 +158,21 @@ describe("StockPrepService", () => {
     expect(mapped.orders.every((order) => order.state === "pending" && order.selectedByDefault)).toBe(true);
     expect(result.groups.find((group) => group.offerId === "DUPLICATE")?.status).toBe("unmatched");
     expect(result.groups.find((group) => group.offerId === "BAD-SKU")?.status).toBe("unmatched");
+    expect(result.groups.find((group) => group.offerId === "UNMAPPED")?.orders[0]?.error).toBe("飞书未找到该货号");
+    expect(result.groups.find((group) => group.offerId === "DUPLICATE")?.orders[0]?.error).toBe("飞书货号重复");
+    expect(result.groups.find((group) => group.offerId === "BAD-SKU")?.orders[0]?.error).toBe("1688 SKU ID 无效");
     expect(result.groups.some((group) => group.offerId === "UNMAPPED")).toBe(true);
     expect(result.groups.some((group) => group.orders.some((order) => order.postingNumber === "post-3" || order.postingNumber === "post-4" || order.postingNumber === "post-5"))).toBe(false);
+  });
+
+  it("reconciles stale unmatched states with the current unique Feishu mapping", async () => {
+    const { database, service } = fixture();
+    database.prepare("INSERT INTO stock_prep_order_states (store_id,posting_number,offer_id,state,error,updated_at_ms) VALUES (?,?,?,?,?,?)")
+      .run(storeId, "post-1", "1645-2-XXL", "unmatched", "飞书映射缺失、重复或无效", Date.now());
+    const result = await service.scan(storeId);
+    const mapped = result.groups.find((group) => group.offerId === "1645-2-XXL")!;
+    expect(mapped.orders.map((order) => order.state)).toEqual(["pending", "pending"]);
+    expect(mapped.orders.every((order) => order.error === null)).toBe(true);
   });
 
   it("adds the selected quantities once, verifies the cart delta, and supports manual state rollback", async () => {
@@ -125,11 +183,60 @@ describe("StockPrepService", () => {
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed");
     expect((result.items as Array<{ quantity: number; cart_before: number; cart_after: number }>)[0]).toMatchObject({ quantity: 3, cart_before: 2, cart_after: 5 });
-    expect(metrics.cartOpenCount()).toBe(2);
+    expect(metrics.cartOpenCount()).toBe(4);
     expect(metrics.addClickCount()).toBe(1);
+    expect(metrics.addActions).toEqual(["加采购车"]);
+    expect(metrics.selectedModes).toContain("批发");
     expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='added'").get()).toMatchObject({ count: 2 });
     expect(service.resetOrders(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).toBe(2);
     expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='pending'").get()).toMatchObject({ count: 2 });
+  });
+
+  it("adds allowlisted supplier SKUs through the spec dialog and verifies both carts", async () => {
+    const { database, service, metrics } = fixture();
+    expect(service.saveDropshipSupplierNames(["安丘市鑫达尔服装厂"])).toEqual(["安丘市鑫达尔服装厂"]);
+    expect(service.getDropshipSuppliers()).toEqual(["安丘市鑫达尔服装厂"]);
+    const invalid = service.saveDropshipSupplierNames(["安丘市鑫达尔服装厂"]);
+    expect(invalid).toHaveLength(1);
+    expect(database.prepare("SELECT value FROM app_settings WHERE key='stock-prep.dropship-suppliers'").get()).toMatchObject({ value: JSON.stringify(invalid) });
+    const scan = await service.scan(storeId);
+    const orders = scan.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+    const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
+    const result = await waitForBatch(service, batch.id);
+    expect(result.status).toBe("completed");
+    expect(metrics.selectedModes).toContain("代发");
+    expect(metrics.addActions).toEqual(["弹层加采购车"]);
+    expect(metrics.addClickCount()).toBe(1);
+    expect(metrics.cartQuantities).toEqual({ wholesale: 2, dropship: 3 });
+    expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 3, cart_before: 0, cart_after: 3 })]);
+  });
+
+  it("marks the batch uncertain if a dropship add increases the wholesale cart", async () => {
+    const { database, service, metrics } = fixture(undefined, "wrong-cart");
+    service.saveDropshipSupplierNames(["安丘市鑫达尔服装厂"]);
+    const scan = await service.scan(storeId);
+    const orders = scan.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+    const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
+    const result = await waitForBatch(service, batch.id);
+    expect(result.status).toBe("completed_with_errors");
+    expect(metrics.cartQuantities).toEqual({ wholesale: 5, dropship: 0 });
+    expect((result.items as Array<{ status: string; error: string }>)[0]).toMatchObject({
+      status: "uncertain",
+      error: expect.stringContaining("另一购物车从 2 变为 5"),
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='uncertain'").get()).toMatchObject({ count: 2 });
+  });
+
+  it("fails a dropship item before clicking when the iframe cart button is not unique", async () => {
+    const { service, metrics } = fixture(undefined, "dropship-button-missing");
+    service.saveDropshipSupplierNames(["安丘市鑫达尔服装厂"]);
+    const scan = await service.scan(storeId);
+    const orders = scan.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+    const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
+    const result = await waitForBatch(service, batch.id);
+    expect(result.status).toBe("completed_with_errors");
+    expect(metrics.addClickCount()).toBe(0);
+    expect(result.items).toEqual([expect.objectContaining({ status: "failed", error: expect.stringContaining("提交前校验失败") })]);
   });
 
   it("marks failures before clicking as failed and uncertain cart outcomes as non-retryable", async () => {
@@ -160,7 +267,7 @@ describe("StockPrepService", () => {
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed");
     expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 4, cart_before: 2, cart_after: 6 })]);
-    expect(metrics.cartOpenCount()).toBe(2);
+    expect(metrics.cartOpenCount()).toBe(4);
     expect(metrics.addClickCount()).toBe(1);
   });
 });

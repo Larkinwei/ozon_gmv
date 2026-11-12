@@ -8,6 +8,7 @@ const OPENCLI_PACKAGE = "@jackwener/opencli";
 const OPENCLI_VERSION = "2.0.2";
 const DEFAULT_COMMAND_TIMEOUT_MS = 130_000;
 const OPENCLI_VERSION_TIMEOUT_MS = 5_000;
+const OPENCLI_DAEMON_PORT = 19_825;
 
 interface OpenCliInvocation {
   command: string;
@@ -202,6 +203,7 @@ export async function runOpenCli(
     : normalizeOpenCliArguments(argumentsList, majorVersion);
   return new Promise((resolve, reject) => {
     const child = spawn(invocation.command, [...invocation.prefix, ...normalizedArguments], {
+      env: { ...process.env, NODE_NO_WARNINGS: "1" },
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -243,33 +245,37 @@ export async function runOpenCli(
   });
 }
 
-/** Checks the end-to-end CLI, daemon, and Chrome/Edge extension connection. */
+/** Reads daemon status without opening a browser session. */
 export async function diagnoseOpenCliBridge(configuredExecutable?: string | null): Promise<OpenCliBridgeStatus> {
   try {
-    const output = await runOpenCli(configuredExecutable, ["doctor"], 25_000);
-    const report = parseOpenCliDoctorOutput(output);
-    const connectedProfiles = report.profiles?.filter((profile) => profile.extensionConnected !== false).length ?? 0;
-    const incompatible = report.issues?.some((issue) => /CLI version incompatible/iu.test(issue)) === true;
-    const ready = report.extensionConnected === true && report.connectivity?.ok === true && !incompatible;
-    let message = "OpenCLI 已就绪，可使用 Chrome 或 Microsoft Edge 采集前台价格。";
-    if (incompatible) {
-      message = "Browser Bridge 扩展版本与内置 OpenCLI 不兼容，请更新浏览器扩展。";
-    } else if (report.extensionOutdated) {
-      message = "浏览器连接正常；建议更新 Browser Bridge 扩展以获得更稳定的自动重试。";
-    } else if (connectedProfiles > 1 && report.extensionConnected !== true) {
-      message = "检测到多个浏览器扩展连接，请只保留一个 Chrome 或 Edge 配置后重新检测。";
-    } else if (report.extensionConnected !== true) {
-      message = "未检测到 Browser Bridge。请打开 Chrome 或 Microsoft Edge，并确认扩展已启用。";
-    } else if (report.connectivity?.ok !== true) {
-      message = `浏览器扩展已连接，但通信检测失败${report.connectivity?.error ? `：${report.connectivity.error}` : ""}`;
+    const cliVersion = await runOpenCli(configuredExecutable, ["--version"], OPENCLI_VERSION_TIMEOUT_MS);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_000);
+    let statusPayload: unknown = null;
+    try {
+      const daemonPort = Number(process.env.OPENCLI_DAEMON_PORT) || OPENCLI_DAEMON_PORT;
+      const response = await fetch(`http://127.0.0.1:${daemonPort}/status`, {
+        headers: { "X-OpenCLI": "1" },
+        signal: controller.signal,
+      });
+      if (response.ok) statusPayload = await response.json();
+    } finally {
+      clearTimeout(timer);
     }
+    const status = statusPayload as { extensionConnected?: boolean; extensionVersion?: string; profiles?: Array<{ extensionConnected?: boolean }> } | null;
+    const connectedProfiles = status?.profiles?.filter((profile) => profile.extensionConnected !== false).length ?? 0;
+    const extensionConnected = status?.extensionConnected === true;
+    const ready = extensionConnected;
+    const message = ready
+      ? "OpenCLI 已就绪，可使用 Chrome 或 Microsoft Edge 采集前台价格。"
+      : "未检测到 Browser Bridge。请打开 Chrome 或 Microsoft Edge，并确认扩展已启用。";
     return {
       ready,
       cliAvailable: true,
-      cliVersion: report.cliVersion ?? OPENCLI_VERSION,
-      daemonRunning: report.daemonRunning === true,
-      extensionConnected: report.extensionConnected === true,
-      extensionVersion: report.extensionVersion ?? null,
+      cliVersion: cliVersion.trim() || OPENCLI_VERSION,
+      daemonRunning: status !== null,
+      extensionConnected,
+      extensionVersion: status?.extensionVersion ?? null,
       connectedProfiles,
       message,
     };
