@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
@@ -11,8 +11,13 @@ import { decryptSecret, encryptSecret } from "../security/encryption";
 import { runOpenCli, defaultOpenCliPath } from "./opencli-runtime";
 
 export type StockPrepState = "pending" | "adding" | "added" | "failed" | "uncertain" | "unmatched";
+export type BuyerRiskLevel = "none" | "review" | "blacklist";
 
-export interface StockPrepOrderView { postingNumber: string; offerId: string; productName: string; imageUrl: string | null; quantity: number; state: StockPrepState; error: string | null; selectedByDefault: boolean }
+export interface StockPrepOrderView {
+  postingNumber: string; orderNumber: string; offerId: string; productName: string; imageUrl: string | null;
+  quantity: number; orderQuantity: number; riskLevel: BuyerRiskLevel; blacklistStatus: string | null;
+  approved: boolean; state: StockPrepState; error: string | null; selectedByDefault: boolean;
+}
 export interface StockPrepGroupView { offerUrl: string | null; offerId: string; skuId: string | null; imageUrl: string | null; status: StockPrepState; quantity: number; orders: StockPrepOrderView[]; error: string | null }
 export interface StockPrepScanView { storeId: string; groups: StockPrepGroupView[] }
 
@@ -20,6 +25,8 @@ interface OrderRow {
   store_id: string;
   store_name: string;
   posting_number: string;
+  order_number: string;
+  buyer_key_hash: string | null;
   offer_id: string;
   name: string;
   quantity: number;
@@ -86,6 +93,17 @@ const DROPSHIP_SUPPLIERS_KEY = "stock-prep.dropship-suppliers";
 const ORDER_SYNC_CACHE_KEY_PREFIX = "stock-prep.order-sync-at.";
 const ORDER_SYNC_CACHE_TTL_MS = 60 * 60 * 1000;
 const require = createRequire(import.meta.url);
+
+function buyerHash(storeId: string, buyerId: string, encryptionKey: string): string {
+  return createHmac("sha256", encryptionKey).update(`${storeId}\u0000${buyerId.trim()}`).digest("hex");
+}
+
+function orderSnapshotHash(database: AppDatabase, storeId: string, orderNumber: string): string | null {
+  const items = database.prepare(`SELECT p.posting_number,pi.offer_id,pi.quantity FROM postings p
+    JOIN posting_items pi ON pi.posting_id=p.id WHERE p.store_id=? AND p.order_number=? AND p.status='awaiting_packaging'
+    AND p.cancelled_at_ms IS NULL ORDER BY p.posting_number,pi.offer_id`).all(storeId, orderNumber);
+  return items.length ? createHash("sha256").update(JSON.stringify(items)).digest("hex") : null;
+}
 
 function parseCli<T>(output: string): T {
   const unwrap = (parsed: CliEnvelope<T> | T): T => {
@@ -230,6 +248,62 @@ export class StockPrepService {
     this.settings.set(`${ORDER_SYNC_CACHE_KEY_PREFIX}${storeId}`, String(refreshedAt));
   }
 
+  /** Returns blacklist entries for the authenticated operator and decrypts IDs only for display. */
+  public listBuyerBlacklist(storeId: string): Record<string, unknown>[] {
+    const rows = this.database.prepare("SELECT id,buyer_id_ciphertext,status,source,reason_code,summary,evidence_orders_json,rule_version,notes,created_at_ms,updated_at_ms FROM stock_prep_buyer_blacklist WHERE store_id=? ORDER BY updated_at_ms DESC")
+      .all(storeId) as Array<Record<string, unknown> & { buyer_id_ciphertext: string | null }>;
+    return rows.map(({ buyer_id_ciphertext, ...row }) => ({
+      ...row,
+      buyerId: buyer_id_ciphertext ? decryptSecret(buyer_id_ciphertext, this.config.ENCRYPTION_KEY) : null,
+      evidenceOrders: JSON.parse(String(row.evidence_orders_json ?? "[]")) as string[],
+    }));
+  }
+
+  /** Adds or updates an encrypted buyer record while keeping Agent submissions as candidates. */
+  public upsertBuyerBlacklist(storeId: string, input: { buyerId: string; status: "candidate" | "active"; source: "manual" | "agent" | "order"; reasonCode: string; summary?: string; evidenceOrders?: string[]; ruleVersion?: string; notes?: string }): void {
+    const now = Date.now();
+    const hash = buyerHash(storeId, input.buyerId, this.config.ENCRYPTION_KEY);
+    const existing = this.database.prepare("SELECT id,status FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, hash) as { id: string; status: string } | undefined;
+    if (input.source === "agent" && existing && existing.status !== "candidate") {
+      this.database.prepare("INSERT INTO stock_prep_buyer_blacklist_events (id,entry_id,actor,action,details_json,created_at_ms) VALUES (?,?,?,?,?,?)")
+        .run(randomUUID(), existing.id, "agent", "candidate-submission-ignored", JSON.stringify({ reasonCode: input.reasonCode }), Date.now());
+      return;
+    }
+    const id = existing?.id ?? randomUUID();
+    const status = input.status;
+    this.database.prepare(`INSERT INTO stock_prep_buyer_blacklist (id,store_id,buyer_key_hash,buyer_id_ciphertext,status,source,reason_code,summary,evidence_orders_json,rule_version,notes,created_at_ms,updated_at_ms)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,buyer_key_hash) DO UPDATE SET status=excluded.status,source=excluded.source,reason_code=excluded.reason_code,summary=excluded.summary,evidence_orders_json=excluded.evidence_orders_json,rule_version=excluded.rule_version,notes=excluded.notes,updated_at_ms=excluded.updated_at_ms`)
+      .run(id, storeId, hash, encryptSecret(input.buyerId.trim(), this.config.ENCRYPTION_KEY), status, input.source, input.reasonCode, input.summary ?? null, JSON.stringify(input.evidenceOrders ?? []), input.ruleVersion ?? null, input.notes ?? null, now, now);
+    this.database.prepare("INSERT INTO stock_prep_buyer_blacklist_events (id,entry_id,actor,action,details_json,created_at_ms) VALUES (?,?,?,?,?,?)")
+      .run(randomUUID(), id, input.source, existing ? "updated" : "created", JSON.stringify({ reasonCode: input.reasonCode }), now);
+  }
+
+  /** Adds the current order's buyer to the active blacklist without returning or storing raw Ozon identifiers. */
+  public addOrderBuyerToBlacklist(storeId: string, orderNumber: string, reason: string): void {
+    const row = this.database.prepare("SELECT buyer_key_hash FROM postings WHERE store_id=? AND order_number=? AND buyer_key_hash IS NOT NULL LIMIT 1")
+      .get(storeId, orderNumber) as { buyer_key_hash: string } | undefined;
+    if (!row) throw new Error("订单没有可用于黑名单匹配的买家标识");
+    const existing = this.database.prepare("SELECT id FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, row.buyer_key_hash) as { id: string } | undefined;
+    const id = existing?.id ?? randomUUID();
+    const now = Date.now();
+    this.database.prepare(`INSERT INTO stock_prep_buyer_blacklist
+      (id,store_id,buyer_key_hash,status,source,reason_code,summary,evidence_orders_json,created_at_ms,updated_at_ms)
+      VALUES (?,?,?,'active','order','manual_order',?,?,?,?)
+      ON CONFLICT(store_id,buyer_key_hash) DO UPDATE SET status='active',source='order',reason_code='manual_order',summary=excluded.summary,updated_at_ms=excluded.updated_at_ms`)
+      .run(id, storeId, row.buyer_key_hash, reason.trim(), JSON.stringify([orderNumber]), now, now);
+    this.database.prepare("INSERT INTO stock_prep_buyer_blacklist_events (id,entry_id,actor,action,details_json,created_at_ms) VALUES (?,?,?,?,?,?)")
+      .run(randomUUID(), id, "manual", existing ? "activated" : "created", JSON.stringify({ orderNumber }), now);
+  }
+
+  /** Changes a candidate or active entry without allowing an Agent to perform this transition. */
+  public updateBuyerBlacklist(storeId: string, id: string, status: "active" | "inactive", actor: string): void {
+    const result = this.database.prepare("UPDATE stock_prep_buyer_blacklist SET status=?,updated_at_ms=? WHERE store_id=? AND id=?")
+      .run(status, Date.now(), storeId, id);
+    if (!result.changes) throw new Error("黑名单记录不存在");
+    this.database.prepare("INSERT INTO stock_prep_buyer_blacklist_events (id,entry_id,actor,action,details_json,created_at_ms) VALUES (?,?,?,?,?,?)")
+      .run(randomUUID(), id, actor, status, "{}", Date.now());
+  }
+
   /** Returns the supplier names routed to the 1688 dropship cart. */
   public getDropshipSuppliers(): string[] {
     try {
@@ -269,7 +343,7 @@ export class StockPrepService {
   public async scan(storeId: string): Promise<StockPrepScanView> {
     const source = this.database.prepare("SELECT source_url,base_token,table_id FROM store_sku_sources WHERE store_id=?").get(storeId) as StockPrepStoreRow | undefined;
     if (!source) throw new Error("请先为该店铺配置飞书 SKU 映射表");
-    const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,pi.offer_id,pi.name,pi.quantity,
+    const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,p.order_number,p.buyer_key_hash,pi.offer_id,pi.name,pi.quantity,
         image.primary_image_url AS image_url,states.state,states.error
       FROM postings p JOIN stores s ON s.id=p.store_id JOIN posting_items pi ON pi.posting_id=p.id
       LEFT JOIN product_images image ON image.store_id=p.store_id AND image.sku=pi.sku
@@ -281,6 +355,20 @@ export class StockPrepService {
     const mappingCounts = new Map<string, number>();
     for (const mapping of mappings) mappingCounts.set(mapping.offerId, (mappingCounts.get(mapping.offerId) ?? 0) + 1);
     const mappingByOffer = new Map(mappings.map((mapping) => [mapping.offerId, mapping]));
+    const orderTotals = new Map<string, number>();
+    for (const row of rows) orderTotals.set(row.order_number, (orderTotals.get(row.order_number) ?? 0) + row.quantity);
+    const riskByOrder = new Map<string, { level: BuyerRiskLevel; blacklistStatus: string | null; approved: boolean }>();
+    for (const row of rows) {
+      const hash = orderSnapshotHash(this.database, storeId, row.order_number);
+      const approval = this.database.prepare("SELECT snapshot_hash FROM stock_prep_risk_approvals WHERE store_id=? AND order_number=?").get(storeId, row.order_number) as { snapshot_hash: string } | undefined;
+      const blacklist = row.buyer_key_hash ? this.database.prepare("SELECT status FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, row.buyer_key_hash) as { status: string } | undefined : undefined;
+      const previous = riskByOrder.get(row.order_number);
+      const active = previous?.level === "blacklist" || blacklist?.status === "active";
+      let level: BuyerRiskLevel = "none";
+      if (active) level = "blacklist";
+      else if (orderTotals.get(row.order_number)! >= 2) level = "review";
+      riskByOrder.set(row.order_number, { level, blacklistStatus: active ? "active" : blacklist?.status ?? previous?.blacklistStatus ?? null, approved: Boolean(hash) && approval?.snapshot_hash === hash });
+    }
     const groups = new Map<string, StockPrepGroupView>();
     for (const row of rows) {
       const mapping = mappingByOffer.get(row.offer_id);
@@ -298,10 +386,12 @@ export class StockPrepService {
       }
       const groupKey = validMapping ? `${validMapping.url}\u0000${validMapping.skuId}` : `unmatched:${row.offer_id}`;
       const currentError = mapped ? (state === "pending" ? null : row.error) : mappingError;
+      const risk = riskByOrder.get(row.order_number)!;
+      const risky = orderTotals.get(row.order_number)! >= 2;
       const group = groups.get(groupKey) ?? { offerUrl: validMapping?.url ?? null, offerId: row.offer_id, skuId: validMapping?.skuId ?? null, imageUrl: row.image_url, status: state, quantity: 0, orders: [], error: currentError };
       group.imageUrl ??= row.image_url;
       group.quantity += row.quantity;
-      group.orders.push({ postingNumber: row.posting_number, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, state, error: currentError, selectedByDefault: state === "pending" });
+      group.orders.push({ postingNumber: row.posting_number, orderNumber: row.order_number, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, orderQuantity: orderTotals.get(row.order_number)!, riskLevel: risk.level, blacklistStatus: risk.blacklistStatus, approved: risk.approved, state, error: currentError, selectedByDefault: state === "pending" && risk.level !== "blacklist" && (!risky || risk.approved) });
       if (group.status !== state) group.status = group.status === "unmatched" || state === "unmatched" ? "unmatched" : "pending";
       groups.set(groupKey, group);
     }
@@ -321,12 +411,14 @@ export class StockPrepService {
         AND (p.posting_number,pi.offer_id) IN (${placeholders})`).all(storeId, ...parameters) as Array<{ posting_number: string; offer_id: string; quantity: number }>;
     if (selected.length !== uniqueKeys.length) throw new Error("部分订单已不符合待采购条件，请重新扫描");
     const scan = await this.scan(storeId);
-    const orderMap = new Map<string, { group: { offerUrl: string | null; skuId: string | null; offerId: string }; order: { postingNumber: string; offerId: string; quantity: number; state: StockPrepState } }>();
+    const orderMap = new Map<string, { group: { offerUrl: string | null; skuId: string | null; offerId: string }; order: StockPrepOrderView }>();
     for (const group of scan.groups) for (const order of group.orders) orderMap.set(`${order.postingNumber}\u0000${order.offerId}`, { group, order });
     const itemGroups = new Map<string, { url: string; skuId: string; offerId: string; quantity: number; keys: string[] }>();
     for (const key of uniqueKeys) {
       const match = orderMap.get(`${key.postingNumber}\u0000${key.offerId}`);
       if (!match || !match.group.offerUrl || !match.group.skuId || !["pending", "failed"].includes(match.order.state)) throw new Error(`订单 ${key.postingNumber} 当前不能加购`);
+      if (match.order.riskLevel === "blacklist") throw new Error(`订单 ${match.order.orderNumber} 的买家在黑名单中，禁止加购`);
+      if (match.order.orderQuantity >= 2 && !match.order.approved) throw new Error(`订单 ${match.order.orderNumber} 为多件订单，请先人工确认`);
       const id = `${match.group.offerUrl}\u0000${match.group.skuId}`;
       const group = itemGroups.get(id) ?? { url: match.group.offerUrl, skuId: match.group.skuId, offerId: key.offerId, quantity: 0, keys: [] };
       group.quantity += match.order.quantity;
@@ -355,6 +447,22 @@ export class StockPrepService {
       this.batchRunning = false;
       throw error;
     }
+  }
+
+  /** Approves the current item snapshot for one multi-item Ozon order. */
+  public approveRiskOrder(storeId: string, orderNumber: string): void {
+    const snapshotHash = orderSnapshotHash(this.database, storeId, orderNumber);
+    if (!snapshotHash) throw new Error("订单已不存在或不再待打包");
+    this.database.prepare(`INSERT INTO stock_prep_risk_approvals (store_id,order_number,snapshot_hash,approved_at_ms)
+      VALUES (?,?,?,?) ON CONFLICT(store_id,order_number) DO UPDATE SET snapshot_hash=excluded.snapshot_hash,approved_at_ms=excluded.approved_at_ms`)
+      .run(storeId, orderNumber, snapshotHash, Date.now());
+  }
+
+  /** Revokes manual approval so a multi-piece order requires review again. */
+  public revokeRiskOrderApproval(storeId: string, orderNumber: string): void {
+    const result = this.database.prepare("DELETE FROM stock_prep_risk_approvals WHERE store_id=? AND order_number=?")
+      .run(storeId, orderNumber);
+    if (!result.changes) throw new Error("订单当前没有人工放行状态");
   }
 
   public getBatch(id: string): Record<string, unknown> | null {

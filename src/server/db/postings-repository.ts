@@ -24,6 +24,9 @@ interface ExistingPostingRow {
   shipment_time_source: string;
   shipment_deadline_at_ms: number | null;
   shipment_deadline_source: string;
+  buyer_key_hash: string | null;
+  cancellation_initiator: string | null;
+  cancellation_type: string | null;
 }
 
 function postingChanged(existing: ExistingPostingRow, posting: NormalizedPosting): boolean {
@@ -39,6 +42,9 @@ function postingChanged(existing: ExistingPostingRow, posting: NormalizedPosting
     existing.shipment_time_source !== (posting.shipmentTimeSource ?? "missing") ||
     existing.shipment_deadline_at_ms !== (posting.shipmentDeadlineAt?.getTime() ?? null) ||
     existing.shipment_deadline_source !== posting.shipmentDeadlineSource
+    || (posting.buyerKeyHash != null && existing.buyer_key_hash !== posting.buyerKeyHash)
+    || (posting.cancellationInitiator != null && existing.cancellation_initiator !== posting.cancellationInitiator)
+    || (posting.cancellationType != null && existing.cancellation_type !== posting.cancellationType)
   );
 }
 
@@ -62,6 +68,7 @@ export class PostingsRepository {
                 gross_amount_minor, currency, cancelled_at_ms,
                 shipment_at_ms, shipment_time_source,
                 shipment_deadline_at_ms, shipment_deadline_source
+                , buyer_key_hash, cancellation_initiator, cancellation_type
          FROM postings
          WHERE store_id = ? AND posting_number = ?`,
       ).get(storeId, posting.postingNumber) as ExistingPostingRow | undefined;
@@ -77,6 +84,9 @@ export class PostingsRepository {
           `UPDATE postings SET
              order_number = ?, fulfillment_mode = ?, order_at_ms = ?, status = ?,
              substatus = ?, gross_amount_minor = ?, currency = ?, cancelled_at_ms = ?,
+             buyer_key_hash = COALESCE(?, buyer_key_hash),
+             cancellation_initiator = COALESCE(?, cancellation_initiator),
+             cancellation_type = COALESCE(?, cancellation_type),
              shipment_at_ms = ?, shipment_time_source = ?, shipment_deadline_at_ms = ?,
              shipment_deadline_source = ?, updated_at_ms = ?
            WHERE id = ?`,
@@ -89,6 +99,9 @@ export class PostingsRepository {
           amountToMinorUnits(posting.grossAmount),
           posting.currency,
           posting.cancelledAt?.getTime() ?? null,
+          posting.buyerKeyHash ?? null,
+          posting.cancellationInitiator ?? null,
+          posting.cancellationType ?? null,
           posting.shipmentAt?.getTime() ?? null,
           posting.shipmentTimeSource ?? "missing",
           posting.shipmentDeadlineAt?.getTime() ?? null,
@@ -102,9 +115,10 @@ export class PostingsRepository {
           `INSERT INTO postings (
              id, store_id, posting_number, order_number, fulfillment_mode, order_at_ms,
              status, substatus, gross_amount_minor, currency, cancelled_at_ms,
+             buyer_key_hash, cancellation_initiator, cancellation_type,
              shipment_at_ms, shipment_time_source, shipment_deadline_at_ms,
              shipment_deadline_source, created_at_ms, updated_at_ms
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           postingId,
           storeId,
@@ -117,6 +131,9 @@ export class PostingsRepository {
           amountToMinorUnits(posting.grossAmount),
           posting.currency,
           posting.cancelledAt?.getTime() ?? null,
+          posting.buyerKeyHash ?? null,
+          posting.cancellationInitiator ?? null,
+          posting.cancellationType ?? null,
           posting.shipmentAt?.getTime() ?? null,
           posting.shipmentTimeSource ?? "missing",
           posting.shipmentDeadlineAt?.getTime() ?? null,

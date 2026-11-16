@@ -25,6 +25,8 @@ export const ozonPostingSchema = z.object({
   substatus: z.string().nullish(),
   delivery_schema: z.string().optional(),
   products: z.array(productSchema),
+  customer: z.object({ customer_id: z.union([z.string(), z.number()]).transform(String).nullish() }).passthrough().nullish(),
+  cancellation: z.object({ cancellation_initiator: z.string().nullish(), cancellation_type: z.string().nullish() }).passthrough().nullish(),
 });
 
 export const postingListResponseSchema = z.object({

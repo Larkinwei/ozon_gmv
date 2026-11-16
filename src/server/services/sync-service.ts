@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 
 import { subDays, subHours } from "date-fns";
@@ -91,6 +92,7 @@ export class SyncService {
     to = new Date(),
     modes?: FulfillmentMode[],
     wildberriesSources?: WildberriesSyncSource[],
+    onWindowComplete?: () => void,
   ): Promise<void> {
     if (this.activeSyncs.has(storeId)) {
       return;
@@ -121,6 +123,7 @@ export class SyncService {
         for (const source of sources) {
           await this.syncSourceWindow(store, client, source, window.from, window.to);
         }
+        onWindowComplete?.();
       }
       const storeNeedsShipmentDeadlines = store.fulfillmentModes.some((mode) => mode === "FBS" || mode === "RFBS");
       const shipmentSourceWasSynced = sources.includes("FBS");
@@ -215,6 +218,11 @@ export class SyncService {
     for await (const page of client.iteratePostingPages(source, from, to, cursor)) {
       for (const rawPosting of page.postings) {
         const posting = normalizePosting(rawPosting, source);
+        if (posting.customerId) {
+          posting.buyerKeyHash = createHmac("sha256", this.config.ENCRYPTION_KEY)
+            .update(`${store.id}\u0000${posting.customerId}`)
+            .digest("hex");
+        }
         if (postingAllowed(store, posting)) {
           await this.persistPosting(store, posting);
         }

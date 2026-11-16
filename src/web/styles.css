@@ -6883,6 +6883,41 @@ td {
 .stock-prep-select-all { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
 .stock-prep-select-all input { width: 16px; height: 16px; accent-color: #3b82f6; }
 .stock-prep-loading--preflight { margin: 12px 0; }
+.stock-prep-blacklist-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr) auto; align-items: end; gap: 12px; margin: 18px 0; }
+.stock-prep-blacklist-list { display: grid; gap: 10px; }
+.stock-prep-blacklist-list article { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--border-color, #26364c); border-radius: 10px; background: rgb(15 23 42 / 50%); }
+.stock-prep-blacklist-list article p { margin: 6px 0 2px; color: var(--muted-text, #94a3b8); }
+.stock-prep-blacklist-list article small { color: var(--muted-text, #94a3b8); }
+.stock-prep-blacklist-status { display: inline-flex; margin-left: 10px; padding: 3px 8px; border-radius: 999px; font-size: 11px; }
+.stock-prep-blacklist-status--active { color: #fca5a5; background: rgb(127 29 29 / 35%); }
+.stock-prep-blacklist-status--candidate { color: #fcd34d; background: rgb(120 53 15 / 35%); }
+.stock-prep-blacklist-status--inactive { color: #94a3b8; background: rgb(51 65 85 / 50%); }
+.stock-prep-risk-controls { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
+@media (max-width: 760px) { .stock-prep-blacklist-form { grid-template-columns: 1fr; } .stock-prep-blacklist-list article { align-items: flex-start; flex-direction: column; } }
+.stock-prep-risk-review { padding: 16px; }
+.stock-prep-risk-review > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.stock-prep-risk-review h3 { margin: 3px 0 0; font-size: 16px; }
+.stock-prep-risk-review > header > span { color: var(--muted); font-size: 12px; }
+.stock-prep-risk-list { display: grid; gap: 8px; margin-top: 12px; }
+.stock-prep-risk-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 13px; border: 1px solid rgb(245 158 11 / 35%); border-radius: 8px; background: rgb(120 53 15 / 14%); }
+.stock-prep-risk-card--high { border-color: rgb(239 68 68 / 45%); background: rgb(127 29 29 / 18%); }
+.stock-prep-risk-content { flex: 1; min-width: 0; }
+.stock-prep-risk-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.stock-prep-risk-heading > div { min-width: 0; }
+.stock-prep-risk-card strong { font-size: 13px; }
+.stock-prep-risk-card p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+.stock-prep-risk-card small { display: block; margin-top: 5px; color: #fcd34d; font-size: 11px; line-height: 1.5; }
+.stock-prep-risk-heading > span { flex: 0 0 auto; color: #86efac; font-size: 12px; }
+.stock-prep-risk-items { display: grid; gap: 7px; margin-top: 11px; padding-top: 10px; border-top: 1px solid rgb(245 158 11 / 20%); }
+.stock-prep-risk-items > strong { color: var(--muted); font-size: 11px; font-weight: 500; }
+.stock-prep-risk-item { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.stock-prep-risk-item > div { min-width: 0; }
+.stock-prep-risk-item > div > strong { display: block; }
+.stock-prep-risk-item p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stock-prep-risk-item small { color: var(--muted); }
+.stock-prep-risk-image { display: block; width: 42px; height: 42px; border-radius: 6px; object-fit: cover; }
+.stock-prep-risk-image--empty { display: grid; flex: 0 0 42px; place-items: center; color: var(--muted); background: var(--surface-soft); }
+.stock-prep-risk-approve { flex: 0 0 auto; margin-top: 2px; }
 .stock-prep-groups { display: grid; gap: 12px; }
 .stock-prep-group { min-width: 0; padding: 16px; }
 .stock-prep-group > header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -6904,4 +6939,4 @@ td {
 .stock-prep-orders td { padding: 9px; border-top: 1px solid var(--border-soft); }
 .stock-prep-orders td:nth-child(2) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .stock-prep-orders input[type="checkbox"] { width: 16px; height: 16px; accent-color: #3b82f6; }
-@media (max-width: 700px) { .stock-prep-title { align-items: stretch; flex-direction: column; } .stock-prep-store-picker { min-width: 0; width: 100%; } .stock-prep-store-picker .field { min-width: 0; } .stock-prep-health { grid-column: auto; } .stock-prep-actions > button { flex: 1 1 100%; } .stock-prep-summary > button { flex-basis: 100%; margin-left: 0; } .stock-prep-feishu-config { grid-template-columns: 1fr; } .stock-prep-feishu-config > p { grid-column: auto; } .stock-prep-auth { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 700px) { .stock-prep-title { align-items: stretch; flex-direction: column; } .stock-prep-store-picker { min-width: 0; width: 100%; } .stock-prep-store-picker .field { min-width: 0; } .stock-prep-health { grid-column: auto; } .stock-prep-actions > button { flex: 1 1 100%; } .stock-prep-summary > button { flex-basis: 100%; margin-left: 0; } .stock-prep-feishu-config { grid-template-columns: 1fr; } .stock-prep-feishu-config > p { grid-column: auto; } .stock-prep-auth { align-items: flex-start; flex-direction: column; } .stock-prep-risk-card { flex-direction: column; } .stock-prep-risk-approve { width: 100%; } }

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { subDays } from "date-fns";
 
@@ -9,6 +9,14 @@ import type { SyncService } from "../services/sync-service";
 
 const storeParams = z.object({ storeId: z.string().uuid() });
 const orderKeys = z.object({ keys: z.array(z.object({ postingNumber: z.string().min(1).max(100), offerId: z.string().min(1).max(100) })).min(1).max(5000) });
+const loopbackAddresses = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+/** Restricts AI-agent write access to local CLI requests. */
+async function requireLocalAgent(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!loopbackAddresses.has(request.ip) || request.headers.origin) {
+    await reply.code(403).send({ error: "LOCAL_AGENT_ONLY", message: "Agent API 仅接受本机命令行客户端" });
+  }
+}
 
 /** Registers the interactive order-to-1688 replenishment workflow. */
 export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrepService, stores: StoresRepository, syncService: SyncService): void {
@@ -18,6 +26,74 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
     const input = z.object({ names: z.array(z.string().trim().min(1).max(120)).max(100) }).parse(request.body);
     try { return { suppliers: service.saveDropshipSupplierNames(input.names) }; }
     catch (error) { return reply.code(400).send({ error: "DROPSHIP_SUPPLIERS_INVALID", message: error instanceof Error ? error.message : "代发供应商名单无效" }); }
+  });
+
+  app.get("/api/stock-prep/stores/:storeId/buyer-blacklist", { preHandler: requireSession }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const store = await stores.findById(storeId);
+    if (!store || store.platform !== "ozon") return reply.code(404).send({ error: "STORE_NOT_AVAILABLE", message: "仅支持 Ozon 店铺黑名单" });
+    return { entries: service.listBuyerBlacklist(storeId) };
+  });
+
+  app.post("/api/stock-prep/stores/:storeId/buyer-blacklist", { preHandler: requireSession }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const input = z.object({ buyerId: z.string().trim().min(1).max(200), reason: z.string().trim().min(1).max(1000) }).parse(request.body);
+    try {
+      service.upsertBuyerBlacklist(storeId, { buyerId: input.buyerId, status: "active", source: "manual", reasonCode: "manual", summary: input.reason });
+      return { added: true };
+    } catch (error) { return reply.code(400).send({ error: "BUYER_BLACKLIST_INVALID", message: error instanceof Error ? error.message : "黑名单买家无效" }); }
+  });
+
+  app.post("/api/stock-prep/stores/:storeId/buyer-blacklist/from-order", { preHandler: requireSession }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const input = z.object({ orderNumber: z.string().trim().min(1).max(100), reason: z.string().trim().min(1).max(1000) }).parse(request.body);
+    try { service.addOrderBuyerToBlacklist(storeId, input.orderNumber, input.reason); return { added: true }; }
+    catch (error) { return reply.code(409).send({ error: "BUYER_ID_UNAVAILABLE", message: error instanceof Error ? error.message : "无法从订单添加买家" }); }
+  });
+
+  app.patch("/api/stock-prep/stores/:storeId/buyer-blacklist/:entryId", { preHandler: requireSession }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const { entryId } = z.object({ entryId: z.string().uuid() }).parse(request.params);
+    const input = z.object({ status: z.enum(["active", "inactive"]) }).parse(request.body);
+    try { service.updateBuyerBlacklist(storeId, entryId, input.status, "manual"); return { updated: true }; }
+    catch (error) { return reply.code(404).send({ error: "BUYER_BLACKLIST_NOT_FOUND", message: error instanceof Error ? error.message : "黑名单记录不存在" }); }
+  });
+
+  app.get("/api/agent/v1/blacklist/openapi.json", { preHandler: requireLocalAgent }, async () => ({
+    openapi: "3.1.0",
+    info: { title: "Ozon GMV buyer blacklist candidates", version: "1.0.0" },
+    servers: [{ url: "http://127.0.0.1:3001" }],
+    paths: {
+      "/api/agent/v1/blacklist/stores": { get: { summary: "List Ozon stores", responses: { "200": { description: "Store id, name and enabled state" } } } },
+      "/api/agent/v1/stores/{storeId}/blacklist/candidates": {
+        put: {
+          summary: "Submit blacklist candidates for human review",
+          description: "Submissions are always saved as candidate. This API cannot activate or deactivate buyers.",
+          parameters: [{ name: "storeId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["candidates"], properties: { candidates: { type: "array", maxItems: 500, items: { type: "object", required: ["buyerId", "reasonCode"], properties: { buyerId: { type: "string", maxLength: 200 }, reasonCode: { type: "string", maxLength: 100 }, summary: { type: "string", maxLength: 2000 }, evidenceOrders: { type: "array", maxItems: 100, items: { type: "string", maxLength: 100 } }, ruleVersion: { type: "string", maxLength: 100 } }, additionalProperties: false } } }, additionalProperties: false } } } },
+          responses: { "200": { description: "Returns submitted count and candidate state" }, "400": { description: "Invalid request" }, "403": { description: "Request did not originate from a local CLI client" } },
+        },
+      },
+    },
+  }));
+
+  app.get("/api/agent/v1/blacklist/stores", { preHandler: requireLocalAgent }, async () => (await stores.list()).filter((store) => store.platform === "ozon").map(({ id, name, enabled }) => ({ id, name, enabled })));
+
+  app.put("/api/agent/v1/stores/:storeId/blacklist/candidates", { preHandler: requireLocalAgent }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const store = await stores.findById(storeId);
+    if (!store || store.platform !== "ozon") return reply.code(404).send({ error: "STORE_NOT_AVAILABLE", message: "目标 Ozon 店铺不存在" });
+    const input = z.object({ candidates: z.array(z.object({ buyerId: z.string().trim().min(1).max(200), reasonCode: z.string().trim().min(1).max(100), summary: z.string().trim().max(2000).optional(), evidenceOrders: z.array(z.string().trim().min(1).max(100)).max(100).optional(), ruleVersion: z.string().trim().max(100).optional() })).max(500) }).parse(request.body);
+    for (const item of input.candidates) service.upsertBuyerBlacklist(storeId, {
+      buyerId: item.buyerId,
+      status: "candidate",
+      source: "agent",
+      reasonCode: item.reasonCode,
+      ...(item.summary ? { summary: item.summary } : {}),
+      ...(item.evidenceOrders ? { evidenceOrders: item.evidenceOrders } : {}),
+      ...(item.ruleVersion ? { ruleVersion: item.ruleVersion } : {}),
+    });
+    return { submitted: input.candidates.length, status: "candidate" };
   });
 
   app.put("/api/stock-prep/connection/app", { preHandler: requireSession }, async (request, reply) => {
@@ -58,6 +134,20 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
       return await service.scan(storeId);
     }
     catch (error) { return reply.code(422).send({ error: "STOCK_PREP_SCAN_FAILED", message: error instanceof Error ? error.message : "备货订单扫描失败" }); }
+  });
+
+  app.post("/api/stock-prep/stores/:storeId/risk-approvals", { preHandler: requireSession }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const input = z.object({ orderNumber: z.string().min(1).max(100) }).parse(request.body);
+    try { service.approveRiskOrder(storeId, input.orderNumber); return { approved: true }; }
+    catch (error) { return reply.code(409).send({ error: "RISK_APPROVAL_REJECTED", message: error instanceof Error ? error.message : "无法放行订单" }); }
+  });
+
+  app.delete("/api/stock-prep/stores/:storeId/risk-approvals/:orderNumber", { preHandler: requireSession }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const { orderNumber } = z.object({ orderNumber: z.string().min(1).max(100) }).parse(request.params);
+    try { service.revokeRiskOrderApproval(storeId, orderNumber); return { revoked: true }; }
+    catch (error) { return reply.code(409).send({ error: "RISK_APPROVAL_NOT_FOUND", message: error instanceof Error ? error.message : "无法撤回人工放行" }); }
   });
 
   app.post("/api/stock-prep/stores/:storeId/batches", { preHandler: requireSession }, async (request, reply) => {

@@ -277,11 +277,12 @@ export async function fetchStores(): Promise<StoreView[]> {
 }
 
 export interface StockPrepOrderKey { postingNumber: string; offerId: string }
-export interface StockPrepOrder { postingNumber: string; offerId: string; productName: string; imageUrl: string | null; quantity: number; state: string; error: string | null; selectedByDefault: boolean }
+export interface StockPrepOrder { postingNumber: string; orderNumber?: string; offerId: string; productName: string; imageUrl: string | null; quantity: number; orderQuantity?: number; riskLevel?: "none" | "review" | "blacklist"; blacklistStatus?: string | null; approved?: boolean; state: string; error: string | null; selectedByDefault: boolean }
 export interface StockPrepGroup { offerUrl: string | null; offerId: string; skuId: string | null; imageUrl: string | null; status: string; quantity: number; error: string | null; orders: StockPrepOrder[] }
 export interface StockPrepScan { storeId: string; groups: StockPrepGroup[] }
 export interface StockPrepBatch { id: string; status: string; total_count: number; completed_count: number; items: Array<{id:string;offer_id:string;sku_id:string;quantity:number;status:string;error:string|null;order_keys_json?:string}> }
 export interface StockPrepConnection { platform: string; feishu: { connected: boolean; profile: string | null; userName: string | null; message: string; appIdConfigured: boolean; appSecretConfigured: boolean; authorization: { state: string; url?: string; qrCode?: string; message?: string } | null }; configuredStoreCount: number; browserBridge: { ready: boolean; message: string }; dropshipSuppliers: string[] }
+export interface StockPrepBlacklistEntry { id: string; buyerId: string | null; status: "candidate" | "active" | "inactive"; source: string; reason_code: string; summary: string | null; evidenceOrders: string[]; rule_version: string | null; notes: string | null; created_at_ms: number; updated_at_ms: number }
 
 export async function fetchStockPrepConnection(): Promise<StockPrepConnection> {
   return apiFetch("/api/stock-prep/connection");
@@ -325,6 +326,31 @@ export async function resetStockPrepOrders(storeId: string, keys: StockPrepOrder
 
 export async function resolveUncertainStockPrepOrders(storeId: string, keys: StockPrepOrderKey[]): Promise<{ resolvedCount: number }> {
   return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/resolve-no-add`, { method: "POST", body: JSON.stringify({ keys }) });
+}
+
+export async function approveStockPrepRiskOrder(storeId: string, orderNumber: string): Promise<{ approved: boolean }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/risk-approvals`, { method: "POST", body: JSON.stringify({ orderNumber }) });
+}
+
+export async function revokeStockPrepRiskOrder(storeId: string, orderNumber: string): Promise<{ revoked: boolean }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/risk-approvals/${encodeURIComponent(orderNumber)}`, { method: "DELETE" });
+}
+
+export async function fetchStockPrepBlacklist(storeId: string): Promise<StockPrepBlacklistEntry[]> {
+  const result = await apiFetch<{ entries: StockPrepBlacklistEntry[] }>(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/buyer-blacklist`);
+  return result.entries;
+}
+
+export async function addStockPrepBlacklistBuyer(storeId: string, buyerId: string, reason: string): Promise<{ added: boolean }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/buyer-blacklist`, { method: "POST", body: JSON.stringify({ buyerId, reason }) });
+}
+
+export async function addStockPrepOrderBuyerToBlacklist(storeId: string, orderNumber: string, reason: string): Promise<{ added: boolean }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/buyer-blacklist/from-order`, { method: "POST", body: JSON.stringify({ orderNumber, reason }) });
+}
+
+export async function updateStockPrepBlacklistEntry(storeId: string, entryId: string, status: "active" | "inactive"): Promise<{ updated: boolean }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/buyer-blacklist/${encodeURIComponent(entryId)}`, { method: "PATCH", body: JSON.stringify({ status }) });
 }
 
 export async function fetchWallboardStoreOptions(): Promise<WallboardStoreOption[]> {

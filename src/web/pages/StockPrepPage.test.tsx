@@ -18,6 +18,8 @@ vi.mock("../api", async () => {
     fetchUpdateStatus: vi.fn(),
     fetchStockPrepConnection: vi.fn(),
     fetchStockPrepState: vi.fn(),
+    fetchStockPrepBlacklist: vi.fn(),
+    approveStockPrepRiskOrder: vi.fn(),
     scanStockPrep: vi.fn(),
     createStockPrepBatch: vi.fn(),
     fetchStockPrepBatch: vi.fn(),
@@ -34,6 +36,7 @@ beforeEach(() => {
     removeItem: (key: string) => values.delete(key),
     clear: () => values.clear(),
   } });
+  vi.mocked(api.fetchStockPrepBlacklist).mockResolvedValue([]);
 });
 afterEach(() => { cleanup(); window.localStorage.clear(); vi.clearAllMocks(); });
 
@@ -108,4 +111,21 @@ describe("StockPrepPage", () => {
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("1688 购物车不会扣减"));
     expect(api.scanStockPrep).toHaveBeenCalledTimes(1);
   });
+
+  it("requires an explicit approval before a multi-item order can be selected", async () => {
+    vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
+    vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection });
+    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: "https://detail.1688.com/offer/747713283348.html", offerId: "1645-2-XXL", skuId: "6103279203988", imageUrl: null, status: "pending", quantity: 2, error: null, orders: [
+      { postingNumber: "post-risk", orderNumber: "order-risk", offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 2, orderQuantity: 2, riskLevel: "review", approved: false, state: "pending", error: null, selectedByDefault: false },
+    ] }] });
+    vi.mocked(api.approveStockPrepRiskOrder).mockResolvedValue({ approved: true });
+    renderPage();
+    const checkbox = await screen.findByRole("checkbox", { name: "选择订单 post-risk" });
+    expect(checkbox).toBeDisabled();
+    expect(screen.getAllByText(/多件订单需人工确认/)).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "人工放行并选择" }));
+    await waitFor(() => expect(api.approveStockPrepRiskOrder).toHaveBeenCalledWith("store-1", "order-risk"));
+  });
+
 });

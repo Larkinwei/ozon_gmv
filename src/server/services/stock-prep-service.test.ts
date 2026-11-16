@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHmac } from "node:crypto";
 
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,21 +14,24 @@ const offerUrl = "https://detail.1688.com/offer/747713283348.html";
 const skuId = "6103279203988";
 const databases: BetterSqlite3.Database[] = [];
 
-function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId]] as unknown[][], behavior: "success" | "pre-click-failure" | "dropship-button-missing" | "uncertain" | "wrong-cart" = "success") {
+function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId]] as unknown[][], behavior: "success" | "pre-click-failure" | "dropship-button-missing" | "uncertain" | "wrong-cart" = "success", autoApprove = true) {
   const database = new BetterSqlite3(":memory:");
   databases.push(database);
   database.exec(`
     PRAGMA foreign_keys=ON;
     CREATE TABLE stores (id TEXT PRIMARY KEY,name TEXT,platform TEXT,enabled INTEGER);
-    CREATE TABLE postings (id TEXT PRIMARY KEY,store_id TEXT,posting_number TEXT,fulfillment_mode TEXT,status TEXT,cancelled_at_ms INTEGER);
-    CREATE TABLE posting_items (posting_id TEXT,offer_id TEXT,name TEXT,quantity INTEGER);
+    CREATE TABLE postings (id TEXT PRIMARY KEY,store_id TEXT,posting_number TEXT,order_number TEXT,fulfillment_mode TEXT,status TEXT,cancelled_at_ms INTEGER,order_at_ms INTEGER);
+    CREATE TABLE posting_items (posting_id TEXT,sku TEXT,offer_id TEXT,name TEXT,quantity INTEGER);
+    CREATE TABLE product_images (store_id TEXT,sku TEXT,primary_image_url TEXT);
     CREATE TABLE app_settings (key TEXT PRIMARY KEY,value TEXT,updated_at_ms INTEGER NOT NULL);
   `);
   database.exec(readFileSync(join(process.cwd(), "migrations/032_stock_prep.sql"), "utf8"));
+  database.exec(readFileSync(join(process.cwd(), "migrations/033_stock_prep_buyer_risk.sql"), "utf8"));
+  database.exec(readFileSync(join(process.cwd(), "migrations/034_stock_prep_buyer_blacklist.sql"), "utf8"));
   database.prepare("INSERT INTO stores VALUES (?,?,?,?)").run(storeId, "YOGOLD", "ozon", 1);
   database.prepare("INSERT INTO store_sku_sources VALUES (?,?,?,?,?)").run(storeId, "https://feishu/base", "base-token", "tbl-stock", Date.now());
-  const addPosting = database.prepare("INSERT INTO postings VALUES (?,?,?,?,?,?)");
-  const addItem = database.prepare("INSERT INTO posting_items VALUES (?,?,?,?)");
+  const addPosting = database.prepare("INSERT INTO postings (id,store_id,posting_number,order_number,fulfillment_mode,status,cancelled_at_ms) VALUES (?,?,?,?,?,?,?)");
+  const addItem = database.prepare("INSERT INTO posting_items (posting_id,offer_id,name,quantity) VALUES (?,?,?,?)");
   for (const [id, postingNumber, mode, status, cancelled, offerId, quantity] of [
     ["p1", "post-1", "FBS", "awaiting_packaging", null, "1645-2-XXL", 1],
     ["p2", "post-2", "RFBS", "awaiting_packaging", null, "1645-2-XXL", 2],
@@ -38,7 +42,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
     ["p7", "post-7", "FBS", "awaiting_packaging", null, "DUPLICATE", 1],
     ["p8", "post-8", "FBS", "awaiting_packaging", null, "BAD-SKU", 1],
   ] as Array<[string, string, string, string, number | null, string, number]>) {
-    addPosting.run(id, storeId, postingNumber, mode, status, cancelled);
+    addPosting.run(id, storeId, postingNumber, postingNumber, mode, status, cancelled);
     addItem.run(id, offerId, "Test product", quantity);
   }
   const appConfig = { ENCRYPTION_KEY: "a".repeat(64) } as AppConfig;
@@ -103,6 +107,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       }
       if (action === "eval" && script?.includes("const target=") && script?.includes("sku-filter-button")) return JSON.stringify({ found: true });
       if (action === "eval" && script?.includes("expectedColor")) return JSON.stringify({ url: "https://detail.1688.com/offer/747713283348.html", color: "蓝底叶子", size: "XXL", skuId, inputIndex: 3 });
+      if (action === "eval" && script?.includes("button.scrollIntoView")) return JSON.stringify({ buttonCount: 1, visible: true });
       if (action === "fill") {
         pendingQuantity = Number(args.at(-1));
         return JSON.stringify({ filled: true, verified: behavior !== "pre-click-failure", actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity) });
@@ -119,6 +124,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       throw new Error(`unexpected OpenCLI invocation: ${args.join(" ").slice(0, 120)}`);
     },
   });
+  if (autoApprove) service.approveRiskOrder(storeId, "post-2");
   return { database, service, metrics: { cartOpenCount: () => cartOpenCount, addClickCount: () => addClickCount, selectedModes, addActions, cartQuantities } };
 }
 
@@ -175,6 +181,46 @@ describe("StockPrepService", () => {
     expect(mapped.orders.every((order) => order.error === null)).toBe(true);
   });
 
+  it("requires manual confirmation for every order with multiple pieces", async () => {
+    const { database, service } = fixture(undefined, "success", false);
+    database.prepare("UPDATE postings SET order_number='order-shared',buyer_key_hash='buyer-a' WHERE posting_number IN ('post-1','post-2')").run();
+    database.prepare(`INSERT INTO postings (id,store_id,posting_number,order_number,fulfillment_mode,status,cancelled_at_ms,order_at_ms,buyer_key_hash,cancellation_initiator)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run("history-1", storeId, "history-post", "history-order", "FBS", "cancelled", Date.now(), Date.now() - 86400000, "buyer-a", "Клиент");
+    const beforeApproval = await service.scan(storeId);
+    const riskyOrders = beforeApproval.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+    expect(riskyOrders.every((order) => order.orderQuantity === 3 && order.riskLevel === "review" && !order.selectedByDefault)).toBe(true);
+    await expect(service.createBatch(storeId, riskyOrders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).rejects.toThrow("请先人工确认");
+    service.approveRiskOrder(storeId, "order-shared");
+    expect((await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders.every((order) => order.approved && order.selectedByDefault)).toBe(true);
+    database.prepare("UPDATE posting_items SET quantity=3 WHERE posting_id='p2'").run();
+    expect((await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders.some((order) => !order.approved && !order.selectedByDefault)).toBe(true);
+  });
+
+  it("blocks an active blacklisted buyer independently of the multi-piece review", async () => {
+    const { database, service } = fixture(undefined, "success", false);
+    database.prepare("UPDATE postings SET order_number='order-shared',buyer_key_hash='buyer-a' WHERE posting_number IN ('post-1','post-2')").run();
+    database.prepare("UPDATE postings SET buyer_key_hash='buyer-a' WHERE posting_number='post-1'").run();
+    database.prepare(`INSERT INTO stock_prep_buyer_blacklist (id,store_id,buyer_key_hash,status,source,reason_code,created_at_ms,updated_at_ms)
+      VALUES ('blacklist-entry',?,'buyer-a','active','manual','manual',?,?)`).run(storeId, Date.now(), Date.now());
+
+    const orders = (await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+
+    expect(orders.find((order) => order.postingNumber === "post-1")).toMatchObject({ riskLevel: "blacklist", selectedByDefault: false });
+    expect(orders.find((order) => order.postingNumber === "post-2")).toMatchObject({ riskLevel: "blacklist", selectedByDefault: false });
+    await expect(service.createBatch(storeId, [{ postingNumber: "post-1", offerId: "1645-2-XXL" }])).rejects.toThrow("黑名单");
+  });
+
+  it("keeps manual blacklist entries active when an Agent submits the same buyer as a candidate", () => {
+    const { database, service } = fixture(undefined, "success", false);
+    const buyerId = "customer-123";
+    const hash = createHmac("sha256", "a".repeat(64)).update(`${storeId}\u0000${buyerId}`).digest("hex");
+    database.prepare("UPDATE postings SET buyer_key_hash=? WHERE posting_number='post-1'").run(hash);
+    service.upsertBuyerBlacklist(storeId, { buyerId, status: "active", source: "manual", reasonCode: "manual", summary: "人工确认" });
+    service.upsertBuyerBlacklist(storeId, { buyerId, status: "candidate", source: "agent", reasonCode: "agent_signal", summary: "Agent 命中" });
+
+    expect(service.listBuyerBlacklist(storeId)).toMatchObject([{ buyerId, status: "active", source: "manual", summary: "人工确认" }]);
+  });
+
   it("adds the selected quantities once, verifies the cart delta, and supports manual state rollback", async () => {
     const { database, service, metrics } = fixture();
     const scan = await service.scan(storeId);
@@ -183,10 +229,9 @@ describe("StockPrepService", () => {
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed");
     expect((result.items as Array<{ quantity: number; cart_before: number; cart_after: number }>)[0]).toMatchObject({ quantity: 3, cart_before: 2, cart_after: 5 });
-    expect(metrics.cartOpenCount()).toBe(4);
+    expect(metrics.cartOpenCount()).toBe(2);
     expect(metrics.addClickCount()).toBe(1);
     expect(metrics.addActions).toEqual(["加采购车"]);
-    expect(metrics.selectedModes).toContain("批发");
     expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='added'").get()).toMatchObject({ count: 2 });
     expect(service.resetOrders(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).toBe(2);
     expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='pending'").get()).toMatchObject({ count: 2 });
@@ -204,7 +249,6 @@ describe("StockPrepService", () => {
     const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed");
-    expect(metrics.selectedModes).toContain("代发");
     expect(metrics.addActions).toEqual(["弹层加采购车"]);
     expect(metrics.addClickCount()).toBe(1);
     expect(metrics.cartQuantities).toEqual({ wholesale: 2, dropship: 3 });
@@ -267,7 +311,7 @@ describe("StockPrepService", () => {
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed");
     expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 4, cart_before: 2, cart_after: 6 })]);
-    expect(metrics.cartOpenCount()).toBe(4);
+    expect(metrics.cartOpenCount()).toBe(2);
     expect(metrics.addClickCount()).toBe(1);
   });
 });
