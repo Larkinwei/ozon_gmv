@@ -283,9 +283,20 @@ export interface StockPrepScan { storeId: string; groups: StockPrepGroup[] }
 export interface StockPrepBatch { id: string; status: string; total_count: number; completed_count: number; items: Array<{id:string;offer_id:string;sku_id:string;quantity:number;status:string;error:string|null;order_keys_json?:string}> }
 export interface StockPrepConnection { platform: string; feishu: { connected: boolean; profile: string | null; userName: string | null; message: string; appIdConfigured: boolean; appSecretConfigured: boolean; authorization: { state: string; url?: string; qrCode?: string; message?: string } | null }; configuredStoreCount: number; browserBridge: { ready: boolean; message: string }; dropshipSuppliers: string[] }
 export interface StockPrepBlacklistEntry { id: string; buyerId: string | null; status: "candidate" | "active" | "inactive"; source: string; reason_code: string; summary: string | null; evidenceOrders: string[]; rule_version: string | null; notes: string | null; created_at_ms: number; updated_at_ms: number }
+export interface StockPrepAgentApiDocs {
+  openapi: string;
+  info: { title: string; version: string; description?: string };
+  servers: Array<{ url: string }>;
+  paths: Record<string, Record<string, { summary?: string; description?: string }>>;
+}
 
 export async function fetchStockPrepConnection(): Promise<StockPrepConnection> {
   return apiFetch("/api/stock-prep/connection");
+}
+
+/** Reads the authenticated copy of the external-agent OpenAPI contract. */
+export async function fetchStockPrepAgentApiDocs(): Promise<StockPrepAgentApiDocs> {
+  return apiFetch("/api/stock-prep/agent-api-docs");
 }
 
 export async function saveStockPrepFeishuApp(appId: string, appSecret: string): Promise<{ configured: boolean }> {

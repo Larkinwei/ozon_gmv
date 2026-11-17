@@ -6879,7 +6879,24 @@ td {
 .stock-prep-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 10px; }
 .stock-prep-summary > div { display: flex; align-items: center; gap: 7px; padding: 7px 10px; color: var(--muted); background: var(--surface-soft); border-radius: 7px; font-size: 12px; }
 .stock-prep-summary > div strong { color: var(--text); }
-.stock-prep-summary > button { margin-left: auto; }
+.stock-prep-summary-action { margin-left: auto; }
+.stock-prep-agent-docs { display: grid; gap: 18px; padding: 20px; }
+.stock-prep-agent-docs > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.stock-prep-agent-docs > header h3 { margin: 3px 0; }
+.stock-prep-agent-docs > header p { margin: 5px 0 0; color: var(--muted); }
+.stock-prep-agent-docs > header > span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.stock-prep-agent-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.stock-prep-agent-meta > div { display: grid; gap: 6px; padding: 12px; background: var(--surface-soft); border-radius: 8px; }
+.stock-prep-agent-meta span, .stock-prep-agent-meta code { overflow-wrap: anywhere; }
+.stock-prep-agent-meta span { color: var(--muted); font-size: 12px; }
+.stock-prep-agent-notice { display: flex; gap: 10px; padding: 12px; color: #fcd34d; background: rgb(120 53 15 / 18%); border: 1px solid rgb(245 158 11 / 30%); border-radius: 8px; }
+.stock-prep-agent-notice p { margin: 0; font-size: 13px; line-height: 1.6; }
+.stock-prep-agent-endpoints { display: grid; gap: 10px; }
+.stock-prep-agent-endpoints article { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px 12px; padding: 14px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.stock-prep-agent-endpoints article > span { padding: 3px 7px; color: #bfdbfe; background: rgb(30 64 175 / 30%); border-radius: 4px; font-size: 11px; }
+.stock-prep-agent-endpoints article > strong, .stock-prep-agent-endpoints article > p { grid-column: 1 / -1; }
+.stock-prep-agent-endpoints article > p { margin: 0; color: var(--muted); font-size: 12px; }
+.stock-prep-agent-docs pre { overflow: auto; padding: 14px; background: #020617; border: 1px solid var(--border-soft); border-radius: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .stock-prep-select-all { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
 .stock-prep-select-all input { width: 16px; height: 16px; accent-color: #3b82f6; }
 .stock-prep-loading--preflight { margin: 12px 0; }
@@ -6939,4 +6956,4 @@ td {
 .stock-prep-orders td { padding: 9px; border-top: 1px solid var(--border-soft); }
 .stock-prep-orders td:nth-child(2) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .stock-prep-orders input[type="checkbox"] { width: 16px; height: 16px; accent-color: #3b82f6; }
-@media (max-width: 700px) { .stock-prep-title { align-items: stretch; flex-direction: column; } .stock-prep-store-picker { min-width: 0; width: 100%; } .stock-prep-store-picker .field { min-width: 0; } .stock-prep-health { grid-column: auto; } .stock-prep-actions > button { flex: 1 1 100%; } .stock-prep-summary > button { flex-basis: 100%; margin-left: 0; } .stock-prep-feishu-config { grid-template-columns: 1fr; } .stock-prep-feishu-config > p { grid-column: auto; } .stock-prep-auth { align-items: flex-start; flex-direction: column; } .stock-prep-risk-card { flex-direction: column; } .stock-prep-risk-approve { width: 100%; } }
+@media (max-width: 700px) { .stock-prep-title { align-items: stretch; flex-direction: column; } .stock-prep-store-picker { min-width: 0; width: 100%; } .stock-prep-store-picker .field { min-width: 0; } .stock-prep-health { grid-column: auto; } .stock-prep-summary-action { flex-basis: 100%; margin-left: 0; } .stock-prep-feishu-config { grid-template-columns: 1fr; } .stock-prep-feishu-config > p { grid-column: auto; } .stock-prep-auth { align-items: flex-start; flex-direction: column; } .stock-prep-risk-card { flex-direction: column; } .stock-prep-risk-approve { width: 100%; } .stock-prep-agent-meta { grid-template-columns: 1fr; } }

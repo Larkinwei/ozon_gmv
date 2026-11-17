@@ -23,6 +23,7 @@ const SetupPage = lazy(() => import("./pages/SetupPage"));
 const StoresPage = lazy(() => import("./pages/StoresPage"));
 const OrderSearchPage = lazy(() => import("./pages/OrderSearchPage"));
 const StockPrepPage = lazy(() => import("./pages/StockPrepPage"));
+const OpenApiDocsPage = lazy(() => import("./pages/OpenApiDocsPage"));
 
 function AppLoading(): React.JSX.Element {
   return (
@@ -125,6 +126,7 @@ export function App(): React.JSX.Element {
         <Route path="/orders/search" element={<OrderSearchPage />} />
         <Route path="/wallboard" element={<DashboardPage wallboard />} />
         <Route path="/stores" element={<StoresPage />} />
+        <Route path="/api-docs" element={<OpenApiDocsPage />} />
         <Route path="/operations" element={<OperationsCenterLayout />}>
           <Route index element={<Navigate to="storefront-prices" replace />} />
           <Route path="selection" element={<SelectionPage />} />
