@@ -25,8 +25,6 @@ export interface NormalizedPosting {
   grossAmount: string;
   currency: string;
   cancelledAt: Date | null;
-  customerId?: string | null;
-  buyerKeyHash?: string | null;
   cancellationInitiator?: string | null;
   cancellationType?: string | null;
   items: NormalizedPostingItem[];
@@ -67,7 +65,7 @@ function resolveShipmentTime(posting: OzonPosting, source: "FBO" | "FBS"): {
   return { value: null, source: "missing" };
 }
 
-/** Converts an Ozon response into the persistence contract while retaining only the buyer key for hashing. */
+/** Converts an Ozon response into the persistence contract without retaining Ozon buyer IDs. */
 export function normalizePosting(posting: OzonPosting, source: "FBO" | "FBS", observedAt = new Date()): NormalizedPosting {
   const orderAtValue = source === "FBO" ? posting.created_at ?? posting.in_process_at : posting.in_process_at;
   if (!orderAtValue) {
@@ -104,8 +102,6 @@ export function normalizePosting(posting: OzonPosting, source: "FBO" | "FBS", ob
     grossAmount: total.amount,
     currency: total.currency,
     cancelledAt: cancelled ? observedAt : null,
-    customerId: posting.customer?.customer_id ?? null,
-    buyerKeyHash: null,
     cancellationInitiator: posting.cancellation?.cancellation_initiator ?? null,
     cancellationType: posting.cancellation?.cancellation_type ?? null,
     items,

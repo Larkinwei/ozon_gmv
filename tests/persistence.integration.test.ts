@@ -113,17 +113,16 @@ describe("SQLite persistence", () => {
         grossAmount: "2999.90",
         currency: "RUB",
         cancelledAt: null,
-        buyerKeyHash: "buyer-hash",
         cancellationInitiator: "Клиент",
         cancellationType: "buyer_cancelled",
         items: [{ sku: "147451959", offerId: "BAG-01", name: "Travel bag", quantity: 2, unitPrice: "1499.95", currency: "RUB" }],
       };
       await expect(repository.upsert(STORE_ID, posting)).resolves.toMatchObject({ kind: "created" });
       await expect(repository.upsert(STORE_ID, posting)).resolves.toMatchObject({ kind: "unchanged" });
-      await expect(repository.upsert(STORE_ID, { ...posting, status: "posting_canceled", cancelledAt: new Date(), buyerKeyHash: null, cancellationInitiator: null, cancellationType: null })).resolves.toMatchObject({ kind: "updated" });
-      const stored = context.database.prepare("SELECT gross_amount_minor,buyer_key_hash,cancellation_initiator,cancellation_type FROM postings").get() as { gross_amount_minor: number; buyer_key_hash: string; cancellation_initiator: string; cancellation_type: string };
+      await expect(repository.upsert(STORE_ID, { ...posting, status: "posting_canceled", cancelledAt: new Date(), cancellationInitiator: null, cancellationType: null })).resolves.toMatchObject({ kind: "updated" });
+      const stored = context.database.prepare("SELECT gross_amount_minor,buyer_key_hash,cancellation_initiator,cancellation_type FROM postings").get() as { gross_amount_minor: number; buyer_key_hash: string | null; cancellation_initiator: string; cancellation_type: string };
       expect(stored.gross_amount_minor).toBe(299_990);
-      expect(stored).toMatchObject({ buyer_key_hash: "buyer-hash", cancellation_initiator: "Клиент", cancellation_type: "buyer_cancelled" });
+      expect(stored).toMatchObject({ buyer_key_hash: null, cancellation_initiator: "Клиент", cancellation_type: "buyer_cancelled" });
       expect(amountToMinorUnits("0.10") + amountToMinorUnits("0.20")).toBe(30);
     } finally {
       context.cleanup();

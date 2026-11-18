@@ -1,10 +1,10 @@
-import { createHmac } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 
 import { subDays, subHours } from "date-fns";
 
 import type { FulfillmentMode, StoreView } from "../../shared/contracts";
 import type { AppConfig } from "../config";
+import type { AppDatabase } from "../db/database";
 import { MarketplaceRepository } from "../db/marketplace-repository";
 import { MarketplaceSyncCheckpointsRepository } from "../db/marketplace-sync-checkpoints-repository";
 import { PostingsRepository, type PostingMutationKind } from "../db/postings-repository";
@@ -31,6 +31,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown synchronization error";
 }
 
+/** Splits a history range into short adjacent windows accepted by Seller API period limits. */
+function* dateWindows(from: Date, to: Date, windowDays = 30): Generator<[Date, Date]> {
+  const windowMs = windowDays * 24 * 60 * 60 * 1000;
+  let start = from.getTime();
+  const end = to.getTime();
+  while (start < end) {
+    const next = Math.min(start + windowMs, end);
+    yield [new Date(start), new Date(next)];
+    start = next;
+  }
+}
+
 function sourcesForModes(modes: FulfillmentMode[]): Array<"FBO" | "FBS"> {
   const sources: Array<"FBO" | "FBS"> = [];
   if (modes.includes("FBO")) {
@@ -48,6 +60,7 @@ function postingAllowed(store: StoreRecord, posting: NormalizedPosting): boolean
 
 export class SyncService {
   private readonly activeSyncs = new Set<string>();
+  private readonly activeBuyerHistorySyncs = new Set<string>();
 
   public constructor(
     private readonly config: AppConfig,
@@ -59,6 +72,7 @@ export class SyncService {
     private readonly productImages: ProductImageService,
     private readonly marketplace?: MarketplaceRepository,
     private readonly marketplaceCheckpoints?: MarketplaceSyncCheckpointsRepository,
+    private readonly database?: AppDatabase,
   ) {}
 
   public async testCredentials(clientId: string, apiKey: string, modes: FulfillmentMode[]): Promise<CredentialTestResult> {
@@ -148,6 +162,72 @@ export class SyncService {
     }
   }
 
+  /** Refreshes one year of posting and return history asynchronously for stock-prep risk hints. */
+  public async syncStockPrepBuyerHistory(storeId: string): Promise<void> {
+    const db = this.database;
+    if (!db || this.activeBuyerHistorySyncs.has(storeId)) return;
+    this.activeBuyerHistorySyncs.add(storeId);
+    let syncStarted = false;
+    try {
+      const store = await this.stores.findById(storeId);
+      if (!store || !store.enabled || store.platform !== "ozon") return;
+      const now = Date.now();
+      const previous = db.prepare("SELECT state,from_at_ms,to_at_ms,updated_at_ms FROM stock_prep_risk_sync WHERE store_id=?").get(storeId) as { state: string; from_at_ms: number; to_at_ms: number; updated_at_ms: number } | undefined;
+      if (previous?.state === "complete" && now - previous.updated_at_ms < 24 * 60 * 60 * 1000) return;
+      const since = previous?.state === "complete" ? new Date(Math.max(now - 365 * 24 * 60 * 60 * 1000, previous.to_at_ms - 7 * 24 * 60 * 60 * 1000)) : new Date(now - 365 * 24 * 60 * 60 * 1000);
+      const to = new Date(now);
+      db.prepare(`INSERT INTO stock_prep_risk_sync (store_id,state,from_at_ms,to_at_ms,processed_count,return_count,error,updated_at_ms)
+        VALUES (?,'running',?,?,0,0,NULL,?) ON CONFLICT(store_id) DO UPDATE SET state='running',from_at_ms=excluded.from_at_ms,to_at_ms=excluded.to_at_ms,error=NULL,updated_at_ms=excluded.updated_at_ms`)
+        .run(storeId, since.getTime(), to.getTime(), now);
+      syncStarted = true;
+      const client = this.createClient(store.clientId, decryptSecret(store.apiKeyCiphertext, this.config.ENCRYPTION_KEY));
+      let processed = 0;
+      for (const [windowStart, windowEnd] of dateWindows(since, to)) {
+        for await (const page of client.iteratePostingPages("FBS", windowStart, windowEnd)) {
+          for (const posting of page.postings) {
+            const normalized = normalizePosting(posting, "FBS");
+            await this.postings.upsert(storeId, normalized);
+            processed += 1;
+          }
+          db.prepare("UPDATE stock_prep_risk_sync SET processed_count=?,updated_at_ms=? WHERE store_id=?").run(processed, Date.now(), storeId);
+        }
+      }
+      let returnCount = 0;
+      const upsertReturn = db.prepare(`INSERT INTO stock_prep_buyer_returns (store_id,return_id,posting_number,order_number,quantity,return_type,returned_at_ms,return_reason,visual_status)
+        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,return_id) DO UPDATE SET posting_number=excluded.posting_number,order_number=excluded.order_number,quantity=excluded.quantity,return_type=excluded.return_type,returned_at_ms=excluded.returned_at_ms,return_reason=excluded.return_reason,visual_status=excluded.visual_status`);
+      const returnDateFields: Array<"logistic_return_date" | "visual_status_change_moment"> = previous?.state === "complete"
+        ? ["logistic_return_date", "visual_status_change_moment"]
+        : ["logistic_return_date"];
+      for (const dateField of returnDateFields) {
+        for (const [windowStart, windowEnd] of dateWindows(since, to)) {
+          for await (const page of client.iterateReturnPages(windowStart, windowEnd, dateField)) {
+            const upsertPage = db.transaction(() => {
+              for (const record of page.returns) {
+                if (!record.posting_number) continue;
+                const returnedAt = record.logistic?.return_date ?? record.logistic?.final_moment ?? null;
+                upsertReturn.run(storeId, record.id, record.posting_number, record.order_number ?? null, record.product?.quantity ?? 0,
+                  record.type ?? "unknown", returnedAt && Date.parse(returnedAt) ? Date.parse(returnedAt) : null,
+                  record.return_reason_name ?? null, record.visual?.status?.display_name ?? record.visual?.status?.sys_name ?? null);
+                returnCount += 1;
+              }
+            });
+            upsertPage();
+            db.prepare("UPDATE stock_prep_risk_sync SET return_count=?,updated_at_ms=? WHERE store_id=?").run(returnCount, Date.now(), storeId);
+          }
+        }
+      }
+      db.prepare("DELETE FROM stock_prep_buyer_returns WHERE store_id=? AND returned_at_ms<?").run(storeId, now - 365 * 24 * 60 * 60 * 1000);
+      db.prepare("UPDATE stock_prep_risk_sync SET state='complete',processed_count=?,return_count=?,error=NULL,updated_at_ms=? WHERE store_id=?")
+        .run(processed, returnCount, Date.now(), storeId);
+    } catch (error) {
+      if (syncStarted) db.prepare("UPDATE stock_prep_risk_sync SET state='failed',error=?,updated_at_ms=? WHERE store_id=?")
+        .run(errorMessage(error).slice(0, 1000), Date.now(), storeId);
+      throw error;
+    } finally {
+      this.activeBuyerHistorySyncs.delete(storeId);
+    }
+  }
+
   public async syncActiveStores(
     since: Date,
     to: Date,
@@ -218,11 +298,6 @@ export class SyncService {
     for await (const page of client.iteratePostingPages(source, from, to, cursor)) {
       for (const rawPosting of page.postings) {
         const posting = normalizePosting(rawPosting, source);
-        if (posting.customerId) {
-          posting.buyerKeyHash = createHmac("sha256", this.config.ENCRYPTION_KEY)
-            .update(`${store.id}\u0000${posting.customerId}`)
-            .digest("hex");
-        }
         if (postingAllowed(store, posting)) {
           await this.persistPosting(store, posting);
         }

@@ -14,19 +14,28 @@ export type StockPrepState = "pending" | "adding" | "added" | "failed" | "uncert
 export type BuyerRiskLevel = "none" | "review" | "blacklist";
 
 export interface StockPrepOrderView {
-  postingNumber: string; orderNumber: string; offerId: string; productName: string; imageUrl: string | null;
+  postingNumber: string; orderNumber: string; buyerPrefix: string | null; offerId: string; productName: string; imageUrl: string | null;
   quantity: number; orderQuantity: number; riskLevel: BuyerRiskLevel; blacklistStatus: string | null;
+  currentOrderCount: number; currentOrderIndex: number | null; buyerHistory: BuyerHistorySummary;
   approved: boolean; state: StockPrepState; error: string | null; selectedByDefault: boolean;
 }
 export interface StockPrepGroupView { offerUrl: string | null; offerId: string; skuId: string | null; imageUrl: string | null; status: StockPrepState; quantity: number; orders: StockPrepOrderView[]; error: string | null }
-export interface StockPrepScanView { storeId: string; groups: StockPrepGroupView[] }
+export interface BuyerHistorySummary {
+  syncState: "queued" | "running" | "complete" | "failed" | "not_started";
+  syncError: string | null;
+  ordersInYear: number; deliveredOrders: number; cancelledOrders: number; refusalOrders: number; returnCount: number; returnedPieces: number;
+  latestOutcome: string | null; latestAt: number | null;
+  orderSequenceByPostingNumber: Record<string, number>;
+  recentOrders: Array<{ postingNumber: string; status: string; orderAt: number; cancellationInitiator: string | null; cancellationType: string | null; returns: Array<{ type: string; reason: string | null; status: string | null; quantity: number }> }>;
+}
+export interface StockPrepScanView { storeId: string; groups: StockPrepGroupView[]; buyerHistorySync: Record<string, unknown> | null; lastOrderSyncAt: number | null }
 
 interface OrderRow {
   store_id: string;
   store_name: string;
   posting_number: string;
   order_number: string;
-  buyer_key_hash: string | null;
+  order_at_ms: number;
   offer_id: string;
   name: string;
   quantity: number;
@@ -94,15 +103,24 @@ const ORDER_SYNC_CACHE_KEY_PREFIX = "stock-prep.order-sync-at.";
 const ORDER_SYNC_CACHE_TTL_MS = 60 * 60 * 1000;
 const require = createRequire(import.meta.url);
 
-function buyerHash(storeId: string, buyerId: string, encryptionKey: string): string {
-  return createHmac("sha256", encryptionKey).update(`${storeId}\u0000${buyerId.trim()}`).digest("hex");
+function buyerPrefixFromPostingNumber(postingNumber: string): string | null {
+  const match = postingNumber.match(/^(\d+)-[^-]+-\d+$/u);
+  return match?.[1] ?? null;
 }
 
-function orderSnapshotHash(database: AppDatabase, storeId: string, orderNumber: string): string | null {
+function buyerPrefixHash(storeId: string, buyerPrefix: string, encryptionKey: string): string {
+  return createHmac("sha256", encryptionKey).update(`${storeId}\u0000${buyerPrefix}`).digest("hex");
+}
+
+function buyerSnapshotHash(database: AppDatabase, storeId: string, buyerPrefix: string): string | null {
   const items = database.prepare(`SELECT p.posting_number,pi.offer_id,pi.quantity FROM postings p
-    JOIN posting_items pi ON pi.posting_id=p.id WHERE p.store_id=? AND p.order_number=? AND p.status='awaiting_packaging'
-    AND p.cancelled_at_ms IS NULL ORDER BY p.posting_number,pi.offer_id`).all(storeId, orderNumber);
+    JOIN posting_items pi ON pi.posting_id=p.id WHERE p.store_id=? AND p.posting_number LIKE ? AND p.status='awaiting_packaging'
+    AND p.cancelled_at_ms IS NULL ORDER BY p.posting_number,pi.offer_id`).all(storeId, `${buyerPrefix}-%`);
   return items.length ? createHash("sha256").update(JSON.stringify(items)).digest("hex") : null;
+}
+
+function emptyBuyerHistory(): BuyerHistorySummary {
+  return { syncState: "not_started", syncError: null, ordersInYear: 0, deliveredOrders: 0, cancelledOrders: 0, refusalOrders: 0, returnCount: 0, returnedPieces: 0, latestOutcome: null, latestAt: null, orderSequenceByPostingNumber: {}, recentOrders: [] };
 }
 
 function parseCli<T>(output: string): T {
@@ -243,26 +261,34 @@ export class StockPrepService {
     return Number.isSafeInteger(refreshedAt) && refreshedAt > 0 && refreshedAt <= now && now - refreshedAt < ORDER_SYNC_CACHE_TTL_MS;
   }
 
+  /** Returns the last successful Ozon order-sync timestamp for the store. */
+  public getLastOrderSyncAt(storeId: string): number | null {
+    const refreshedAt = Number(this.settings.get(`${ORDER_SYNC_CACHE_KEY_PREFIX}${storeId}`));
+    return Number.isSafeInteger(refreshedAt) && refreshedAt > 0 ? refreshedAt : null;
+  }
+
   /** Persists the successful order synchronization time across page visits and service restarts. */
   public markOrderSyncCacheFresh(storeId: string, refreshedAt = Date.now()): void {
     this.settings.set(`${ORDER_SYNC_CACHE_KEY_PREFIX}${storeId}`, String(refreshedAt));
   }
 
-  /** Returns blacklist entries for the authenticated operator and decrypts IDs only for display. */
+  /** Returns buyer-prefix blacklist entries without exposing any Ozon customer identifier. */
   public listBuyerBlacklist(storeId: string): Record<string, unknown>[] {
-    const rows = this.database.prepare("SELECT id,buyer_id_ciphertext,status,source,reason_code,summary,evidence_orders_json,rule_version,notes,created_at_ms,updated_at_ms FROM stock_prep_buyer_blacklist WHERE store_id=? ORDER BY updated_at_ms DESC")
-      .all(storeId) as Array<Record<string, unknown> & { buyer_id_ciphertext: string | null }>;
-    return rows.map(({ buyer_id_ciphertext, ...row }) => ({
+    const rows = this.database.prepare("SELECT id,buyer_prefix_ciphertext,status,source,reason_code,summary,evidence_orders_json,rule_version,notes,created_at_ms,updated_at_ms FROM stock_prep_buyer_blacklist WHERE store_id=? ORDER BY updated_at_ms DESC")
+      .all(storeId) as Array<Record<string, unknown> & { buyer_prefix_ciphertext: string | null }>;
+    return rows.map(({ buyer_prefix_ciphertext, ...row }) => ({
       ...row,
-      buyerId: buyer_id_ciphertext ? decryptSecret(buyer_id_ciphertext, this.config.ENCRYPTION_KEY) : null,
+      buyerPrefix: buyer_prefix_ciphertext ? decryptSecret(buyer_prefix_ciphertext, this.config.ENCRYPTION_KEY) : null,
       evidenceOrders: JSON.parse(String(row.evidence_orders_json ?? "[]")) as string[],
     }));
   }
 
-  /** Adds or updates an encrypted buyer record while keeping Agent submissions as candidates. */
-  public upsertBuyerBlacklist(storeId: string, input: { buyerId: string; status: "candidate" | "active"; source: "manual" | "agent" | "order"; reasonCode: string; summary?: string; evidenceOrders?: string[]; ruleVersion?: string; notes?: string }): void {
+  /** Adds or updates one buyer-prefix record while keeping Agent submissions as candidates. */
+  public upsertBuyerBlacklist(storeId: string, input: { buyerPrefix: string; status: "candidate" | "active"; source: "manual" | "agent" | "order"; reasonCode: string; summary?: string; evidenceOrders?: string[]; ruleVersion?: string; notes?: string }): void {
     const now = Date.now();
-    const hash = buyerHash(storeId, input.buyerId, this.config.ENCRYPTION_KEY);
+    const buyerPrefix = input.buyerPrefix.trim();
+    if (!/^\d{3,30}$/u.test(buyerPrefix)) throw new Error("买家编号必须是 posting_number 的第一段数字");
+    const hash = buyerPrefixHash(storeId, buyerPrefix, this.config.ENCRYPTION_KEY);
     const existing = this.database.prepare("SELECT id,status FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, hash) as { id: string; status: string } | undefined;
     if (input.source === "agent" && existing && existing.status !== "candidate") {
       this.database.prepare("INSERT INTO stock_prep_buyer_blacklist_events (id,entry_id,actor,action,details_json,created_at_ms) VALUES (?,?,?,?,?,?)")
@@ -271,28 +297,28 @@ export class StockPrepService {
     }
     const id = existing?.id ?? randomUUID();
     const status = input.status;
-    this.database.prepare(`INSERT INTO stock_prep_buyer_blacklist (id,store_id,buyer_key_hash,buyer_id_ciphertext,status,source,reason_code,summary,evidence_orders_json,rule_version,notes,created_at_ms,updated_at_ms)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,buyer_key_hash) DO UPDATE SET status=excluded.status,source=excluded.source,reason_code=excluded.reason_code,summary=excluded.summary,evidence_orders_json=excluded.evidence_orders_json,rule_version=excluded.rule_version,notes=excluded.notes,updated_at_ms=excluded.updated_at_ms`)
-      .run(id, storeId, hash, encryptSecret(input.buyerId.trim(), this.config.ENCRYPTION_KEY), status, input.source, input.reasonCode, input.summary ?? null, JSON.stringify(input.evidenceOrders ?? []), input.ruleVersion ?? null, input.notes ?? null, now, now);
+    this.database.prepare(`INSERT INTO stock_prep_buyer_blacklist (id,store_id,buyer_key_hash,buyer_prefix_ciphertext,status,source,reason_code,summary,evidence_orders_json,rule_version,notes,created_at_ms,updated_at_ms)
+      VALUES (?,?,?, ?,?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,buyer_key_hash) DO UPDATE SET buyer_prefix_ciphertext=excluded.buyer_prefix_ciphertext,status=excluded.status,source=excluded.source,reason_code=excluded.reason_code,summary=excluded.summary,evidence_orders_json=excluded.evidence_orders_json,rule_version=excluded.rule_version,notes=excluded.notes,updated_at_ms=excluded.updated_at_ms`)
+      .run(id, storeId, hash, encryptSecret(buyerPrefix, this.config.ENCRYPTION_KEY), status, input.source, input.reasonCode, input.summary ?? null, JSON.stringify(input.evidenceOrders ?? []), input.ruleVersion ?? null, input.notes ?? null, now, now);
     this.database.prepare("INSERT INTO stock_prep_buyer_blacklist_events (id,entry_id,actor,action,details_json,created_at_ms) VALUES (?,?,?,?,?,?)")
       .run(randomUUID(), id, input.source, existing ? "updated" : "created", JSON.stringify({ reasonCode: input.reasonCode }), now);
   }
 
-  /** Adds the current order's buyer to the active blacklist without returning or storing raw Ozon identifiers. */
-  public addOrderBuyerToBlacklist(storeId: string, orderNumber: string, reason: string): void {
-    const row = this.database.prepare("SELECT buyer_key_hash FROM postings WHERE store_id=? AND order_number=? AND buyer_key_hash IS NOT NULL LIMIT 1")
-      .get(storeId, orderNumber) as { buyer_key_hash: string } | undefined;
-    if (!row) throw new Error("订单没有可用于黑名单匹配的买家标识");
-    const existing = this.database.prepare("SELECT id FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, row.buyer_key_hash) as { id: string } | undefined;
+  /** Adds the buyer prefix parsed from a three-part posting number to the active blacklist. */
+  public addOrderBuyerToBlacklist(storeId: string, postingNumber: string, reason: string): void {
+    const buyerPrefix = buyerPrefixFromPostingNumber(postingNumber);
+    if (!buyerPrefix) throw new Error("发货单号格式无效，无法读取买家编号");
+    const hash = buyerPrefixHash(storeId, buyerPrefix, this.config.ENCRYPTION_KEY);
+    const existing = this.database.prepare("SELECT id FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, hash) as { id: string } | undefined;
     const id = existing?.id ?? randomUUID();
     const now = Date.now();
     this.database.prepare(`INSERT INTO stock_prep_buyer_blacklist
-      (id,store_id,buyer_key_hash,status,source,reason_code,summary,evidence_orders_json,created_at_ms,updated_at_ms)
-      VALUES (?,?,?,'active','order','manual_order',?,?,?,?)
-      ON CONFLICT(store_id,buyer_key_hash) DO UPDATE SET status='active',source='order',reason_code='manual_order',summary=excluded.summary,updated_at_ms=excluded.updated_at_ms`)
-      .run(id, storeId, row.buyer_key_hash, reason.trim(), JSON.stringify([orderNumber]), now, now);
+      (id,store_id,buyer_key_hash,buyer_prefix_ciphertext,status,source,reason_code,summary,evidence_orders_json,created_at_ms,updated_at_ms)
+      VALUES (?,?,?,?,'active','order','manual_order',?,?,?,?)
+      ON CONFLICT(store_id,buyer_key_hash) DO UPDATE SET buyer_prefix_ciphertext=excluded.buyer_prefix_ciphertext,status='active',source='order',reason_code='manual_order',summary=excluded.summary,updated_at_ms=excluded.updated_at_ms`)
+      .run(id, storeId, hash, encryptSecret(buyerPrefix, this.config.ENCRYPTION_KEY), reason.trim(), JSON.stringify([postingNumber]), now, now);
     this.database.prepare("INSERT INTO stock_prep_buyer_blacklist_events (id,entry_id,actor,action,details_json,created_at_ms) VALUES (?,?,?,?,?,?)")
-      .run(randomUUID(), id, "manual", existing ? "activated" : "created", JSON.stringify({ orderNumber }), now);
+      .run(randomUUID(), id, "manual", existing ? "activated" : "created", JSON.stringify({ postingNumber, buyerPrefix }), now);
   }
 
   /** Changes a candidate or active entry without allowing an Agent to perform this transition. */
@@ -343,7 +369,7 @@ export class StockPrepService {
   public async scan(storeId: string): Promise<StockPrepScanView> {
     const source = this.database.prepare("SELECT source_url,base_token,table_id FROM store_sku_sources WHERE store_id=?").get(storeId) as StockPrepStoreRow | undefined;
     if (!source) throw new Error("请先为该店铺配置飞书 SKU 映射表");
-    const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,p.order_number,p.buyer_key_hash,pi.offer_id,pi.name,pi.quantity,
+    const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,p.order_number,p.order_at_ms,pi.offer_id,pi.name,pi.quantity,
         image.primary_image_url AS image_url,states.state,states.error
       FROM postings p JOIN stores s ON s.id=p.store_id JOIN posting_items pi ON pi.posting_id=p.id
       LEFT JOIN product_images image ON image.store_id=p.store_id AND image.sku=pi.sku
@@ -357,17 +383,40 @@ export class StockPrepService {
     const mappingByOffer = new Map(mappings.map((mapping) => [mapping.offerId, mapping]));
     const orderTotals = new Map<string, number>();
     for (const row of rows) orderTotals.set(row.order_number, (orderTotals.get(row.order_number) ?? 0) + row.quantity);
-    const riskByOrder = new Map<string, { level: BuyerRiskLevel; blacklistStatus: string | null; approved: boolean }>();
+    const buyerOrders = new Map<string, Map<string, number>>();
+    const currentOrdersByBuyer = new Map<string, OrderRow[]>();
     for (const row of rows) {
-      const hash = orderSnapshotHash(this.database, storeId, row.order_number);
-      const approval = this.database.prepare("SELECT snapshot_hash FROM stock_prep_risk_approvals WHERE store_id=? AND order_number=?").get(storeId, row.order_number) as { snapshot_hash: string } | undefined;
-      const blacklist = row.buyer_key_hash ? this.database.prepare("SELECT status FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, row.buyer_key_hash) as { status: string } | undefined : undefined;
-      const previous = riskByOrder.get(row.order_number);
+      const prefix = buyerPrefixFromPostingNumber(row.posting_number);
+      if (!prefix) continue;
+      const orders = buyerOrders.get(prefix) ?? new Map<string, number>();
+      orders.set(row.order_number, Math.min(orders.get(row.order_number) ?? Number.MAX_SAFE_INTEGER, row.order_at_ms));
+      buyerOrders.set(prefix, orders);
+      const buyerRows = currentOrdersByBuyer.get(prefix) ?? [];
+      buyerRows.push(row);
+      currentOrdersByBuyer.set(prefix, buyerRows);
+    }
+    const currentOrderIndexes = new Map<string, number>();
+    for (const [prefix, orderNumbers] of buyerOrders) {
+      [...orderNumbers].sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0])).forEach(([orderNumber], index) => currentOrderIndexes.set(`${prefix}\u0000${orderNumber}`, index + 1));
+    }
+    const historyByBuyer = new Map<string, BuyerHistorySummary>();
+    const riskByBuyerOrder = new Map<string, { level: BuyerRiskLevel; blacklistStatus: string | null; approved: boolean; currentOrderCount: number; currentOrderIndex: number | null }>();
+    for (const row of rows) {
+      const prefix = buyerPrefixFromPostingNumber(row.posting_number);
+      const riskKey = prefix ?? `@${row.posting_number}`;
+      const currentOrderCount = prefix ? buyerOrders.get(prefix)?.size ?? 1 : 1;
+      const currentOrderIndex = prefix ? currentOrderIndexes.get(`${prefix}\u0000${row.order_number}`) ?? null : null;
+      if (prefix && !historyByBuyer.has(prefix)) historyByBuyer.set(prefix, this.getBuyerHistorySummary(storeId, prefix, currentOrdersByBuyer.get(prefix) ?? []));
+      const hash = prefix ? buyerSnapshotHash(this.database, storeId, prefix) : null;
+      const approval = prefix ? this.database.prepare("SELECT snapshot_hash FROM stock_prep_risk_approvals WHERE store_id=? AND order_number=?").get(storeId, prefix) as { snapshot_hash: string } | undefined : undefined;
+      const blacklistKey = prefix ? buyerPrefixHash(storeId, prefix, this.config.ENCRYPTION_KEY) : null;
+      const blacklist = blacklistKey ? this.database.prepare("SELECT status FROM stock_prep_buyer_blacklist WHERE store_id=? AND buyer_key_hash=?").get(storeId, blacklistKey) as { status: string } | undefined : undefined;
+      const previous = riskByBuyerOrder.get(riskKey);
       const active = previous?.level === "blacklist" || blacklist?.status === "active";
       let level: BuyerRiskLevel = "none";
       if (active) level = "blacklist";
-      else if (orderTotals.get(row.order_number)! >= 2) level = "review";
-      riskByOrder.set(row.order_number, { level, blacklistStatus: active ? "active" : blacklist?.status ?? previous?.blacklistStatus ?? null, approved: Boolean(hash) && approval?.snapshot_hash === hash });
+      else if (orderTotals.get(row.order_number)! >= 2 || currentOrderCount > 1) level = "review";
+      riskByBuyerOrder.set(riskKey, { level, blacklistStatus: active ? "active" : blacklist?.status ?? previous?.blacklistStatus ?? null, approved: Boolean(hash) && approval?.snapshot_hash === hash, currentOrderCount, currentOrderIndex });
     }
     const groups = new Map<string, StockPrepGroupView>();
     for (const row of rows) {
@@ -386,16 +435,75 @@ export class StockPrepService {
       }
       const groupKey = validMapping ? `${validMapping.url}\u0000${validMapping.skuId}` : `unmatched:${row.offer_id}`;
       const currentError = mapped ? (state === "pending" ? null : row.error) : mappingError;
-      const risk = riskByOrder.get(row.order_number)!;
+      const prefix = buyerPrefixFromPostingNumber(row.posting_number);
+      const risk = riskByBuyerOrder.get(prefix ?? `@${row.posting_number}`)!;
       const risky = orderTotals.get(row.order_number)! >= 2;
       const group = groups.get(groupKey) ?? { offerUrl: validMapping?.url ?? null, offerId: row.offer_id, skuId: validMapping?.skuId ?? null, imageUrl: row.image_url, status: state, quantity: 0, orders: [], error: currentError };
       group.imageUrl ??= row.image_url;
       group.quantity += row.quantity;
-      group.orders.push({ postingNumber: row.posting_number, orderNumber: row.order_number, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, orderQuantity: orderTotals.get(row.order_number)!, riskLevel: risk.level, blacklistStatus: risk.blacklistStatus, approved: risk.approved, state, error: currentError, selectedByDefault: state === "pending" && risk.level !== "blacklist" && (!risky || risk.approved) });
+      group.orders.push({ postingNumber: row.posting_number, orderNumber: row.order_number, buyerPrefix: prefix, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, orderQuantity: orderTotals.get(row.order_number)!, riskLevel: risk.level, blacklistStatus: risk.blacklistStatus, currentOrderCount: risk.currentOrderCount, currentOrderIndex: risk.currentOrderIndex, buyerHistory: prefix ? historyByBuyer.get(prefix)! : emptyBuyerHistory(), approved: risk.approved, state, error: currentError, selectedByDefault: state === "pending" && risk.level !== "blacklist" && (!risky && risk.currentOrderCount <= 1 || risk.approved) });
       if (group.status !== state) group.status = group.status === "unmatched" || state === "unmatched" ? "unmatched" : "pending";
       groups.set(groupKey, group);
     }
-    return { storeId, groups: [...groups.values()] };
+    const buyerHistorySync = this.database.prepare("SELECT state,from_at_ms,to_at_ms,processed_count,return_count,error,updated_at_ms FROM stock_prep_risk_sync WHERE store_id=?").get(storeId) as Record<string, unknown> | undefined;
+    return { storeId, groups: [...groups.values()], buyerHistorySync: buyerHistorySync ?? null, lastOrderSyncAt: this.getLastOrderSyncAt(storeId) };
+  }
+
+  private getBuyerHistorySummary(storeId: string, buyerPrefix: string, currentOrders: OrderRow[]): BuyerHistorySummary {
+    const since = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    const posts = this.database.prepare(`SELECT posting_number,order_number,status,order_at_ms,cancellation_initiator,cancellation_type
+      FROM postings WHERE store_id=? AND posting_number LIKE ? AND fulfillment_mode IN ('FBS','RFBS') AND order_at_ms>=?
+      ORDER BY order_at_ms DESC,posting_number DESC`).all(storeId, `${buyerPrefix}-%`, since) as Array<{ posting_number: string; order_number: string; status: string; order_at_ms: number; cancellation_initiator: string | null; cancellation_type: string | null }>;
+    const currentPostingNumbers = new Set(currentOrders.map((order) => order.posting_number));
+    const currentOrderNumbers = new Set(currentOrders.map((order) => order.order_number));
+    const historicalPosts = posts.filter((post) => !currentPostingNumbers.has(post.posting_number) && !currentOrderNumbers.has(post.order_number));
+    const orderMap = new Map<string, (typeof posts)[number]>();
+    for (const post of historicalPosts) if (!orderMap.has(post.order_number)) orderMap.set(post.order_number, post);
+    const returns = this.database.prepare(`SELECT r.return_id,r.posting_number,r.order_number,r.quantity,r.return_type,r.returned_at_ms,r.return_reason,r.visual_status
+      FROM stock_prep_buyer_returns r JOIN postings p ON p.store_id=r.store_id AND (p.posting_number=r.posting_number OR (r.order_number IS NOT NULL AND p.order_number=r.order_number))
+      WHERE r.store_id=? AND p.posting_number LIKE ? AND p.order_at_ms>=?`).all(storeId, `${buyerPrefix}-%`, since) as Array<{ return_id: string; posting_number: string; order_number: string | null; quantity: number; return_type: string; returned_at_ms: number | null; return_reason: string | null; visual_status: string | null }>;
+    const historicalReturns = returns.filter((item) => !currentPostingNumbers.has(item.posting_number) && !(item.order_number && currentOrderNumbers.has(item.order_number)));
+    const returnsByOrder = new Map<string, typeof returns>();
+    const historicalOrderByPosting = new Map(historicalPosts.map((post) => [post.posting_number, post.order_number]));
+    for (const item of historicalReturns) {
+      const key = item.order_number ?? historicalOrderByPosting.get(item.posting_number) ?? item.posting_number;
+      const list = returnsByOrder.get(key) ?? [];
+      if (!list.some((existing) => existing.return_id === item.return_id)) list.push(item);
+      returnsByOrder.set(key, list);
+    }
+    const recentOrders = [...orderMap.values()].slice(0, 3).map((post) => {
+      const orderReturns = returnsByOrder.get(post.order_number) ?? [];
+      return {
+        postingNumber: post.posting_number,
+        status: post.status,
+        orderAt: post.order_at_ms,
+        cancellationInitiator: post.cancellation_initiator,
+        cancellationType: post.cancellation_type,
+        returns: orderReturns.map((item) => ({ type: item.return_type, reason: item.return_reason, status: item.visual_status, quantity: item.quantity })),
+      };
+    });
+    const cancelledOrders = [...orderMap.values()].filter((post) => /cancel/iu.test(post.status)).length;
+    const deliveredOrders = [...orderMap.values()].filter((post) => /deliver/iu.test(post.status) && !/cancel/iu.test(post.status)).length;
+    const refusalOrderNumbers = new Set(historicalReturns.filter((item) => item.return_type === "PartialReturn" || /отказ|refus/iu.test(item.return_reason ?? "")).map((item) => item.order_number ?? item.posting_number));
+    const latest = recentOrders[0];
+    const latestReturn = latest?.returns[0];
+    const latestOutcome = latestReturn ? `退货：${latestReturn.reason ?? latestReturn.type}` : latest ? latest.status : null;
+    const orderSequenceByPostingNumber = Object.fromEntries(historicalPosts.map((post) => [post.posting_number, [...orderMap.values()].filter((order) => order.order_at_ms < post.order_at_ms || (order.order_at_ms === post.order_at_ms && order.order_number.localeCompare(post.order_number) <= 0)).length]));
+    const currentOrderDates = new Map<string, number>();
+    for (const order of currentOrders) currentOrderDates.set(order.order_number, Math.min(currentOrderDates.get(order.order_number) ?? Number.MAX_SAFE_INTEGER, order.order_at_ms));
+    const orderedCurrentOrders = [...currentOrderDates].sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]));
+    for (const [index, [orderNumber, orderAt]] of orderedCurrentOrders.entries()) {
+      const historyBeforeOrder = [...orderMap.values()].filter((order) => order.order_at_ms < orderAt || (order.order_at_ms === orderAt && order.order_number.localeCompare(orderNumber) < 0)).length;
+      const sequence = historyBeforeOrder + index + 1;
+      for (const order of currentOrders) if (order.order_number === orderNumber) orderSequenceByPostingNumber[order.posting_number] = sequence;
+    }
+    const syncRow = this.database.prepare("SELECT state,error FROM stock_prep_risk_sync WHERE store_id=?").get(storeId) as { state: BuyerHistorySummary["syncState"]; error: string | null } | undefined;
+    return {
+      syncState: syncRow?.state ?? "not_started", syncError: syncRow?.error ?? null, ordersInYear: orderMap.size, deliveredOrders, cancelledOrders,
+      refusalOrders: refusalOrderNumbers.size, returnCount: new Set(historicalReturns.map((item) => item.return_id)).size,
+      returnedPieces: historicalReturns.reduce((sum, item) => sum + item.quantity, 0), latestOutcome, latestAt: latest?.orderAt ?? null,
+      orderSequenceByPostingNumber, recentOrders,
+    };
   }
 
   public async createBatch(storeId: string, keys: Array<{ postingNumber: string; offerId: string }>): Promise<{ id: string; status: string }> {
@@ -418,7 +526,7 @@ export class StockPrepService {
       const match = orderMap.get(`${key.postingNumber}\u0000${key.offerId}`);
       if (!match || !match.group.offerUrl || !match.group.skuId || !["pending", "failed"].includes(match.order.state)) throw new Error(`订单 ${key.postingNumber} 当前不能加购`);
       if (match.order.riskLevel === "blacklist") throw new Error(`订单 ${match.order.orderNumber} 的买家在黑名单中，禁止加购`);
-      if (match.order.orderQuantity >= 2 && !match.order.approved) throw new Error(`订单 ${match.order.orderNumber} 为多件订单，请先人工确认`);
+      if (match.order.riskLevel === "review" && !match.order.approved) throw new Error(`发货单 ${match.order.postingNumber} 属于买家风险待确认组，请先人工确认`);
       const id = `${match.group.offerUrl}\u0000${match.group.skuId}`;
       const group = itemGroups.get(id) ?? { url: match.group.offerUrl, skuId: match.group.skuId, offerId: key.offerId, quantity: 0, keys: [] };
       group.quantity += match.order.quantity;
@@ -449,19 +557,21 @@ export class StockPrepService {
     }
   }
 
-  /** Approves the current item snapshot for one multi-item Ozon order. */
-  public approveRiskOrder(storeId: string, orderNumber: string): void {
-    const snapshotHash = orderSnapshotHash(this.database, storeId, orderNumber);
-    if (!snapshotHash) throw new Error("订单已不存在或不再待打包");
+  /** Approves the current pending-item snapshot for every order sharing one buyer prefix. */
+  public approveRiskOrder(storeId: string, buyerPrefix: string): void {
+    if (!/^\d{3,30}$/u.test(buyerPrefix)) throw new Error("买家编号格式无效");
+    const snapshotHash = buyerSnapshotHash(this.database, storeId, buyerPrefix);
+    if (!snapshotHash) throw new Error("该买家已没有待打包订单");
     this.database.prepare(`INSERT INTO stock_prep_risk_approvals (store_id,order_number,snapshot_hash,approved_at_ms)
       VALUES (?,?,?,?) ON CONFLICT(store_id,order_number) DO UPDATE SET snapshot_hash=excluded.snapshot_hash,approved_at_ms=excluded.approved_at_ms`)
-      .run(storeId, orderNumber, snapshotHash, Date.now());
+      .run(storeId, buyerPrefix, snapshotHash, Date.now());
   }
 
-  /** Revokes manual approval so a multi-piece order requires review again. */
-  public revokeRiskOrderApproval(storeId: string, orderNumber: string): void {
+  /** Revokes approval for all current orders sharing the buyer prefix. */
+  public revokeRiskOrderApproval(storeId: string, buyerPrefix: string): void {
+    if (!/^\d{3,30}$/u.test(buyerPrefix)) throw new Error("买家编号格式无效");
     const result = this.database.prepare("DELETE FROM stock_prep_risk_approvals WHERE store_id=? AND order_number=?")
-      .run(storeId, orderNumber);
+      .run(storeId, buyerPrefix);
     if (!result.changes) throw new Error("订单当前没有人工放行状态");
   }
 
@@ -645,9 +755,10 @@ export class StockPrepService {
       const specAttrs=decode(sku.specAttrs).split(/\s*>\s*/u).map((value)=>value.trim()).filter(Boolean);
       return {url:location.href,skuId:String(sku.skuId),attributes:explicit.length>=2?explicit:specAttrs,supplierName};
     })()`]));
-    if (detail.url !== pageUrl || detail.skuId !== item.sku_id) throw new Error(`页面中未找到目标 SKU ID：${item.sku_id}`);
+    if (detail.url !== pageUrl) throw new Error(`1688 商品页地址不匹配，目标商品 ${productId} 未能打开`);
+    if (detail.skuId !== item.sku_id) throw new Error(`未匹配到 SKU：商品页不存在 SKU ID ${item.sku_id}，请检查飞书映射`);
     if (!detail.supplierName) throw new Error("无法识别 1688 供应商名称，已阻止加购");
-    if (detail.attributes.length < 2 || detail.attributes.some((value) => !value.trim())) throw new Error(`SKU ${item.sku_id} 的规格信息不完整，已阻止加购`);
+    if (detail.attributes.length < 2 || detail.attributes.some((value) => !value.trim())) throw new Error(`SKU ${item.sku_id} 的颜色或尺码规格信息不完整，请检查商品页面`);
     const attributes = detail.attributes.map((value) => value.trim());
     const dropship = this.getDropshipSuppliers().some((name) => name.localeCompare(detail.supplierName, undefined, { sensitivity: "base" }) === 0);
     return { ...item, productId, attributes, supplierName: detail.supplierName, dropship, cartKey: `${productId}\u0000${attributes.join("\u0000")}` };
@@ -672,32 +783,38 @@ export class StockPrepService {
           const target=${JSON.stringify(color)};const button=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>(node.querySelector('.label-name')||node).textContent?.trim()===target);
           if(!button)return {found:false,active:false};if(!button.classList.contains('active'))button.click();return {found:true,active:button.classList.contains('active')};
         })()`)));
-        if (!colorResult.found || !colorResult.active) throw new Error(`代发弹层中不存在商品颜色规格：${color}`);
+        if (!colorResult.found) throw new Error(`未匹配到颜色规格：代发弹层中不存在“${color}”`);
+        if (!colorResult.active) throw new Error(`颜色规格选择失败：代发弹层未能选中“${color}”`);
         await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
-        const filled = parseCli<{ color: string | null; size: string; filled: boolean; actual: string }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
+        const filled = parseCli<{ color: string | null; size: string; visibleSizes: string[]; filled: boolean; actual: string }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
           const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};const quantity=${target.quantity};
           const active=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>node.classList.contains('active'));
           const activeColor=(active?.querySelector('.label-name')||active)?.textContent?.trim()||null;
-          const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>(node.querySelector('.item-label')||node).textContent?.trim()===expectedSize);
-          const input=row?.querySelector('input.ant-input-number-input');if(!input)return {color:activeColor,size:'',filled:false,actual:''};
-          const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(!setter)return {color:activeColor,size:expectedSize,filled:false,actual:input.value};
+          const normalizeSize=(value)=>String(value??'').trim().split(/体重/u)[0].trim();
+          const rows=[...document.querySelectorAll('.expand-view-item')];
+          const row=rows.find((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)===expectedSize);
+          const input=row?.querySelector('input.ant-input-number-input');if(!input)return {color:activeColor,size:'',visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),filled:false,actual:''};
+          const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(!setter)return {color:activeColor,size:expectedSize,visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),filled:false,actual:input.value};
           setter.call(input,String(quantity));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:String(quantity)}));input.dispatchEvent(new Event('change',{bubbles:true}));input.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
-          return {color:activeColor,size:expectedSize,filled:true,actual:input.value};
+          return {color:activeColor,size:expectedSize,visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),filled:true,actual:input.value};
         })()`)));
-        if (filled.color !== color || filled.size !== size || !filled.filled || Number(filled.actual) !== target.quantity) {
-          throw new Error(`代发弹层未能确认目标规格或数量：${color} / ${size} × ${target.quantity}`);
-        }
+        if (filled.color !== color) throw new Error(`颜色规格校验失败：预期“${color}”，页面当前为“${filled.color ?? "未选择"}”`);
+        if (filled.size !== size) throw new Error(`未匹配到可购买尺码“${size}”；页面可选尺码：${filled.visibleSizes?.join("、") || "无"}`);
+        if (!filled.filled) throw new Error(`数量输入失败：尺码“${size}”没有可用数量输入框`);
+        if (Number(filled.actual) !== target.quantity) throw new Error(`数量校验失败：目标 SKU ${target.sku_id} 需要 ${target.quantity} 件，页面实际为 ${filled.actual || "空"}`);
         await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(750);
         const prepared = parseCli<{ buttonCount: number; colorActive: boolean; sizeFound: boolean; actual: string }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
           const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};
           const colorButton=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>(node.querySelector('.label-name')||node).textContent?.trim()===expectedColor);
-          const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>(node.querySelector('.item-label')||node).textContent?.trim()===expectedSize);
+          const normalizeSize=(value)=>String(value??'').trim().split(/体重/u)[0].trim();
+          const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)===expectedSize);
           const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
           return {buttonCount:buttons.length,colorActive:Boolean(colorButton?.classList.contains('active')),sizeFound:Boolean(row),actual:row?.querySelector('input.ant-input-number-input')?.value??''};
         })()`)));
-        if (prepared.buttonCount !== 1 || !prepared.colorActive || !prepared.sizeFound || Number(prepared.actual) !== target.quantity) {
-          throw new Error(`代发弹层提交前校验失败：按钮 ${prepared.buttonCount} 个，规格 ${color} / ${size}，数量 ${prepared.actual || "空"}`);
-        }
+        if (prepared.buttonCount !== 1) throw new Error(`加购按钮定位失败：代发弹层中找到 ${prepared.buttonCount} 个“加采购车”按钮`);
+        if (!prepared.colorActive) throw new Error(`颜色规格校验失败：提交前“${color}”未处于选中状态`);
+        if (!prepared.sizeFound) throw new Error(`尺码规格校验失败：提交前未找到“${size}”`);
+        if (Number(prepared.actual) !== target.quantity) throw new Error(`数量校验失败：目标 SKU ${target.sku_id} 需要 ${target.quantity} 件，页面实际为 ${prepared.actual || "空"}`);
         clickStarted = true;
         const click = parseCli<{ clicked: boolean; count: number }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
           const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
@@ -711,25 +828,37 @@ export class StockPrepService {
         const button=[...document.querySelectorAll('.sku-filter-button')].find((node)=>exact(node.querySelector('.label-name')||node));
         if(!button)return {found:false};if(!button.classList.contains('active'))button.click();return {found:true};
       })()`]));
-      if (!colorResult.found) throw new Error(`商品颜色规格不存在：${color}`);
+      if (!colorResult.found) throw new Error(`未匹配到颜色规格：商品页没有“${color}”`);
       await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
-      const selected = parseCli<{ url: string; color: string | null; size: string; skuId: string | null; inputIndex: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+      const selected = parseCli<{ url: string; color: string | null; size: string; skuId: string | null; attributes: string[]; availableQuantity: number | null; visibleSizes: string[]; inputIndex: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
         const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};
+        const desiredSkuId=${JSON.stringify(target.sku_id)};
         const active=[...document.querySelectorAll('.sku-filter-button')].find((node)=>node.classList.contains('active'));
         const activeColor=(active?.querySelector('.label-name')||active)?.textContent?.trim()||null;
-        const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>(node.querySelector('.item-label')||node).textContent?.trim()===expectedSize);
+        const normalizeSize=(value)=>String(value??'').trim().split(/体重/u)[0].trim();
+        const rows=[...document.querySelectorAll('.expand-view-item')];
+        const row=rows.find((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)===expectedSize);
         const input=row?.querySelector('input.ant-input-number-input');
         const decode=(value)=>{const node=document.createElement('textarea');node.innerHTML=String(value??'');return node.value.trim()};
         const scripts=[...document.scripts].map((node)=>node.textContent||'').join('\n');
         const matches=scripts.match(/\{[^{}]*"skuId"\s*:\s*"?\d+"?[^{}]*\}/g)||[];
-        const sku=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).find((value)=>{if(!value)return false;const explicit=[value.sku1,value.sku2].map(decode).filter(Boolean);const attrs=explicit.length>=2?explicit:decode(value.specAttrs).split(/\s*>\s*/u).map((part)=>part.trim()).filter(Boolean);return attrs[0]===expectedColor&&attrs[1]===expectedSize});
-        return {url:location.href,color:activeColor,size:row?(row.querySelector('.item-label')||row).textContent?.trim()||'':'',skuId:sku?String(sku.skuId):null,inputIndex:input?[...document.querySelectorAll('input.ant-input-number-input')].indexOf(input):-1};
+        const sku=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).find((value)=>value&&String(value.skuId)===desiredSkuId);
+        const explicit=sku?[sku.sku1,sku.sku2].map(decode).filter(Boolean):[];
+        const attributes=explicit.length>=2?explicit:sku?decode(sku.specAttrs).split(/\s*>\s*/u).map((part)=>part.trim()).filter(Boolean):[];
+        const available=sku?.canBookCount;
+        const availableQuantity=available==null||available===''||!Number.isFinite(Number(available))?null:Number(available);
+        return {url:location.href,color:activeColor,size:row?normalizeSize((row.querySelector('.item-label')||row).textContent):'',skuId:sku?String(sku.skuId):null,attributes,availableQuantity,visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),inputIndex:input?[...document.querySelectorAll('input.ant-input-number-input')].indexOf(input):-1};
       })()`]));
-      if (selected.url !== pageUrl || selected.color !== color || selected.size !== size || selected.skuId !== target.sku_id || selected.inputIndex < 0) {
-        throw new Error(`目标规格校验失败，预期 SKU ${target.sku_id}，页面识别 SKU ${selected.skuId ?? "无"}`);
-      }
+      if (selected.url !== pageUrl) throw new Error(`商品页校验失败：目标商品 ${target.productId} 未能打开`);
+      if (selected.skuId !== target.sku_id) throw new Error(`未匹配到 SKU：商品页没有 SKU ID ${target.sku_id}，请检查飞书映射`);
+      if (selected.attributes.length !== target.attributes.length || selected.attributes.some((value, index) => value !== target.attributes[index])) throw new Error(`SKU 规格映射不一致：SKU ${target.sku_id} 页面规格为“${selected.attributes.join(" / ") || "未知"}”，映射规格为“${target.attributes.join(" / ") || "未知"}”`);
+      if (selected.availableQuantity !== null && selected.availableQuantity < target.quantity) throw new Error(`库存不足：SKU ${target.sku_id} 可订购 ${selected.availableQuantity} 件，需要 ${target.quantity} 件`);
+      if (selected.color !== color) throw new Error(`颜色规格选择失败：预期“${color}”，页面当前为“${selected.color ?? "未选择"}”`);
+      if (selected.size !== size) throw new Error(`未匹配到可购买尺码“${size}”；页面可选尺码：${selected.visibleSizes.join("、") || "无"}`);
+      if (selected.inputIndex < 0) throw new Error(`数量输入框未找到：SKU ${target.sku_id} 的规格“${color} / ${size}”不可输入`);
       const filled = parseCli<{ filled: boolean; verified: boolean; actual: string }>(await this.runBrowser(session, ["fill", "--nth", String(selected.inputIndex), "input.ant-input-number-input", String(target.quantity)]));
-      if (!filled.filled || !filled.verified || Number(filled.actual) !== target.quantity) throw new Error(`未能将加购数量输入目标 SKU ${target.sku_id}`);
+      if (!filled.filled || !filled.verified) throw new Error(`数量输入失败：SKU ${target.sku_id} 的输入框未能写入`);
+      if (Number(filled.actual) !== target.quantity) throw new Error(`数量校验失败：目标 SKU ${target.sku_id} 需要 ${target.quantity} 件，页面实际为 ${filled.actual || "空"}`);
       // The fixed footer button can sit below the OpenCLI viewport until it is scrolled into view.
       const prepared = parseCli<{ buttonCount: number; visible: boolean }>(await this.runBrowser(session, ["eval", String.raw`(() => {
         const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
@@ -738,7 +867,8 @@ export class StockPrepService {
         const rect=button.getBoundingClientRect();
         return {buttonCount:1,visible:rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=window.innerHeight&&rect.left>=0&&rect.right<=window.innerWidth};
       })()`]));
-      if (prepared.buttonCount !== 1 || !prepared.visible) throw new Error(`普通加购按钮未能唯一定位或滚动到可见区域（匹配 ${prepared.buttonCount} 个）`);
+      if (prepared.buttonCount !== 1) throw new Error(`加购按钮定位失败：商品页中找到 ${prepared.buttonCount} 个“加采购车”按钮`);
+      if (!prepared.visible) throw new Error("加购按钮不可见：已尝试滚动，按钮仍未进入可视区域");
       await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(150);
       clickStarted = true;
       const click = parseCli<{ clicked: boolean }>(await this.runBrowser(session, ["click", "--role", "button", "--name", "加采购车"]));
@@ -772,6 +902,7 @@ export class StockPrepService {
     return result;
   }
 
+  /** Reads matching SKU quantities from either the legacy or the current 1688 cart layout. */
   private async cartQuantities(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>(), dropship = false): Promise<Map<string, number>> {
     await this.runBrowser(session, ["open", dropship ? "https://cart.1688.com/daixiao_cart.htm" : "https://cart.1688.com/cart.htm"]);
     const serialized = targets.map((target) => ({ key: target.cartKey, productId: target.productId, attributes: target.attributes }));
@@ -780,13 +911,53 @@ export class StockPrepService {
       const normalize=(value)=>String(value??'').split(/\s*(?:;|；|>)\s*/u).map((part)=>part.trim()).filter(Boolean);
       const expectedPath=${JSON.stringify(dropship ? "/daixiao_cart.htm" : "/cart.htm")};
       const isCartPage=location.hostname==='cart.1688.com'&&location.pathname===expectedPath;
-      const groups=[...document.querySelectorAll('[class*=groupRoot]')];const quantities={};
-      for(const target of targets){
-        const matchingGroups=groups.filter((group)=>[...group.querySelectorAll('a[href*="detail.1688.com/offer/"]')].some((link)=>new URL(link.href).pathname==='/offer/'+target.productId+'.html'));
-        const rows=matchingGroups.flatMap((group)=>[...group.querySelectorAll('[class*=item--container]')]).filter((row)=>{const labels=normalize([...row.querySelectorAll('[class*=skuTitle]')].map((node)=>node.textContent?.trim()??'').join(';'));return labels.length===target.attributes.length&&labels.every((label,index)=>label===target.attributes[index])});
-        quantities[target.key]=rows.map((row)=>Number(row.querySelector('[class*=quantityWrapper] input')?.value??NaN)).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
+      const oldRoot=document.querySelector('#cartV2Header');
+      const modernRoot=document.querySelector('[class*=cart--container]');
+      const modernHeader=modernRoot?.querySelector('[class*=header-bar--container]');
+      const modernTabs=[...(modernRoot?.querySelectorAll('[role=tab]')??[])];
+      const expectedTab=${JSON.stringify(dropship ? "分销" : "现货")};
+      const activeModernTab=modernTabs.find((tab)=>tab.getAttribute('aria-selected')==='true'||tab.classList.contains('active'));
+      const activeTabName=activeModernTab?.textContent?.trim().replace(/\s*\(\d+\)$/u,'')??'';
+      const modernModeMatches=modernTabs.length===0||activeTabName===expectedTab;
+      const modernLoaded=Boolean(modernRoot&&modernHeader&&modernModeMatches);
+      const oldLoaded=Boolean(oldRoot);
+      const readItemFields=(row)=>{
+        const fiberKey=Object.keys(row).find((key)=>key.startsWith('__reactFiber$'));
+        let fiber=fiberKey?row[fiberKey]:null;
+        for(let depth=0;fiber&&depth<12;depth++,fiber=fiber.return){
+          const fields=fiber.memoizedProps?.fields;
+          if(fields&&typeof fields==='object'&&fields.offerId!=null&&fields.skuId!=null&&fields.skuTitle!=null)return fields;
+        }
+        return null;
+      };
+      const quantities={};
+      if(isCartPage&&(oldLoaded||modernLoaded)){
+        for(const target of targets){
+          if(oldLoaded){
+            const groups=[...document.querySelectorAll('[class*=groupRoot]')];
+            const matchingGroups=groups.filter((group)=>[...group.querySelectorAll('a[href*="detail.1688.com/offer/"]')].some((link)=>new URL(link.href).pathname==='/offer/'+target.productId+'.html'));
+            const rows=matchingGroups.flatMap((group)=>[...group.querySelectorAll('[class*=item--container]')]).filter((row)=>{const labels=normalize([...row.querySelectorAll('[class*=skuTitle]')].map((node)=>node.textContent?.trim()??'').join(';'));return labels.length===target.attributes.length&&labels.every((label,index)=>label===target.attributes[index])});
+            quantities[target.key]=rows.map((row)=>Number(row.querySelector('[class*=quantityWrapper] input')?.value??NaN)).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
+            continue;
+          }
+          const rows=[...modernRoot.querySelectorAll('[class*=item--container--]')].filter((row)=>String(row.className).split(' ').some((name)=>name.startsWith('item--container--')));
+          const matchingRows=rows.filter((row)=>{
+            // New cart rows omit offer links; read the rendered Item component fields attached to the row.
+            const fields=readItemFields(row);
+            if(!fields||String(fields.offerId)!==target.productId)return false;
+            const labels=normalize(fields.skuTitle);
+            return labels.length===target.attributes.length&&labels.every((label,index)=>label===target.attributes[index]);
+          });
+          quantities[target.key]=matchingRows.map((row)=>{
+            const picker=row.querySelector('[class*=numberPicker]');
+            const input=picker?.querySelector('input:not([type=checkbox])');
+            const itemQuantity=Number(readItemFields(row)?.quantity??NaN);
+            const value=input?.value??picker?.getAttribute('aria-valuenow')??itemQuantity;
+            return Number(value);
+          }).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
+        }
       }
-      return {loaded:isCartPage&&Boolean(document.querySelector('#cartV2Header')),quantities};
+      return {loaded:isCartPage&&(oldLoaded||modernLoaded),quantities};
     })()`;
     let loaded = false;
     let quantities: Record<string, number> = {};

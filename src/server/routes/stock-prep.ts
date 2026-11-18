@@ -23,8 +23,8 @@ function buildBlacklistAgentOpenApi(): Record<string, unknown> {
   return {
     openapi: "3.1.0",
     info: {
-      title: "Ozon GMV 买家黑名单候选接口",
-      version: "1.0.0",
+      title: "Ozon GMV 买家前缀黑名单候选接口",
+      version: "2.0.0",
       description: "供本机 AI Agent 查询 Ozon 店铺并提交黑名单候选。候选必须由运营人员在 GMV 后台审核后才会生效。",
     },
     servers: [{ url: "http://127.0.0.1:3001" }],
@@ -41,7 +41,7 @@ function buildBlacklistAgentOpenApi(): Record<string, unknown> {
           summary: "提交黑名单候选供人工审核",
           description: "所有记录只会保存为待审核候选；此接口不能直接启用、停用或删除黑名单。",
           parameters: [{ name: "storeId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["candidates"], properties: { candidates: { type: "array", maxItems: 500, items: { type: "object", required: ["buyerId", "reasonCode"], properties: { buyerId: { type: "string", maxLength: 200 }, reasonCode: { type: "string", maxLength: 100 }, summary: { type: "string", maxLength: 2000 }, evidenceOrders: { type: "array", maxItems: 100, items: { type: "string", maxLength: 100 } }, ruleVersion: { type: "string", maxLength: 100 } }, additionalProperties: false } } }, additionalProperties: false } } } },
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["candidates"], properties: { candidates: { type: "array", maxItems: 500, items: { type: "object", required: ["buyerPrefix", "reasonCode"], properties: { buyerPrefix: { type: "string", pattern: "^[0-9]{3,30}$", description: "posting_number 第一段数字" }, reasonCode: { type: "string", maxLength: 100 }, summary: { type: "string", maxLength: 2000 }, evidenceOrders: { type: "array", maxItems: 100, items: { type: "string", maxLength: 100 } }, ruleVersion: { type: "string", maxLength: 100 } }, additionalProperties: false } } }, additionalProperties: false } } } },
           responses: { "200": { description: "返回提交数量和候选状态" }, "400": { description: "请求参数无效" }, "403": { description: "请求不是来自本机命令行客户端" } },
         },
       },
@@ -70,17 +70,17 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
 
   app.post("/api/stock-prep/stores/:storeId/buyer-blacklist", { preHandler: requireSession }, async (request, reply) => {
     const { storeId } = storeParams.parse(request.params);
-    const input = z.object({ buyerId: z.string().trim().min(1).max(200), reason: z.string().trim().min(1).max(1000) }).parse(request.body);
+    const input = z.object({ buyerPrefix: z.string().trim().regex(/^\d{3,30}$/u), reason: z.string().trim().min(1).max(1000) }).parse(request.body);
     try {
-      service.upsertBuyerBlacklist(storeId, { buyerId: input.buyerId, status: "active", source: "manual", reasonCode: "manual", summary: input.reason });
+      service.upsertBuyerBlacklist(storeId, { buyerPrefix: input.buyerPrefix, status: "active", source: "manual", reasonCode: "manual", summary: input.reason });
       return { added: true };
     } catch (error) { return reply.code(400).send({ error: "BUYER_BLACKLIST_INVALID", message: error instanceof Error ? error.message : "黑名单买家无效" }); }
   });
 
   app.post("/api/stock-prep/stores/:storeId/buyer-blacklist/from-order", { preHandler: requireSession }, async (request, reply) => {
     const { storeId } = storeParams.parse(request.params);
-    const input = z.object({ orderNumber: z.string().trim().min(1).max(100), reason: z.string().trim().min(1).max(1000) }).parse(request.body);
-    try { service.addOrderBuyerToBlacklist(storeId, input.orderNumber, input.reason); return { added: true }; }
+    const input = z.object({ postingNumber: z.string().trim().min(1).max(100), reason: z.string().trim().min(1).max(1000) }).parse(request.body);
+    try { service.addOrderBuyerToBlacklist(storeId, input.postingNumber, input.reason); return { added: true }; }
     catch (error) { return reply.code(409).send({ error: "BUYER_ID_UNAVAILABLE", message: error instanceof Error ? error.message : "无法从订单添加买家" }); }
   });
 
@@ -100,9 +100,9 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
     const { storeId } = storeParams.parse(request.params);
     const store = await stores.findById(storeId);
     if (!store || store.platform !== "ozon") return reply.code(404).send({ error: "STORE_NOT_AVAILABLE", message: "目标 Ozon 店铺不存在" });
-    const input = z.object({ candidates: z.array(z.object({ buyerId: z.string().trim().min(1).max(200), reasonCode: z.string().trim().min(1).max(100), summary: z.string().trim().max(2000).optional(), evidenceOrders: z.array(z.string().trim().min(1).max(100)).max(100).optional(), ruleVersion: z.string().trim().max(100).optional() })).max(500) }).parse(request.body);
+    const input = z.object({ candidates: z.array(z.object({ buyerPrefix: z.string().trim().regex(/^\d{3,30}$/u), reasonCode: z.string().trim().min(1).max(100), summary: z.string().trim().max(2000).optional(), evidenceOrders: z.array(z.string().trim().min(1).max(100)).max(100).optional(), ruleVersion: z.string().trim().max(100).optional() })).max(500) }).parse(request.body);
     for (const item of input.candidates) service.upsertBuyerBlacklist(storeId, {
-      buyerId: item.buyerId,
+      buyerPrefix: item.buyerPrefix,
       status: "candidate",
       source: "agent",
       reasonCode: item.reasonCode,
@@ -128,7 +128,7 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
     const { storeId } = storeParams.parse(request.params);
     const store = await stores.findById(storeId);
     if (!store || store.platform !== "ozon" || !store.enabled) return reply.code(404).send({ error: "STORE_NOT_AVAILABLE", message: "目标 Ozon 店铺不存在或已停用" });
-    return { source: service.getSource(storeId), latestBatch: service.getLatestBatch(storeId), connection: await service.getConnectionState() };
+    return { source: service.getSource(storeId), latestBatch: service.getLatestBatch(storeId), connection: await service.getConnectionState(), lastOrderSyncAt: service.getLastOrderSyncAt(storeId) };
   });
 
   app.put("/api/stock-prep/stores/:storeId/source", { preHandler: requireSession }, async (request, reply) => {
@@ -148,6 +148,7 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
         await syncService.syncStore(storeId, subDays(new Date(), 14), new Date(), ["FBS", "RFBS"]);
         service.markOrderSyncCacheFresh(storeId);
       }
+      void syncService.syncStockPrepBuyerHistory(storeId).catch(() => undefined);
       return await service.scan(storeId);
     }
     catch (error) { return reply.code(422).send({ error: "STOCK_PREP_SCAN_FAILED", message: error instanceof Error ? error.message : "备货订单扫描失败" }); }
@@ -155,15 +156,15 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
 
   app.post("/api/stock-prep/stores/:storeId/risk-approvals", { preHandler: requireSession }, async (request, reply) => {
     const { storeId } = storeParams.parse(request.params);
-    const input = z.object({ orderNumber: z.string().min(1).max(100) }).parse(request.body);
-    try { service.approveRiskOrder(storeId, input.orderNumber); return { approved: true }; }
+    const input = z.object({ buyerPrefix: z.string().regex(/^\d{3,30}$/u) }).parse(request.body);
+    try { service.approveRiskOrder(storeId, input.buyerPrefix); return { approved: true }; }
     catch (error) { return reply.code(409).send({ error: "RISK_APPROVAL_REJECTED", message: error instanceof Error ? error.message : "无法放行订单" }); }
   });
 
-  app.delete("/api/stock-prep/stores/:storeId/risk-approvals/:orderNumber", { preHandler: requireSession }, async (request, reply) => {
+  app.delete("/api/stock-prep/stores/:storeId/risk-approvals/:buyerPrefix", { preHandler: requireSession }, async (request, reply) => {
     const { storeId } = storeParams.parse(request.params);
-    const { orderNumber } = z.object({ orderNumber: z.string().min(1).max(100) }).parse(request.params);
-    try { service.revokeRiskOrderApproval(storeId, orderNumber); return { revoked: true }; }
+    const { buyerPrefix } = z.object({ buyerPrefix: z.string().regex(/^\d{3,30}$/u) }).parse(request.params);
+    try { service.revokeRiskOrderApproval(storeId, buyerPrefix); return { revoked: true }; }
     catch (error) { return reply.code(409).send({ error: "RISK_APPROVAL_NOT_FOUND", message: error instanceof Error ? error.message : "无法撤回人工放行" }); }
   });
 

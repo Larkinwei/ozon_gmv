@@ -50,7 +50,7 @@ describe("StockPrepPage", () => {
     vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
     vi.mocked(api.fetchUpdateStatus).mockResolvedValue({ state: "up-to-date" } as UpdateView);
     vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
-    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: new Date(2026, 10, 18, 12, 34, 56).getTime() });
     vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: "https://detail.1688.com/offer/747713283348.html", offerId: "1645-2-XXL", skuId: "6103279203988", imageUrl: null, status: "pending", quantity: 3, error: null, orders: [
       { postingNumber: "post-1", offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 1, state: "pending", error: null, selectedByDefault: true },
       { postingNumber: "post-2", offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 2, state: "pending", error: null, selectedByDefault: true },
@@ -60,6 +60,7 @@ describe("StockPrepPage", () => {
     fireEvent.change(screen.getByLabelText("Ozon 店铺"), { target: { value: "store-1" } });
     await waitFor(() => expect(api.fetchStockPrepState).toHaveBeenCalledWith("store-1"));
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
+    expect(await screen.findByText(/最近订单同步：2026-11-18 12:34:56/u)).toBeInTheDocument();
 
     await screen.findByRole("button", { name: "加购所选 2 笔 · 3 件" });
     expect(screen.getByRole("checkbox", { name: "选择订单 post-1" })).toBeChecked();
@@ -74,7 +75,7 @@ describe("StockPrepPage", () => {
     vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
     vi.mocked(api.fetchUpdateStatus).mockResolvedValue({ state: "up-to-date" } as UpdateView);
     vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
-    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
     vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: "https://detail.1688.com/offer/747713283348.html", offerId: "1645-2-XXL", skuId: "6103279203988", imageUrl: null, status: "pending", quantity: 2, error: null, orders: [
       { postingNumber: "post-failed", offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 1, state: "failed", error: "页面超时", selectedByDefault: false },
       { postingNumber: "post-pending", offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 1, state: "pending", error: null, selectedByDefault: true },
@@ -96,7 +97,7 @@ describe("StockPrepPage", () => {
     vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
     vi.mocked(api.fetchUpdateStatus).mockResolvedValue({ state: "up-to-date" } as UpdateView);
     vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
-    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
     vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: "https://detail.1688.com/offer/747713283348.html", offerId: "1645-2-XXL", skuId: "6103279203988", imageUrl: null, status: "added", quantity: 1, error: null, orders: [
       { postingNumber: "post-added", offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 1, state: "added", error: null, selectedByDefault: false },
     ] }] });
@@ -115,17 +116,20 @@ describe("StockPrepPage", () => {
   it("requires an explicit approval before a multi-item order can be selected", async () => {
     vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
     vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
-    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
     vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: "https://detail.1688.com/offer/747713283348.html", offerId: "1645-2-XXL", skuId: "6103279203988", imageUrl: null, status: "pending", quantity: 2, error: null, orders: [
-      { postingNumber: "post-risk", orderNumber: "order-risk", offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 2, orderQuantity: 2, riskLevel: "review", approved: false, state: "pending", error: null, selectedByDefault: false },
+      { postingNumber: "12345678-order-1", orderNumber: "order-risk", buyerPrefix: "12345678", currentOrderCount: 1, currentOrderIndex: 1, offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 2, orderQuantity: 2, riskLevel: "review", approved: false, state: "pending", error: null, selectedByDefault: false, buyerHistory: { syncState: "failed", syncError: "Ozon API 400: PERIOD_IS_TOO_LONG", ordersInYear: 1, deliveredOrders: 0, cancelledOrders: 0, refusalOrders: 0, returnCount: 0, returnedPieces: 0, latestOutcome: "awaiting_packaging", latestAt: Date.now(), orderSequenceByPostingNumber: {}, recentOrders: [{ postingNumber: "12345678-order-1", status: "awaiting_packaging", orderAt: Date.now(), cancellationInitiator: null, cancellationType: null, returns: [] }] } },
     ] }] });
     vi.mocked(api.approveStockPrepRiskOrder).mockResolvedValue({ approved: true });
     renderPage();
-    const checkbox = await screen.findByRole("checkbox", { name: "选择订单 post-risk" });
+    const checkbox = await screen.findByRole("checkbox", { name: "选择订单 12345678-order-1" });
     expect(checkbox).toBeDisabled();
-    expect(screen.getAllByText(/多件订单需人工确认/)).toHaveLength(2);
-    fireEvent.click(screen.getByRole("button", { name: "人工放行并选择" }));
-    await waitFor(() => expect(api.approveStockPrepRiskOrder).toHaveBeenCalledWith("store-1", "order-risk"));
+    expect(screen.getAllByText(/该订单购买多件，需人工确认/)).toHaveLength(2);
+    expect(screen.getAllByText("等待打包").length).toBeGreaterThan(0);
+    expect(screen.getByText("失败原因：Ozon API 400: PERIOD_IS_TOO_LONG")).toBeInTheDocument();
+    expect(screen.queryByText("awaiting_packaging")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "人工放行买家订单组" }));
+    await waitFor(() => expect(api.approveStockPrepRiskOrder).toHaveBeenCalledWith("store-1", "12345678"));
   });
 
 });

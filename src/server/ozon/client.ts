@@ -4,6 +4,7 @@ import { z, type ZodType } from "zod";
 
 import {
   postingListResponseSchema,
+  returnsListResponseSchema,
   descriptionCategoryTreeResponseSchema,
   descriptionCategoryAttributesResponseSchema,
   descriptionCategoryAttributeValuesResponseSchema,
@@ -28,6 +29,7 @@ import {
   questionListResponseSchema,
   warehouseListResponseSchema,
   type OzonPosting,
+  type OzonReturnRecord,
   type OzonDescriptionCategoryNode,
   type OzonProductInfo,
   type OzonRoles,
@@ -48,6 +50,12 @@ export interface OzonPostingPage {
   postings: OzonPosting[];
   nextCursor: string | null;
   hasNext: boolean;
+}
+
+export interface OzonReturnPage {
+  returns: OzonReturnRecord[];
+  hasNext: boolean;
+  lastId: string | null;
 }
 
 export interface OzonProductImportResult {
@@ -848,6 +856,25 @@ export class OzonClient {
         throw new Error(`Ozon ${source} pagination exceeded the safety limit`);
       }
       cursor = nextCursor;
+    }
+  }
+
+  /** Iterates Ozon FBO/FBS returns in one-year windows for local buyer-risk history. */
+  public async *iterateReturnPages(since: Date, to: Date, dateField: "logistic_return_date" | "visual_status_change_moment" = "logistic_return_date"): AsyncGenerator<OzonReturnPage> {
+    let lastId: string | undefined;
+    let page = 0;
+    while (true) {
+      const response = await this.request("/v1/returns/list", {
+        filter: { [dateField]: { time_from: since.toISOString(), time_to: to.toISOString() } },
+        limit: 500,
+        ...(lastId ? { last_id: Number(lastId) } : {}),
+      }, returnsListResponseSchema);
+      yield { returns: response.returns, hasNext: response.has_next, lastId: response.last_id };
+      page += 1;
+      if (!response.has_next) break;
+      if (!response.last_id) throw new Error("Ozon returns pagination returned has_next without last_id");
+      if (page > 10_000) throw new Error("Ozon returns pagination exceeded the safety limit");
+      lastId = response.last_id;
     }
   }
 

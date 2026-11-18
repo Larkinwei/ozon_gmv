@@ -25,7 +25,6 @@ export const ozonPostingSchema = z.object({
   substatus: z.string().nullish(),
   delivery_schema: z.string().optional(),
   products: z.array(productSchema),
-  customer: z.object({ customer_id: z.union([z.string(), z.number()]).transform(String).nullish() }).passthrough().nullish(),
   cancellation: z.object({ cancellation_initiator: z.string().nullish(), cancellation_type: z.string().nullish() }).passthrough().nullish(),
 });
 
@@ -34,6 +33,22 @@ export const postingListResponseSchema = z.object({
   has_next: z.boolean().default(false),
   postings: z.array(ozonPostingSchema).default([]),
 });
+
+export const returnsListResponseSchema = z.object({
+  returns: z.array(z.object({
+    id: z.union([z.string(), z.number()]).transform(String),
+    posting_number: z.string().nullish(),
+    order_number: z.string().nullish(),
+    type: z.string().nullish(),
+    return_reason_name: z.string().nullish(),
+    product: z.object({ quantity: z.number().int().nonnegative().nullish() }).passthrough().nullish(),
+    logistic: z.object({ return_date: z.string().nullish(), final_moment: z.string().nullish() }).passthrough().nullish(),
+    visual: z.object({ status: z.object({ display_name: z.string().nullish(), sys_name: z.string().nullish() }).passthrough().nullish() }).passthrough().nullish(),
+  }).passthrough()).default([]),
+  has_next: z.boolean().default(false),
+  last_id: z.union([z.string(), z.number()]).nullish().transform((value) => value == null ? null : String(value)),
+}).passthrough();
+export type OzonReturnRecord = z.infer<typeof returnsListResponseSchema>["returns"][number];
 
 export const rolesResponseSchema = z.object({
   expires_at: z.string().datetime().nullish(),

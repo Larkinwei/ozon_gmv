@@ -28,19 +28,20 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
   database.exec(readFileSync(join(process.cwd(), "migrations/032_stock_prep.sql"), "utf8"));
   database.exec(readFileSync(join(process.cwd(), "migrations/033_stock_prep_buyer_risk.sql"), "utf8"));
   database.exec(readFileSync(join(process.cwd(), "migrations/034_stock_prep_buyer_blacklist.sql"), "utf8"));
+  database.exec(readFileSync(join(process.cwd(), "migrations/035_stock_prep_buyer_prefix_history.sql"), "utf8"));
   database.prepare("INSERT INTO stores VALUES (?,?,?,?)").run(storeId, "YOGOLD", "ozon", 1);
   database.prepare("INSERT INTO store_sku_sources VALUES (?,?,?,?,?)").run(storeId, "https://feishu/base", "base-token", "tbl-stock", Date.now());
   const addPosting = database.prepare("INSERT INTO postings (id,store_id,posting_number,order_number,fulfillment_mode,status,cancelled_at_ms) VALUES (?,?,?,?,?,?,?)");
   const addItem = database.prepare("INSERT INTO posting_items (posting_id,offer_id,name,quantity) VALUES (?,?,?,?)");
   for (const [id, postingNumber, mode, status, cancelled, offerId, quantity] of [
-    ["p1", "post-1", "FBS", "awaiting_packaging", null, "1645-2-XXL", 1],
-    ["p2", "post-2", "RFBS", "awaiting_packaging", null, "1645-2-XXL", 2],
-    ["p3", "post-3", "FBO", "awaiting_packaging", null, "1645-2-XXL", 4],
-    ["p4", "post-4", "FBS", "awaiting_deliver", null, "1645-2-XXL", 5],
-    ["p5", "post-5", "FBS", "awaiting_packaging", Date.now(), "1645-2-XXL", 6],
-    ["p6", "post-6", "FBS", "awaiting_packaging", null, "UNMAPPED", 1],
-    ["p7", "post-7", "FBS", "awaiting_packaging", null, "DUPLICATE", 1],
-    ["p8", "post-8", "FBS", "awaiting_packaging", null, "BAD-SKU", 1],
+    ["p1", "10000001-part-1", "FBS", "awaiting_packaging", null, "1645-2-XXL", 1],
+    ["p2", "10000002-part-1", "RFBS", "awaiting_packaging", null, "1645-2-XXL", 2],
+    ["p3", "10000003-part-1", "FBO", "awaiting_packaging", null, "1645-2-XXL", 4],
+    ["p4", "10000004-part-1", "FBS", "awaiting_deliver", null, "1645-2-XXL", 5],
+    ["p5", "10000005-part-1", "FBS", "awaiting_packaging", Date.now(), "1645-2-XXL", 6],
+    ["p6", "10000006-part-1", "FBS", "awaiting_packaging", null, "UNMAPPED", 1],
+    ["p7", "10000007-part-1", "FBS", "awaiting_packaging", null, "DUPLICATE", 1],
+    ["p8", "10000008-part-1", "FBS", "awaiting_packaging", null, "BAD-SKU", 1],
   ] as Array<[string, string, string, string, number | null, string, number]>) {
     addPosting.run(id, storeId, postingNumber, postingNumber, mode, status, cancelled);
     addItem.run(id, offerId, "Test product", quantity);
@@ -124,7 +125,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       throw new Error(`unexpected OpenCLI invocation: ${args.join(" ").slice(0, 120)}`);
     },
   });
-  if (autoApprove) service.approveRiskOrder(storeId, "post-2");
+  if (autoApprove) service.approveRiskOrder(storeId, "10000002");
   return { database, service, metrics: { cartOpenCount: () => cartOpenCount, addClickCount: () => addClickCount, selectedModes, addActions, cartQuantities } };
 }
 
@@ -159,7 +160,7 @@ describe("StockPrepService", () => {
     ]);
     const result = await service.scan(storeId);
     const mapped = result.groups.find((group) => group.offerId === "1645-2-XXL")!;
-    expect(mapped.orders.map((order) => order.postingNumber)).toEqual(["post-1", "post-2"]);
+    expect(mapped.orders.map((order) => order.postingNumber)).toEqual(["10000001-part-1", "10000002-part-1"]);
     expect(mapped.quantity).toBe(3);
     expect(mapped.orders.every((order) => order.state === "pending" && order.selectedByDefault)).toBe(true);
     expect(result.groups.find((group) => group.offerId === "DUPLICATE")?.status).toBe("unmatched");
@@ -168,13 +169,13 @@ describe("StockPrepService", () => {
     expect(result.groups.find((group) => group.offerId === "DUPLICATE")?.orders[0]?.error).toBe("飞书货号重复");
     expect(result.groups.find((group) => group.offerId === "BAD-SKU")?.orders[0]?.error).toBe("1688 SKU ID 无效");
     expect(result.groups.some((group) => group.offerId === "UNMAPPED")).toBe(true);
-    expect(result.groups.some((group) => group.orders.some((order) => order.postingNumber === "post-3" || order.postingNumber === "post-4" || order.postingNumber === "post-5"))).toBe(false);
+    expect(result.groups.some((group) => group.orders.some((order) => order.postingNumber === "10000003-part-1" || order.postingNumber === "10000004-part-1" || order.postingNumber === "10000005-part-1"))).toBe(false);
   });
 
   it("reconciles stale unmatched states with the current unique Feishu mapping", async () => {
     const { database, service } = fixture();
     database.prepare("INSERT INTO stock_prep_order_states (store_id,posting_number,offer_id,state,error,updated_at_ms) VALUES (?,?,?,?,?,?)")
-      .run(storeId, "post-1", "1645-2-XXL", "unmatched", "飞书映射缺失、重复或无效", Date.now());
+      .run(storeId, "10000001-part-1", "1645-2-XXL", "unmatched", "飞书映射缺失、重复或无效", Date.now());
     const result = await service.scan(storeId);
     const mapped = result.groups.find((group) => group.offerId === "1645-2-XXL")!;
     expect(mapped.orders.map((order) => order.state)).toEqual(["pending", "pending"]);
@@ -183,14 +184,14 @@ describe("StockPrepService", () => {
 
   it("requires manual confirmation for every order with multiple pieces", async () => {
     const { database, service } = fixture(undefined, "success", false);
-    database.prepare("UPDATE postings SET order_number='order-shared',buyer_key_hash='buyer-a' WHERE posting_number IN ('post-1','post-2')").run();
+    database.prepare("UPDATE postings SET posting_number=CASE posting_number WHEN '10000001-part-1' THEN '12345678-part1-1' WHEN '10000002-part-1' THEN '12345678-part2-1' ELSE posting_number END,order_number='order-shared',buyer_key_hash='buyer-a' WHERE posting_number IN ('10000001-part-1','10000002-part-1')").run();
     database.prepare(`INSERT INTO postings (id,store_id,posting_number,order_number,fulfillment_mode,status,cancelled_at_ms,order_at_ms,buyer_key_hash,cancellation_initiator)
       VALUES (?,?,?,?,?,?,?,?,?,?)`).run("history-1", storeId, "history-post", "history-order", "FBS", "cancelled", Date.now(), Date.now() - 86400000, "buyer-a", "Клиент");
     const beforeApproval = await service.scan(storeId);
     const riskyOrders = beforeApproval.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
     expect(riskyOrders.every((order) => order.orderQuantity === 3 && order.riskLevel === "review" && !order.selectedByDefault)).toBe(true);
     await expect(service.createBatch(storeId, riskyOrders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).rejects.toThrow("请先人工确认");
-    service.approveRiskOrder(storeId, "order-shared");
+    service.approveRiskOrder(storeId, "12345678");
     expect((await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders.every((order) => order.approved && order.selectedByDefault)).toBe(true);
     database.prepare("UPDATE posting_items SET quantity=3 WHERE posting_id='p2'").run();
     expect((await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders.some((order) => !order.approved && !order.selectedByDefault)).toBe(true);
@@ -198,27 +199,48 @@ describe("StockPrepService", () => {
 
   it("blocks an active blacklisted buyer independently of the multi-piece review", async () => {
     const { database, service } = fixture(undefined, "success", false);
-    database.prepare("UPDATE postings SET order_number='order-shared',buyer_key_hash='buyer-a' WHERE posting_number IN ('post-1','post-2')").run();
-    database.prepare("UPDATE postings SET buyer_key_hash='buyer-a' WHERE posting_number='post-1'").run();
+    database.prepare("UPDATE postings SET posting_number=CASE posting_number WHEN '10000001-part-1' THEN '12345678-part1-1' WHEN '10000002-part-1' THEN '12345678-part2-1' ELSE posting_number END WHERE posting_number IN ('10000001-part-1','10000002-part-1')").run();
+    const buyerPrefixHash = createHmac("sha256", "a".repeat(64)).update(`${storeId}\u000012345678`).digest("hex");
     database.prepare(`INSERT INTO stock_prep_buyer_blacklist (id,store_id,buyer_key_hash,status,source,reason_code,created_at_ms,updated_at_ms)
-      VALUES ('blacklist-entry',?,'buyer-a','active','manual','manual',?,?)`).run(storeId, Date.now(), Date.now());
+      VALUES ('blacklist-entry',?,?,'active','manual','manual',?,?)`).run(storeId, buyerPrefixHash, Date.now(), Date.now());
 
     const orders = (await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
 
-    expect(orders.find((order) => order.postingNumber === "post-1")).toMatchObject({ riskLevel: "blacklist", selectedByDefault: false });
-    expect(orders.find((order) => order.postingNumber === "post-2")).toMatchObject({ riskLevel: "blacklist", selectedByDefault: false });
-    await expect(service.createBatch(storeId, [{ postingNumber: "post-1", offerId: "1645-2-XXL" }])).rejects.toThrow("黑名单");
+    expect(orders.find((order) => order.postingNumber === "12345678-part1-1")).toMatchObject({ riskLevel: "blacklist", selectedByDefault: false });
+    expect(orders.find((order) => order.postingNumber === "12345678-part2-1")).toMatchObject({ riskLevel: "blacklist", selectedByDefault: false });
+    await expect(service.createBatch(storeId, [{ postingNumber: "12345678-part1-1", offerId: "1645-2-XXL" }])).rejects.toThrow("黑名单");
+  });
+
+  it("groups open orders by the first posting-number segment and shows synced delivery and refusal history", async () => {
+    const { database, service } = fixture(undefined, "success", false);
+    const now = Date.now();
+    database.prepare(`UPDATE postings SET posting_number=CASE id WHEN 'p1' THEN '12345678-part1-1' WHEN 'p2' THEN '12345678-part2-1' ELSE posting_number END,
+      order_number=CASE id WHEN 'p1' THEN 'order-a' WHEN 'p2' THEN 'order-b' ELSE order_number END,
+      order_at_ms=CASE id WHEN 'p1' THEN ? ELSE ? END WHERE id IN ('p1','p2')`).run(now - 1000, now);
+    database.prepare(`INSERT INTO postings (id,store_id,posting_number,order_number,fulfillment_mode,status,cancelled_at_ms,order_at_ms)
+      VALUES ('history-1',?,'12345678-old-1','history-order','FBS','delivered',NULL,?)`).run(storeId, now - 30 * 86400000);
+    database.prepare(`INSERT INTO stock_prep_buyer_returns (store_id,return_id,posting_number,order_number,quantity,return_type,returned_at_ms,return_reason,visual_status)
+      VALUES (?, 'return-1','12345678-old-1','history-order',1,'PartialReturn',?,'Покупатель отказался при вручении: не подошел','Получен')`).run(storeId, now - 29 * 86400000);
+
+    const before = (await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+    expect(before.map((order) => order.riskLevel)).toEqual(["review", "review"]);
+    expect(before.every((order) => order.currentOrderCount === 2 && !order.selectedByDefault)).toBe(true);
+    expect(before[0]!.buyerHistory).toMatchObject({ ordersInYear: 1, deliveredOrders: 1, returnCount: 1, refusalOrders: 1, returnedPieces: 1 });
+    expect(before[0]!.buyerHistory.recentOrders.map((order) => order.postingNumber)).toEqual(["12345678-old-1"]);
+    expect(before[0]!.buyerHistory.orderSequenceByPostingNumber).toMatchObject({ "12345678-part1-1": 2, "12345678-part2-1": 3 });
+
+    service.approveRiskOrder(storeId, "12345678");
+    const after = (await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+    expect(after.every((order) => order.approved && order.selectedByDefault)).toBe(true);
   });
 
   it("keeps manual blacklist entries active when an Agent submits the same buyer as a candidate", () => {
     const { database, service } = fixture(undefined, "success", false);
-    const buyerId = "customer-123";
-    const hash = createHmac("sha256", "a".repeat(64)).update(`${storeId}\u0000${buyerId}`).digest("hex");
-    database.prepare("UPDATE postings SET buyer_key_hash=? WHERE posting_number='post-1'").run(hash);
-    service.upsertBuyerBlacklist(storeId, { buyerId, status: "active", source: "manual", reasonCode: "manual", summary: "人工确认" });
-    service.upsertBuyerBlacklist(storeId, { buyerId, status: "candidate", source: "agent", reasonCode: "agent_signal", summary: "Agent 命中" });
+    const buyerPrefix = "12345678";
+    service.upsertBuyerBlacklist(storeId, { buyerPrefix, status: "active", source: "manual", reasonCode: "manual", summary: "人工确认" });
+    service.upsertBuyerBlacklist(storeId, { buyerPrefix, status: "candidate", source: "agent", reasonCode: "agent_signal", summary: "Agent 命中" });
 
-    expect(service.listBuyerBlacklist(storeId)).toMatchObject([{ buyerId, status: "active", source: "manual", summary: "人工确认" }]);
+    expect(service.listBuyerBlacklist(storeId)).toMatchObject([{ buyerPrefix, status: "active", source: "manual", summary: "人工确认" }]);
   });
 
   it("adds the selected quantities once, verifies the cart delta, and supports manual state rollback", async () => {

@@ -50,6 +50,7 @@ const syncService = new SyncService(
   productImages,
   new MarketplaceRepository(database),
   new MarketplaceSyncCheckpointsRepository(database),
+  database,
 );
 const updates = new UpdateService(config, proxySettings);
 const finance = new FinanceAnalysisService(config, stores, new FinanceRepository(database), new PostingsRepository(database), proxySettings);
