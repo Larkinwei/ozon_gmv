@@ -76,6 +76,9 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       }
       if (action === "eval" && script?.includes("desiredSkuId")) {
         expect(script).toContain("specAttrs");
+        if (script.includes("inputIndex")) {
+          return JSON.stringify({ url: "https://detail.1688.com/offer/747713283348.html", color: "蓝底叶子", size: "XXL", skuId, attributes: ["蓝底叶子", "XXL"], availableQuantity: null, visibleSizes: ["M", "L", "XL", "XXL"], inputIndex: 3 });
+        }
         return JSON.stringify({ url: `https://detail.1688.com/offer/747713283348.html`, skuId, attributes: ["蓝底叶子", "XXL"], supplierName: "安丘市鑫达尔服装厂" });
       }
       if (action === "eval" && script?.includes("const expected=") && script.includes("masthead--active")) {
@@ -302,7 +305,7 @@ describe("StockPrepService", () => {
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed_with_errors");
     expect(metrics.addClickCount()).toBe(0);
-    expect(result.items).toEqual([expect.objectContaining({ status: "failed", error: expect.stringContaining("提交前校验失败") })]);
+    expect(result.items).toEqual([expect.objectContaining({ status: "failed", error: expect.stringContaining("加购按钮定位失败") })]);
   });
 
   it("marks failures before clicking as failed and uncertain cart outcomes as non-retryable", async () => {
