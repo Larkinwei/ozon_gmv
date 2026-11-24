@@ -400,7 +400,7 @@ export class OzonClient {
   /** Loads one current FBS/rFBS posting before an explicit seller-side packing action. */
   public async getFbsPosting(postingNumber: string): Promise<import("./schemas").OzonPosting> {
     const response = await this.request("/v3/posting/fbs/get", { posting_number: postingNumber, with: { barcodes: true, financial_data: false, translit: false } }, postingDetailResponseSchema);
-    return response.result;
+    return { ...response.result, products: response.result.products.map((product) => ({ ...product, product_id: product.product_id ?? product.sku })) };
   }
 
   /** Packs the full posting into one package and advances it to awaiting delivery. */

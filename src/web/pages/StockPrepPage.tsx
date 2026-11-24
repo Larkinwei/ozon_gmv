@@ -12,7 +12,7 @@ const ozonStatusNames: Record<string, string> = {
   done: "已完成", cancelled: "已取消", cancelled_by_client: "买家取消", cancelled_by_seller: "卖家取消", not_accepted: "未接收",
   arbitration: "争议处理中", client_return: "买家退货", returned: "已退回",
 };
-type StockPrepTab = "pending" | "added" | "fulfillment" | "blacklist" | "config";
+type StockPrepTab = "pending" | "added" | "blacklist" | "config";
 const LAST_STORE_KEY = "ozon-gmv.stock-prep.last-store";
 
 /** Formats the persisted synchronization time to seconds in the browser's local timezone. */
@@ -83,24 +83,21 @@ export default function StockPrepPage(): React.JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedForReset, setSelectedForReset] = useState<Set<string>>(new Set());
   const [selectedFulfillment, setSelectedFulfillment] = useState<Set<string>>(new Set());
-  const fulfillmentDefaultsStore = useRef<string | null>(null);
+  const [preparingPosting, setPreparingPosting] = useState<string | null>(null);
+  const [prepareErrors, setPrepareErrors] = useState<Record<string, string>>({});
+  const [riskPanelExpanded, setRiskPanelExpanded] = useState(true);
   const [batchId, setBatchId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<StockPrepTab>("pending");
   const [scannedStoreId, setScannedStoreId] = useState<string | null>(null);
   const stateQuery = useQuery({ queryKey: ["stock-prep-state", storeId], queryFn: () => fetchStockPrepState(storeId), enabled: Boolean(storeId) });
   const blacklistQuery = useQuery({ queryKey: ["stock-prep-blacklist", storeId], queryFn: () => fetchStockPrepBlacklist(storeId), enabled: Boolean(storeId) && activeTab === "blacklist" });
-  const fulfillmentQuery = useQuery({ queryKey: ["stock-prep-fulfillment", storeId], queryFn: () => fetchStockPrepFulfillmentPostings(storeId), enabled: Boolean(storeId) && activeTab === "fulfillment" });
-  useEffect(() => {
-    const postings = fulfillmentQuery.data?.postings;
-    if (!storeId || !postings || fulfillmentDefaultsStore.current === storeId) return;
-    setSelectedFulfillment(new Set(postings.filter((posting) => posting.status === "awaiting_packaging" && posting.added_sku_count === posting.sku_count).map((posting) => posting.posting_number)));
-    fulfillmentDefaultsStore.current = storeId;
-  }, [storeId, fulfillmentQuery.data]);
+  const fulfillmentQuery = useQuery({ queryKey: ["stock-prep-fulfillment", storeId], queryFn: () => fetchStockPrepFulfillmentPostings(storeId), enabled: Boolean(storeId) && activeTab === "added" });
+  const preserveAddedTabAfterScan = useRef(false);
   const connectionQuery = useQuery({ queryKey: ["stock-prep-connection"], queryFn: fetchStockPrepConnection, refetchInterval: (query) => query.state.data?.feishu.authorization?.state === "pending" ? 1500 : 15000 });
   const batchQuery = useQuery({ queryKey: ["stock-prep-batch", batchId], queryFn: () => fetchStockPrepBatch(batchId!), enabled: Boolean(batchId), refetchInterval: (query) => ["queued", "running"].includes(query.state.data?.status ?? "") ? 1000 : false });
   const saveMutation = useMutation({ mutationFn: () => saveStockPrepSource(storeId, sourceUrl.trim()), onSuccess: async () => { setScan(null); setScannedStoreId(null); setMessage("飞书 SKU 表已验证并保存"); await client.invalidateQueries({ queryKey: ["stock-prep-state", storeId] }); } });
-  const scanMutation = useMutation({ mutationFn: ({ targetStoreId, forceRefresh }: { targetStoreId: string; forceRefresh: boolean }) => scanStockPrep(targetStoreId, forceRefresh), onSuccess: (value) => { setScan(value); setScannedStoreId(value.storeId); setActiveTab("pending"); setSelected(new Set(value.groups.flatMap((group) => group.orders.filter((order) => order.selectedByDefault).map((order) => keyOf({ postingNumber: order.postingNumber, offerId: order.offerId }))))); setSelectedForReset(new Set()); setMessage(null); }, onError: (error) => setMessage(error.message) });
+  const scanMutation = useMutation({ mutationFn: ({ targetStoreId, forceRefresh }: { targetStoreId: string; forceRefresh: boolean }) => scanStockPrep(targetStoreId, forceRefresh), onSuccess: (value) => { setScan(value); setScannedStoreId(value.storeId); if (preserveAddedTabAfterScan.current) preserveAddedTabAfterScan.current = false; else { setActiveTab("pending"); setMessage(null); } setSelected(new Set(value.groups.flatMap((group) => group.orders.filter((order) => order.selectedByDefault).map((order) => keyOf({ postingNumber: order.postingNumber, offerId: order.offerId }))))); setSelectedForReset(new Set()); }, onError: (error) => { preserveAddedTabAfterScan.current = false; setMessage(error.message); } });
   const batchMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => createStockPrepBatch(storeId, keys), onSuccess: async (value) => { setBatchId(value.id); setMessage("加购批次已启动"); await client.invalidateQueries({ queryKey: ["stock-prep-state", storeId] }); }, onError: (error) => setMessage(error.message) });
   const approveRiskMutation = useMutation({
     mutationFn: ({ buyerPrefix }: { buyerPrefix: string; keys: StockPrepOrderKey[] }) => approveStockPrepRiskOrder(storeId, buyerPrefix),
@@ -130,7 +127,7 @@ export default function StockPrepPage(): React.JSX.Element {
   const resetMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => resetStockPrepOrders(storeId, keys), onSuccess: (result, keys) => { setMessage(`已撤回 ${result.resetCount} 笔订单的后台状态；1688 购物车数量未变`); setScan((current) => { if (!current) return current; return updateScanOrders(current, keys, "pending"); }); setSelected((current) => new Set([...current, ...keys.map(keyOf)])); setSelectedForReset(new Set()); } });
   const resolveMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => resolveUncertainStockPrepOrders(storeId, keys), onSuccess: (result, keys) => { setMessage(`已将 ${result.resolvedCount} 笔订单标为加购失败，可在核对购物车后重试`); setScan((current) => { if (!current) return current; return updateScanOrders(current, keys, "failed", "人工核对购物车后确认未增加数量"); }); }, onError: (error) => setMessage(error.message) });
   const markAddedMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => markStockPrepOrdersAdded(storeId, keys), onSuccess: (result, keys) => { setScan((current) => current ? updateScanOrders(current, keys, "added", "人工确认已加入1688购物车") : current); setSelected(new Set()); setMessage(`已人工标记 ${result.markedCount} 条SKU明细为已加购`); }, onError: (error) => setMessage(error.message) });
-  const preparePostingMutation = useMutation({ mutationFn: async (postings: Array<{ postingNumber: string; forceIncomplete: boolean }>) => { let completed = 0; const errors: string[] = []; for (const item of postings) { try { await prepareStockPrepPosting(storeId, item.postingNumber, item.forceIncomplete); completed += 1; setMessage(`正在同步Ozon备货 ${completed}/${postings.length}…`); } catch (error) { errors.push(`${item.postingNumber}：${error instanceof Error ? error.message : "备货失败"}`); } } return { completed, errors }; }, onSuccess: async ({ completed, errors }) => { setSelectedFulfillment(new Set()); fulfillmentDefaultsStore.current = null; setMessage(errors.length ? `已完成 ${completed} 单，${errors.length} 单失败：${errors.join("；")}` : `已完成 ${completed} 单Ozon备货，并同步为等待发运`); await client.invalidateQueries({ queryKey: ["stock-prep-fulfillment", storeId] }); await scanMutation.mutateAsync({ targetStoreId: storeId, forceRefresh: true }); }, onError: (error) => setMessage(error.message) });
+  const preparePostingMutation = useMutation({ mutationFn: async (postingNumbers: string[]) => { let completed = 0; const errors: Record<string, string> = {}; for (const postingNumber of postingNumbers) { setPreparingPosting(postingNumber); setPrepareErrors((current) => { const next = { ...current }; delete next[postingNumber]; return next; }); try { await prepareStockPrepPosting(storeId, postingNumber); completed += 1; } catch (error) { errors[postingNumber] = error instanceof Error ? error.message : "Ozon备货失败"; } } return { completed, errors, total: postingNumbers.length }; }, onSuccess: async ({ completed, errors, total }) => { setPreparingPosting(null); setPrepareErrors((current) => ({ ...current, ...errors })); setSelectedFulfillment(new Set()); setMessage(Object.keys(errors).length ? `备货完成：成功 ${completed}/${total} 单；失败原因已显示在对应订单行` : `已完成 ${completed} 单Ozon备货，并同步为等待发运`); await client.invalidateQueries({ queryKey: ["stock-prep-fulfillment", storeId] }); preserveAddedTabAfterScan.current = true; setActiveTab("added"); await scanMutation.mutateAsync({ targetStoreId: storeId, forceRefresh: true }); }, onError: (error) => { preserveAddedTabAfterScan.current = false; setPreparingPosting(null); setMessage(error.message); } });
   const feishuAppMutation = useMutation({ mutationFn: () => saveStockPrepFeishuApp(appId, appSecret), onSuccess: async () => { setAppSecret(""); setMessage("飞书应用凭证已加密保存"); await client.invalidateQueries({ queryKey: ["stock-prep-connection"] }); }, onError: (error) => setMessage(error.message) });
   const dropshipSuppliersMutation = useMutation({ mutationFn: () => saveStockPrepDropshipSuppliers((dropshipSupplierText ?? connection?.dropshipSuppliers.join("\n") ?? "").split(/\r?\n/u)), onSuccess: async ({ suppliers }) => { setDropshipSupplierText(suppliers.join("\n")); setMessage("代发供应商名单已保存"); await client.invalidateQueries({ queryKey: ["stock-prep-connection"] }); }, onError: (error) => setMessage(error.message) });
   const feishuAuthMutation = useMutation({ mutationFn: beginStockPrepFeishuAuthorization, onSuccess: (value) => { setAuthorizationLink({ url: value.verificationUrl, qrCode: value.qrCode }); setMessage("已发起飞书设备授权，请用当前飞书账号扫码或打开链接确认"); void client.invalidateQueries({ queryKey: ["stock-prep-connection"] }); }, onError: (error) => setMessage(error.message) });
@@ -156,7 +153,20 @@ export default function StockPrepPage(): React.JSX.Element {
   const allFailedOrdersSelected = failedOrders.length > 0 && selectedFailedOrders.length === failedOrders.length;
   const selectedCount = selected.size;
   const selectedQuantity = groups.flatMap((group) => group.orders.map((order) => ({ group, order }))).filter(({ order }) => selected.has(keyOf(order))).reduce((total, { order }) => total + order.quantity, 0);
-  const groupedStatus = useMemo(() => groups.reduce((counts, group) => { counts[group.status] = (counts[group.status] ?? 0) + 1; return counts; }, {} as Record<string, number>), [groups]);
+  const pendingSummary = useMemo(() => {
+    const summarize = (summaryGroups: typeof pendingGroups) => ({
+      groupCount: summaryGroups.length,
+      orderCount: new Set(summaryGroups.flatMap((group) => group.orders.map((order) => order.postingNumber))).size,
+      pieceCount: summaryGroups.reduce((sum, group) => sum + group.quantity, 0),
+    });
+    const grouped = new Map<string, typeof pendingGroups>();
+    for (const group of pendingGroups) grouped.set(group.status, [...(grouped.get(group.status) ?? []), group]);
+    const preferredOrder = ["pending", "unmatched", "failed", "uncertain", "adding"];
+    const rank = (status: string): number => { const index = preferredOrder.indexOf(status); return index === -1 ? preferredOrder.length : index; };
+    const statuses = [...grouped.entries()].map(([status, statusGroups]) => ({ status, ...summarize(statusGroups) }))
+      .sort((left, right) => rank(left.status) - rank(right.status));
+    return { total: summarize(pendingGroups), statuses };
+  }, [pendingGroups]);
   const riskOrders = useMemo(() => {
     const byBuyer = new Map<string, { order: StockPrepScan["groups"][number]["orders"][number]; items: StockPrepScan["groups"][number]["orders"] }>();
     for (const order of pendingGroups.flatMap((group) => group.orders)) {
@@ -234,7 +244,7 @@ export default function StockPrepPage(): React.JSX.Element {
 
   function submitCart(): void {
     const keys = [...selected].map((key) => { const [postingNumber, offerId] = key.split("\u0000"); return { postingNumber: postingNumber!, offerId: offerId! }; });
-    if (keys.length && window.confirm(`将所选 ${keys.length} 笔订单按 SKU 汇总后加入 1688 购物车，预计 ${selectedQuantity} 件。继续吗？`)) batchMutation.mutate(keys);
+    if (keys.length && window.confirm(`将所选 ${keys.length} 条商品明细按 SKU 汇总后加入 1688 购物车，预计 ${selectedQuantity} 件。继续吗？`)) batchMutation.mutate(keys);
   }
 
   function resetOrders(keys: StockPrepOrderKey[]): void {
@@ -249,7 +259,7 @@ export default function StockPrepPage(): React.JSX.Element {
       <div className="page-title-row stock-prep-title"><div><p className="eyebrow">STOCK PREPARATION</p><h2>采购备货</h2><p>扫描待打包订单，按 1688 规格汇总后人工确认加入采购车。</p><small className="stock-prep-cache-hint">最近订单同步：{formatSyncTimestamp(lastOrderSyncAt)}；缓存有效 1 小时，需要最新订单时可手动刷新。</small></div><div className="stock-prep-store-picker"><label className="field"><span>Ozon 店铺</span><select aria-label="Ozon 店铺" value={storeId} onChange={(event) => { const nextStoreId = event.target.value; setStoreId(nextStoreId); setSourceUrl(""); setScan(null); setScannedStoreId(null); setSelected(new Set()); setSelectedForReset(new Set()); setBatchId(null); }}><option value="">选择店铺</option>{stores.map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label><button className="secondary-button" type="button" disabled={!storeId || scanMutation.isPending || !source} onClick={() => scanMutation.mutate({ targetStoreId: storeId, forceRefresh: true })}><RefreshCw size={16} className={scanMutation.isPending ? "sync-spinner" : undefined}/>{scanMutation.isPending ? "正在扫描…" : "刷新订单"}</button></div></div>
       {message && <div className="notice notice--success" role="status">{message}</div>}
       {storesQuery.isError && <div className="field-error" role="alert">{storesQuery.error.message}</div>}
-      <nav className="stock-prep-tabs" aria-label="采购备货页面"><button className={activeTab === "pending" ? "is-active" : ""} onClick={() => setActiveTab("pending")} type="button">待采购{scan ? ` · ${pendingOrderCount} 单 · ${pendingPieceCount} 件` : ""}</button><button className={activeTab === "added" ? "is-active" : ""} onClick={() => setActiveTab("added")} type="button">已加购{scan ? ` · ${addedOrderCount} 单 · ${addedPieceCount} 件` : ""}</button><button className={activeTab === "fulfillment" ? "is-active" : ""} onClick={() => setActiveTab("fulfillment")} type="button">Ozon备货</button><button className={activeTab === "blacklist" ? "is-active" : ""} onClick={() => setActiveTab("blacklist")} type="button">买家黑名单</button><button className={activeTab === "config" ? "is-active" : ""} onClick={() => setActiveTab("config")} type="button">配置</button></nav>
+      <nav className="stock-prep-tabs" aria-label="采购备货页面"><button className={activeTab === "pending" ? "is-active" : ""} onClick={() => setActiveTab("pending")} type="button">待采购{scan ? ` · ${pendingOrderCount} 单 · ${pendingPieceCount} 件` : ""}</button><button className={activeTab === "added" ? "is-active" : ""} onClick={() => setActiveTab("added")} type="button">已加购{scan ? ` · ${addedOrderCount} 单 · ${addedPieceCount} 件` : ""}</button><button className={activeTab === "blacklist" ? "is-active" : ""} onClick={() => setActiveTab("blacklist")} type="button">买家黑名单</button><button className={activeTab === "config" ? "is-active" : ""} onClick={() => setActiveTab("config")} type="button">配置</button></nav>
       {activeTab !== "config" && loadingMessage && <section className="stock-prep-loading" role="status" aria-live="polite" aria-busy="true"><RefreshCw size={22} className="sync-spinner"/><div><strong>{loadingMessage}</strong><small>页面加载完成后会显示订单和匹配结果，请稍候。</small></div></section>}
       {activeTab === "blacklist" && <section className="settings-card stock-prep-blacklist"><header><div><p className="eyebrow">BUYER BLACKLIST</p><h3>买家黑名单</h3><p>按店铺和 Ozon 发货单号第一段数字匹配；生效名单会拦截该买家的所有待采购单。AI Agent 提交的记录先进入待审核。</p></div></header><div className="stock-prep-blacklist-form"><label className="field"><span>买家编号（订单号首段）</span><input inputMode="numeric" value={blacklistBuyerPrefix} onChange={(event) => setBlacklistBuyerPrefix(event.target.value)} placeholder="例如：16548296"/></label><label className="field"><span>加入原因</span><input value={blacklistReason} onChange={(event) => setBlacklistReason(event.target.value)} placeholder="简要说明风险原因"/></label><button className="primary-button" type="button" disabled={!/^\d{3,30}$/u.test(blacklistBuyerPrefix.trim()) || !blacklistReason.trim() || addBlacklistMutation.isPending} onClick={() => addBlacklistMutation.mutate()}>{addBlacklistMutation.isPending ? "正在保存…" : "加入生效黑名单"}</button></div>{blacklistQuery.isLoading ? <p>正在读取名单…</p> : blacklistQuery.isError ? <div className="field-error">{blacklistQuery.error.message}</div> : <div className="stock-prep-blacklist-list">{(blacklistQuery.data ?? []).length === 0 ? <p>当前店铺还没有黑名单记录。</p> : blacklistQuery.data!.map((entry) => <article key={entry.id}><div><strong>{entry.buyerPrefix ?? "旧版记录，需重新录入"}</strong><span className={`stock-prep-blacklist-status stock-prep-blacklist-status--${entry.status}`}>{entry.status === "active" ? "生效中" : entry.status === "candidate" ? "待审核" : "已停用"}</span><p>{entry.summary || entry.reason_code} · 来源：{entry.source === "agent" ? "AI Agent" : entry.source === "order" ? "订单操作" : "手动"}</p>{entry.evidenceOrders.length > 0 && <small>关联发货单：{entry.evidenceOrders.join("、")}</small>}</div>{!entry.buyerPrefix ? <small>请按订单号首段重新添加</small> : entry.status === "candidate" ? <button className="primary-button compact-button" type="button" disabled={updateBlacklistMutation.isPending} onClick={() => updateBlacklistMutation.mutate({ id: entry.id, status: "active" })}>审核并生效</button> : entry.status === "active" ? <button className="secondary-button compact-button" type="button" disabled={updateBlacklistMutation.isPending} onClick={() => updateBlacklistMutation.mutate({ id: entry.id, status: "inactive" })}>停用</button> : <button className="secondary-button compact-button" type="button" disabled={updateBlacklistMutation.isPending} onClick={() => updateBlacklistMutation.mutate({ id: entry.id, status: "active" })}>重新启用</button>}</article>)}</div>}</section>}
       {activeTab === "config" && <>
@@ -274,8 +284,8 @@ export default function StockPrepPage(): React.JSX.Element {
       {activeTab !== "config" && displayBatch && <section className="settings-card stock-prep-batch"><div><strong>加购进度：{statusNames[String(displayBatch.status)] ?? displayBatch.status}</strong><span>{displayBatch.completed_count}/{displayBatch.total_count} 个 SKU 组</span></div><progress max={Math.max(displayBatch.total_count, 1)} value={displayBatch.completed_count}/>{displayBatch.items.find((item) => item.status === "running") && <p>当前商品：{displayBatch.items.find((item) => item.status === "running")!.offer_id} · SKU {displayBatch.items.find((item) => item.status === "running")!.sku_id}</p>}</section>}
       {activeTab === "pending" && scan && <>
         {riskOrders.length > 0 && <section className="settings-card stock-prep-risk-review">
-          <header><div><p className="eyebrow">BUYER RISK</p><h3>买家订单确认 / 黑名单拦截</h3></div><span>{riskOrders.length} 个买家组</span></header>
-          <div className="stock-prep-risk-list">{riskOrders.map(({ order, items }) => {
+          <header><div><p className="eyebrow">BUYER RISK</p><h3>买家订单确认 / 黑名单拦截</h3></div><div className="stock-prep-risk-header-actions"><span>{riskOrders.length} 个买家组</span><button className="secondary-button compact-button" type="button" aria-expanded={riskPanelExpanded} aria-controls="stock-prep-risk-list" onClick={() => setRiskPanelExpanded((current) => !current)}>{riskPanelExpanded ? "收起" : "展开"}</button></div></header>
+          {riskPanelExpanded && <div className="stock-prep-risk-list" id="stock-prep-risk-list">{riskOrders.map(({ order, items }) => {
             const prefix = order.buyerPrefix;
             const riskKeys = riskOrderKeys(prefix ?? null, order.postingNumber, ["pending", "failed"]);
             const history = order.buyerHistory ?? { syncState: "not_started" as const, syncError: null, ordersInYear: 0, deliveredOrders: 0, cancelledOrders: 0, refusalOrders: 0, returnCount: 0, returnedPieces: 0, latestOutcome: null, latestAt: null, orderSequenceByPostingNumber: {}, recentOrders: [] };
@@ -307,17 +317,107 @@ export default function StockPrepPage(): React.JSX.Element {
                 {order.riskLevel !== "blacklist" && prefix && <button className="secondary-button compact-button" type="button" disabled={addOrderBuyerMutation.isPending} onClick={() => { const reason = window.prompt("填写加入黑名单的原因"); if (reason?.trim()) addOrderBuyerMutation.mutate({ postingNumber: order.postingNumber, reason: reason.trim() }); }}>将买家加入黑名单</button>}
               </div>
             </article>;
-          })}</div>
+          })}</div>}
         </section>}
-        <section className="stock-prep-summary"><div><PackageCheck size={19}/><strong>{pendingGroups.length}</strong><span>个 SKU 组</span></div>{Object.entries(groupedStatus).map(([status, count]) => <div key={status}><span>{statusNames[status] ?? status}</span><strong>{count}</strong></div>)}{failedOrders.length > 0 && <><label className="stock-prep-select-all"><input type="checkbox" checked={allFailedOrdersSelected} onChange={(event) => toggleResetOrders(failedOrders, event.target.checked)}/>全选加购失败（{failedOrders.length} 笔）</label><button className="secondary-button" type="button" disabled={!selectedFailedOrders.length || resetMutation.isPending} onClick={() => resetOrders(selectedFailedOrders)}>{resetMutation.isPending ? "撤回中…" : `批量撤回 ${selectedFailedOrders.length} 笔失败订单`}</button></>}<button className="secondary-button" type="button" disabled={!selectedCount || markAddedMutation.isPending} onClick={() => { if (window.confirm("只修改GMV本地状态，不会操作1688购物车。确认这些订单已经加入采购车吗？")) markAddedMutation.mutate([...selected].map((key) => { const [postingNumber, offerId] = key.split("\u0000"); return { postingNumber: postingNumber!, offerId: offerId! }; })); }}>{markAddedMutation.isPending ? "标记中…" : "人工标记已加购"}</button><button className="primary-button stock-prep-summary-action" type="button" disabled={!selectedCount || batchMutation.isPending || ["queued","running"].includes(batchQuery.data?.status ?? "")} onClick={submitCart}><ShoppingCart size={17}/>{batchMutation.isPending ? "正在校验…" : `加购所选 ${selectedCount} 笔 · ${selectedQuantity} 件`}</button></section>
+        <section className="stock-prep-summary"><div><PackageCheck size={19}/><span>全部待处理</span><strong>{pendingSummary.total.groupCount} 组</strong><small>{pendingSummary.total.orderCount} 张发货单 · {pendingSummary.total.pieceCount} 件</small></div>{pendingSummary.statuses.map((summary) => <div key={summary.status}><span>{statusNames[summary.status] ?? summary.status}</span><strong>{summary.groupCount} 组</strong><small>{summary.orderCount} 张发货单 · {summary.pieceCount} 件</small></div>)}{failedOrders.length > 0 && <><label className="stock-prep-select-all"><input type="checkbox" checked={allFailedOrdersSelected} onChange={(event) => toggleResetOrders(failedOrders, event.target.checked)}/>全选加购失败（{failedOrders.length} 条明细）</label><button className="secondary-button" type="button" disabled={!selectedFailedOrders.length || resetMutation.isPending} onClick={() => resetOrders(selectedFailedOrders)}>{resetMutation.isPending ? "撤回中…" : `批量撤回 ${selectedFailedOrders.length} 条失败明细`}</button></>}<button className="secondary-button" type="button" disabled={!selectedCount || markAddedMutation.isPending} onClick={() => { if (window.confirm("只修改GMV本地状态，不会操作1688购物车。确认这些订单已经加入采购车吗？")) markAddedMutation.mutate([...selected].map((key) => { const [postingNumber, offerId] = key.split("\u0000"); return { postingNumber: postingNumber!, offerId: offerId! }; })); }}>{markAddedMutation.isPending ? "标记中…" : "人工标记已加购"}</button><button className="primary-button stock-prep-summary-action" type="button" disabled={!selectedCount || batchMutation.isPending || ["queued","running"].includes(batchQuery.data?.status ?? "")} onClick={submitCart}><ShoppingCart size={17}/>{batchMutation.isPending ? "正在校验…" : `加购已选 ${selectedCount} 条明细 · ${selectedQuantity} 件`}</button></section>
+        <p className="field-hint">SKU 组按采购规格汇总；发货单按 Ozon 发货单号去重。同一张多商品发货单可能同时出现在不同状态中。</p>
         <div className="stock-prep-groups">{pendingGroups.map((group, index) => <section className="settings-card stock-prep-group" key={`${group.offerUrl}-${group.skuId}-${index}`}>
           <header><div><p className="eyebrow">{statusNames[group.status] ?? group.status}</p><h3>{group.offerId} <small>· {group.orders.length} 单 · {group.quantity} 件待备</small></h3></div><span className={`stock-prep-state stock-prep-state--${group.status}`}>{statusNames[group.status] ?? group.status}</span>{group.offerUrl && <a href={group.offerUrl} target="_blank" rel="noreferrer">1688 商品</a>}{group.orders.some((order) => ["added", "failed"].includes(order.state)) && <button className="secondary-button compact-button" type="button" onClick={() => resetOrders(group.orders.filter((order) => ["added", "failed"].includes(order.state)).map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))}>撤回本组状态</button>}{group.orders.some((order) => order.state === "uncertain") && <button className="secondary-button compact-button" type="button" onClick={() => resolveUncertain(group.orders.filter((order) => order.state === "uncertain").map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))}>核对购物车未增加</button>}</header>
           <div className="stock-prep-product"><OrderImagePreview src={group.imageUrl} alt={`${group.offerId} 商品主图`} fallbackLabel="暂无商品图" width={58} height={58} className="stock-prep-product-image" placeholderClassName="stock-prep-product-image stock-prep-product-image--empty"/><div>{group.skuId ? <p className="stock-prep-sku">1688 SKU ID：<code>{group.skuId}</code></p> : <p className="stock-prep-warning"><AlertTriangle size={16}/>{group.error}</p>}</div></div>
           <div className="table-scroll"><table className="stock-prep-orders"><thead><tr><th>选择</th><th>批量撤回</th><th>Ozon 发货单号</th><th>货号</th><th>商品</th><th>件数</th><th>状态与风险</th><th>操作</th></tr></thead><tbody>{group.orders.map((order) => { const key = { postingNumber: order.postingNumber, offerId: order.offerId }; const approved = Boolean(order.approved); const blocked = order.riskLevel === "blacklist"; const reviewRequired = order.riskLevel === "review"; const selectable = ["pending", "failed"].includes(order.state) && Boolean(group.skuId) && !blocked && (!reviewRequired || approved); const riskLabel = buyerRiskLabel(order); return <tr key={keyOf(key)}><td><input type="checkbox" checked={selected.has(keyOf(key))} disabled={!selectable} onChange={(event) => toggleOrder(key, event.target.checked)} aria-label={`选择订单 ${order.postingNumber}`}/></td><td>{order.state === "failed" && <input type="checkbox" checked={selectedForReset.has(keyOf(key))} onChange={(event) => toggleResetOrders([key], event.target.checked)} aria-label={`选择批量撤回订单 ${order.postingNumber}`}/>}</td><td>{order.postingNumber}</td><td>{order.offerId}</td><td>{order.productName}</td><td>{order.quantity}</td><td>{statusNames[order.state] ?? order.state}{order.error ? ` · ${order.error}` : ""}{riskLabel ? ` · ${riskLabel}` : ""}</td><td>{reviewRequired && !approved && !blocked && order.buyerPrefix && <button className="secondary-button compact-button" type="button" disabled={approveRiskMutation.isPending} onClick={() => approveRiskMutation.mutate({ buyerPrefix: order.buyerPrefix!, keys: riskOrderKeys(order.buyerPrefix ?? null, order.postingNumber) })}>人工放行买家订单组</button>}{order.state === "uncertain" && <button className="secondary-button compact-button" type="button" onClick={() => resolveUncertain([key])}>核对未增加</button>}{["added", "failed"].includes(order.state) && <button className="secondary-button compact-button" type="button" onClick={() => resetOrders([key])}>撤回</button>}</td></tr>; })}</tbody></table></div>
         </section>)}</div>
       </>}
-      {activeTab === "added" && scan && (addedGroups.length ? <><section className="stock-prep-summary"><label className="stock-prep-select-all"><input type="checkbox" checked={allAddedOrdersSelected} onChange={(event) => setSelectedForReset(event.target.checked ? new Set(addedOrders.map(keyOf)) : new Set())}/>全选已加购订单（{addedOrderCount} 单 · {addedPieceCount} 件）</label><button className="secondary-button" type="button" disabled={!selectedResetOrders.length || resetMutation.isPending} onClick={() => resetOrders(selectedResetOrders)}>{resetMutation.isPending ? "撤回中…" : `批量撤回 ${selectedResetOrders.length} 笔`}</button></section><div className="stock-prep-groups">{addedGroups.map((group, index) => <section className="settings-card stock-prep-group" key={`${group.offerUrl}-${group.skuId}-${index}`}><header><div><p className="eyebrow">已加购</p><h3>{group.offerId} <small>· {group.orders.length} 单 · {group.quantity} 件</small></h3></div><span className="stock-prep-state stock-prep-state--added">已加购</span>{group.offerUrl && <a href={group.offerUrl} target="_blank" rel="noreferrer">1688 商品</a>}<button className="secondary-button compact-button" type="button" disabled={resetMutation.isPending} onClick={() => resetOrders(group.orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))}>撤回本组</button></header><div className="stock-prep-product"><OrderImagePreview src={group.imageUrl} alt={`${group.offerId} 商品主图`} fallbackLabel="暂无商品图" width={58} height={58} className="stock-prep-product-image" placeholderClassName="stock-prep-product-image stock-prep-product-image--empty"/><div>{group.skuId ? <p className="stock-prep-sku">1688 SKU ID：<code>{group.skuId}</code></p> : <p className="stock-prep-warning"><AlertTriangle size={16}/>{group.error}</p>}</div></div><div className="table-scroll"><table className="stock-prep-orders"><thead><tr><th>选择</th><th>Ozon 订单号</th><th>货号</th><th>商品</th><th>件数</th><th>状态</th><th>操作</th></tr></thead><tbody>{group.orders.map((order) => <tr key={keyOf(order)}><td><input type="checkbox" checked={selectedForReset.has(keyOf(order))} onChange={(event) => setSelectedForReset((current) => { const next = new Set(current); if (event.target.checked) next.add(keyOf(order)); else next.delete(keyOf(order)); return next; })} aria-label={`选择撤回订单 ${order.postingNumber}`}/></td><td>{order.postingNumber}</td><td>{order.offerId}</td><td>{order.productName}</td><td>{order.quantity}</td><td>已加购</td><td><button className="secondary-button compact-button" type="button" disabled={resetMutation.isPending} onClick={() => resetOrders([{ postingNumber: order.postingNumber, offerId: order.offerId }])}>撤回</button></td></tr>)}</tbody></table></div></section>)}</div></> : <div className="empty-store-state"><ShoppingCart size={34}/><h3>暂无已加购订单</h3><p>当前扫描结果中的已加购订单会显示在这里。</p></div>)}
-      {activeTab === "fulfillment" && <section className="settings-card"><header><div><p className="eyebrow">OZON PACKING</p><h3>Ozon备货</h3><p>已加购完成的等待备货单会排在前面并自动勾选。勾选后批量完成备货，Ozon确认后状态进入“等待发运”；每张发货单按一个包裹处理。</p></div></header>{fulfillmentQuery.isLoading ? <p>正在读取发货单…</p> : fulfillmentQuery.isError ? <p className="field-error">{fulfillmentQuery.error.message}</p> : <>{(() => { const postings = fulfillmentQuery.data?.postings ?? []; const pending = postings.filter((item) => item.status === "awaiting_packaging"); const ready = pending.filter((item) => item.added_sku_count === item.sku_count); const allReadySelected = ready.length > 0 && ready.every((item) => selectedFulfillment.has(item.posting_number)); const selectedItems = pending.filter((item) => selectedFulfillment.has(item.posting_number)); return <><section className="stock-prep-summary"><label className="stock-prep-select-all"><input type="checkbox" checked={allReadySelected} disabled={!ready.length} onChange={(event) => setSelectedFulfillment((current) => { const next = new Set(current); for (const item of ready) { if (event.target.checked) next.add(item.posting_number); else next.delete(item.posting_number); } return next; })}/>全选已加购待备货（{ready.length} 单）</label><span>已选 {selectedItems.length} 单</span><button className="primary-button" type="button" disabled={!selectedItems.length || preparePostingMutation.isPending} onClick={() => { const incomplete = selectedItems.filter((item) => item.added_sku_count !== item.sku_count); const warning = incomplete.length ? `所选 ${selectedItems.length} 单中有 ${incomplete.length} 单未全部标记已加购。只有确认商品已经采购并备齐时才继续；Ozon成功后这些订单会标为已加购。确认继续？` : `将为所选 ${selectedItems.length} 张发货单调用Ozon备货，并推进到等待发运。确认继续？`; if (window.confirm(warning)) preparePostingMutation.mutate(selectedItems.map((item) => ({ postingNumber: item.posting_number, forceIncomplete: item.added_sku_count !== item.sku_count }))); }}>{preparePostingMutation.isPending ? "备货处理中…" : `备货所选 ${selectedItems.length} 单`}</button></section><p className="field-hint">未全部加购的订单仍可单独勾选；继续备货前会要求确认商品已采购并备齐。</p><div className="stock-prep-groups">{postings.map((posting) => { const complete = posting.added_sku_count === posting.sku_count; const isPending = posting.status === "awaiting_packaging"; return <article className="settings-card" key={posting.posting_number}>{isPending && <label><input type="checkbox" checked={selectedFulfillment.has(posting.posting_number)} onChange={(event) => setSelectedFulfillment((current) => { const next = new Set(current); if (event.target.checked) next.add(posting.posting_number); else next.delete(posting.posting_number); return next; })}/> {complete ? "已加购 · 选择备货" : "未完成加购 · 手动选择"}</label>}<strong>{posting.posting_number}</strong><p>{isPending ? "等待备货" : "已备货 · 等待发运"} · {posting.sku_count} 个SKU · {posting.piece_count} 件</p><p>已加购 {posting.added_sku_count}/{posting.sku_count} 个SKU · {posting.offer_ids}</p>{isPending && !complete && <small>尚有SKU未标记已加购；批量备货时会要求确认商品已线下采购并备齐。</small>}</article>; })}{pending.length === 0 && <div className="empty-store-state"><h3>当前没有等待备货的发货单</h3><p>已备货订单仍保留在下方，供你核对等待发运状态。</p></div>}</div></>; })()}</>}</section>}
+      {activeTab === "added" && (() => {
+        const postings = fulfillmentQuery.data?.postings ?? [];
+        const postingByNumber = new Map(postings.map((posting) => [posting.posting_number, posting]));
+        const addedPostingNumbers = new Set(addedGroups.flatMap((group) => group.orders.map((order) => order.postingNumber)));
+        const visiblePostings = postings.filter((posting) => addedPostingNumbers.has(posting.posting_number));
+        const readyPostings = visiblePostings.filter((posting) => posting.can_prepare);
+        const manualPostings = visiblePostings.filter((posting) => posting.status === "awaiting_packaging" && !posting.can_prepare);
+        const selectedReadyPostings = readyPostings.filter((posting) => selectedFulfillment.has(posting.posting_number));
+        const allReadySelected = readyPostings.length > 0 && selectedReadyPostings.length === readyPostings.length;
+
+        return <>
+          {fulfillmentQuery.isLoading && <p>正在读取 Ozon 发货单状态…</p>}
+          {fulfillmentQuery.isError && <p className="field-error">{fulfillmentQuery.error.message}</p>}
+          <section className="stock-prep-summary">
+            <strong>可自动备货 {readyPostings.length} 单 / 待人工处理 {manualPostings.length} 单</strong>
+            <label className="stock-prep-select-all">
+              <input
+                type="checkbox"
+                checked={allReadySelected}
+                disabled={!readyPostings.length || preparePostingMutation.isPending}
+                onChange={(event) => setSelectedFulfillment(event.target.checked ? new Set(readyPostings.map((posting) => posting.posting_number)) : new Set())}
+              />
+              全选可自动备货
+            </label>
+            <span>已选 {selectedReadyPostings.length} 单</span>
+            <button
+              className="primary-button"
+              disabled={!selectedReadyPostings.length || preparePostingMutation.isPending}
+              onClick={() => preparePostingMutation.mutate(selectedReadyPostings.map((posting) => posting.posting_number))}
+              type="button"
+            >
+              {preparePostingMutation.isPending ? `正在同步 ${preparingPosting ?? ""}` : `批量同步 ${selectedReadyPostings.length} 单`}
+            </button>
+            <label className="stock-prep-select-all">
+              <input
+                type="checkbox"
+                checked={allAddedOrdersSelected}
+                disabled={!addedOrders.length}
+                onChange={(event) => setSelectedForReset(event.target.checked ? new Set(addedOrders.map(keyOf)) : new Set())}
+              />
+              全选撤回（{addedOrderCount} 单 · {addedPieceCount} 件）
+            </label>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={!selectedResetOrders.length || resetMutation.isPending}
+              onClick={() => resetOrders(selectedResetOrders)}
+            >
+              {resetMutation.isPending ? "撤回中…" : `批量撤回 ${selectedResetOrders.length} 笔`}
+            </button>
+          </section>
+          {scan && (addedGroups.length ? <div className="stock-prep-groups">
+            {addedGroups.map((group, index) => <section className="settings-card stock-prep-group" key={`${group.offerUrl}-${group.skuId}-${index}`}>
+              <header>
+                <div><p className="eyebrow">已加购</p><h3>{group.offerId} <small>· {group.orders.length} 单 · {group.quantity} 件</small></h3></div>
+                <span className="stock-prep-state stock-prep-state--added">已加购</span>
+                {group.offerUrl && <a href={group.offerUrl} target="_blank" rel="noreferrer">1688 商品</a>}
+                <button className="secondary-button compact-button" type="button" disabled={resetMutation.isPending} onClick={() => resetOrders(group.orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))}>撤回本组</button>
+              </header>
+              <div className="stock-prep-product">
+                <OrderImagePreview src={group.imageUrl} alt={`${group.offerId} 商品主图`} fallbackLabel="暂无商品图" width={58} height={58} className="stock-prep-product-image" placeholderClassName="stock-prep-product-image stock-prep-product-image--empty"/>
+                <div>{group.skuId ? <p className="stock-prep-sku">1688 SKU ID：<code>{group.skuId}</code></p> : <p className="stock-prep-warning"><AlertTriangle size={16}/>{group.error}</p>}</div>
+              </div>
+              <div className="table-scroll"><table className="stock-prep-orders">
+                <thead><tr><th>撤回选择</th><th>Ozon 发货单号</th><th>货号</th><th>商品</th><th>件数</th><th>采购状态</th><th>Ozon 备货</th><th>操作</th></tr></thead>
+                <tbody>{group.orders.map((order) => {
+                  const posting = postingByNumber.get(order.postingNumber);
+                  const isPreparing = preparingPosting === order.postingNumber;
+                  const prepareError = prepareErrors[order.postingNumber];
+                  return <tr key={keyOf(order)}>
+                    <td><input type="checkbox" checked={selectedForReset.has(keyOf(order))} onChange={(event) => setSelectedForReset((current) => { const next = new Set(current); if (event.target.checked) next.add(keyOf(order)); else next.delete(keyOf(order)); return next; })} aria-label={`选择撤回订单 ${order.postingNumber}`}/></td>
+                    <td>{order.postingNumber}</td>
+                    <td>{order.offerId}</td>
+                    <td>{order.productName}</td>
+                    <td>{order.quantity}</td>
+                    <td>已加购</td>
+                    <td>
+                      {posting?.can_prepare ? <div className="stock-prep-prepare-actions">
+                        <label><input type="checkbox" checked={selectedFulfillment.has(order.postingNumber)} disabled={preparePostingMutation.isPending} onChange={(event) => setSelectedFulfillment((current) => { const next = new Set(current); if (event.target.checked) next.add(order.postingNumber); else next.delete(order.postingNumber); return next; })} aria-label={`选择备货 ${order.postingNumber}`}/>选择备货</label>
+                        <button className="primary-button compact-button" type="button" disabled={preparePostingMutation.isPending} onClick={() => preparePostingMutation.mutate([order.postingNumber])}>{isPreparing ? "同步中…" : "同步 Ozon 备货"}</button>
+                      </div> : <small>{posting?.prepare_block_reason ?? (fulfillmentQuery.isLoading ? "正在读取备货状态…" : "Ozon 发货单状态不可用，请刷新订单")}</small>}
+                      {prepareError && <small className="field-error">{prepareError}</small>}
+                    </td>
+                    <td><button className="secondary-button compact-button" type="button" disabled={resetMutation.isPending} onClick={() => resetOrders([{ postingNumber: order.postingNumber, offerId: order.offerId }])}>撤回</button></td>
+                  </tr>;
+                })}</tbody>
+              </table></div>
+            </section>)}
+          </div> : <div className="empty-store-state"><ShoppingCart size={34}/><h3>暂无已加购订单</h3><p>当前扫描结果中的已加购订单会显示在这里。</p></div>)}
+        </>;
+      })()}
       {!scan && activeTab === "pending" && !scanMutation.isPending && <div className="empty-store-state"><ShoppingCart size={34}/><h3>准备扫描订单</h3><p>请在“配置”标签选择店铺、配置 SKU 表并扫描。</p></div>}
       {batchQuery.isError && <div className="field-error" role="alert">批次状态读取失败：{batchQuery.error.message}</div>}
       {batchQuery.data?.status === "completed" && <div className="notice notice--success"><Check size={17}/>加购批次已完成</div>}

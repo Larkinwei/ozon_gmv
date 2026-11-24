@@ -6914,7 +6914,8 @@ td {
 .stock-prep-risk-review { padding: 16px; }
 .stock-prep-risk-review > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .stock-prep-risk-review h3 { margin: 3px 0 0; font-size: 16px; }
-.stock-prep-risk-review > header > span { color: var(--muted); font-size: 12px; }
+.stock-prep-risk-header-actions { display: flex; align-items: center; gap: 10px; }
+.stock-prep-risk-header-actions > span { color: var(--muted); font-size: 12px; }
 .stock-prep-risk-list { display: grid; gap: 8px; margin-top: 12px; }
 .stock-prep-risk-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 13px; border: 1px solid rgb(245 158 11 / 35%); border-radius: 8px; background: rgb(120 53 15 / 14%); }
 .stock-prep-risk-card--high { border-color: rgb(239 68 68 / 45%); background: rgb(127 29 29 / 18%); }
@@ -6962,4 +6963,7 @@ td {
 .stock-prep-orders td { padding: 9px; border-top: 1px solid var(--border-soft); }
 .stock-prep-orders td:nth-child(2) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .stock-prep-orders input[type="checkbox"] { width: 16px; height: 16px; accent-color: #3b82f6; }
+.stock-prep-prepare-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.stock-prep-prepare-actions label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.stock-prep-orders td > .field-error { display: block; margin-top: 6px; }
 @media (max-width: 700px) { .stock-prep-title { align-items: stretch; flex-direction: column; } .stock-prep-store-picker { min-width: 0; width: 100%; } .stock-prep-store-picker .field { min-width: 0; } .stock-prep-health { grid-column: auto; } .stock-prep-summary-action { flex-basis: 100%; margin-left: 0; } .stock-prep-feishu-config { grid-template-columns: 1fr; } .stock-prep-feishu-config > p { grid-column: auto; } .stock-prep-auth { align-items: flex-start; flex-direction: column; } .stock-prep-risk-card { flex-direction: column; } .stock-prep-risk-approve { width: 100%; } .stock-prep-agent-meta { grid-template-columns: 1fr; } }

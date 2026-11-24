@@ -21,6 +21,26 @@ function posting(postingNumber: string): Record<string, unknown> {
 }
 
 describe("Ozon Seller API client", () => {
+  it("uses the posting SKU as the FBS ship product ID when Ozon omits product_id", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImplementation = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      const payload = url.endsWith("/v3/posting/fbs/get") ? { result: posting("posting-1") } : {};
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const client = new OzonClient({ clientId: "client", apiKey: "secret", baseUrl: "https://api-seller.ozon.ru", fetchImplementation, maxAttempts: 1 });
+
+    const current = await client.getFbsPosting("posting-1");
+    expect(current.products[0]).toMatchObject({ sku: 1001, product_id: 1001, quantity: 1 });
+    await client.shipFbsPosting("posting-1", [{ productId: String(current.products[0]!.product_id), quantity: 1 }]);
+
+    expect(requests[1]).toMatchObject({
+      url: "https://api-seller.ozon.ru/v4/posting/fbs/ship",
+      body: { posting_number: "posting-1", packages: [{ products: [{ product_id: "1001", quantity: 1 }] }], with: { additional_data: true } },
+    });
+  });
+
   it("reads a page of seller products without changing Ozon data", async () => {
     let requestUrl = "";
     let requestBody: Record<string, unknown> = {};

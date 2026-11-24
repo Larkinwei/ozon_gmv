@@ -51,23 +51,31 @@ describe("StockPrepPage", () => {
     vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
     vi.mocked(api.fetchUpdateStatus).mockResolvedValue({ state: "up-to-date" } as UpdateView);
     vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
-    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: null, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
-    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [] });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
+    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [
+      { offerUrl: "https://detail.1688.com/offer/1.html", offerId: "SKU-A", skuId: "1688-A", imageUrl: null, status: "added", quantity: 1, error: null, orders: [
+        { postingNumber: "post-added", offerId: "SKU-A", imageUrl: null, productName: "商品 A", quantity: 1, state: "added", error: null, selectedByDefault: false },
+      ] },
+      { offerUrl: "https://detail.1688.com/offer/2.html", offerId: "SKU-B", skuId: "1688-B", imageUrl: null, status: "added", quantity: 1, error: null, orders: [
+        { postingNumber: "post-incomplete", offerId: "SKU-B", imageUrl: null, productName: "商品 B", quantity: 1, state: "added", error: null, selectedByDefault: false },
+      ] },
+    ] });
     vi.mocked(api.fetchStockPrepFulfillmentPostings).mockResolvedValue({ postings: [
-      { posting_number: "post-added", status: "awaiting_packaging", sku_count: 1, piece_count: 2, added_sku_count: 1, offer_ids: "SKU-A" },
-      { posting_number: "post-incomplete", status: "awaiting_packaging", sku_count: 1, piece_count: 1, added_sku_count: 0, offer_ids: "SKU-B" },
-      { posting_number: "post-prepared", status: "awaiting_deliver", sku_count: 1, piece_count: 1, added_sku_count: 1, offer_ids: "SKU-C" },
+      { posting_number: "post-added", status: "awaiting_packaging", sku_count: 1, piece_count: 1, added_sku_count: 1, offer_ids: "SKU-A", can_prepare: true, prepare_block_reason: null },
+      { posting_number: "post-incomplete", status: "awaiting_packaging", sku_count: 1, piece_count: 1, added_sku_count: 0, offer_ids: "SKU-B", can_prepare: false, prepare_block_reason: "商品尚未标记已加购" },
+      { posting_number: "post-prepared", status: "awaiting_deliver", sku_count: 1, piece_count: 1, added_sku_count: 1, offer_ids: "SKU-C", can_prepare: false, prepare_block_reason: "Ozon状态已变化，请刷新订单" },
     ] });
     renderPage();
     await screen.findByRole("option", { name: "YOGOLD" });
     fireEvent.change(screen.getByLabelText("Ozon 店铺"), { target: { value: "store-1" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Ozon备货" }));
+    await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
+    fireEvent.click(await screen.findByRole("button", { name: "已加购 · 2 单 · 2 件" }));
 
-    const readyCheckbox = await screen.findByLabelText("已加购 · 选择备货");
-    const incompleteCheckbox = screen.getByLabelText("未完成加购 · 手动选择");
-    expect(readyCheckbox).toBeChecked();
-    expect(incompleteCheckbox).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "备货所选 1 单" })).toBeEnabled();
+    expect(await screen.findByText("可自动备货 1 单 / 待人工处理 1 单")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "同步 Ozon 备货" })).toBeEnabled();
+    expect(screen.getByText("商品尚未标记已加购")).toBeInTheDocument();
+    expect(screen.getAllByText("post-added")).toHaveLength(1);
+    expect(screen.getAllByRole("columnheader", { name: "Ozon 备货" })).toHaveLength(2);
     expect(screen.getByText("post-added").compareDocumentPosition(screen.getByText("post-incomplete")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -87,11 +95,13 @@ describe("StockPrepPage", () => {
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
     expect(await screen.findByText(/最近订单同步：2026-11-18 12:34:56/u)).toBeInTheDocument();
 
-    await screen.findByRole("button", { name: "加购所选 2 笔 · 3 件" });
+    await screen.findByRole("button", { name: "加购已选 2 条明细 · 3 件" });
+    expect(screen.getAllByText("1 组")).toHaveLength(2);
+    expect(screen.getAllByText("2 张发货单 · 3 件")).toHaveLength(2);
     expect(screen.getByRole("checkbox", { name: "选择订单 post-1" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "选择订单 post-2" })).toBeChecked();
     fireEvent.click(screen.getByRole("checkbox", { name: "选择订单 post-2" }));
-    expect(screen.getByRole("button", { name: "加购所选 1 笔 · 1 件" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "加购已选 1 条明细 · 1 件" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "刷新订单" }));
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", true));
   });
@@ -113,9 +123,9 @@ describe("StockPrepPage", () => {
     const failed = await screen.findByRole("checkbox", { name: "选择订单 post-failed" });
     expect(failed).not.toBeChecked();
     expect(failed).toBeEnabled();
-    expect(screen.getByRole("button", { name: "加购所选 1 笔 · 1 件" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "加购已选 1 条明细 · 1 件" })).toBeInTheDocument();
     fireEvent.click(failed);
-    await waitFor(() => expect(screen.getByRole("button", { name: "加购所选 2 笔 · 2 件" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "加购已选 2 条明细 · 2 件" })).toBeInTheDocument());
   });
 
   it("lets operators withdraw an added order after warning that the cart quantity will remain", async () => {

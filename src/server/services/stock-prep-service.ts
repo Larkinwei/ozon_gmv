@@ -614,7 +614,7 @@ export class StockPrepService {
 
   /** Returns current shipping units with the number of mapped SKUs in each posting. */
   public listFulfillmentPostings(storeId: string): Array<Record<string, unknown>> {
-    return this.database.prepare(`SELECT p.posting_number, p.status, p.fulfillment_mode, p.shipment_deadline_at_ms,
+    const rows = this.database.prepare(`SELECT p.posting_number, p.status, p.fulfillment_mode, p.shipment_deadline_at_ms,
       COUNT(DISTINCT pi.offer_id) AS sku_count, SUM(pi.quantity) AS piece_count,
       COUNT(DISTINCT CASE WHEN states.state='added' THEN pi.offer_id END) AS added_sku_count,
       GROUP_CONCAT(pi.offer_id, '、') AS offer_ids
@@ -624,7 +624,15 @@ export class StockPrepService {
         AND p.status IN ('awaiting_packaging','awaiting_deliver')
       GROUP BY p.posting_number ORDER BY CASE
         WHEN p.status='awaiting_packaging' AND COUNT(DISTINCT CASE WHEN states.state='added' THEN pi.offer_id END)=COUNT(DISTINCT pi.offer_id) THEN 0
-        WHEN p.status='awaiting_packaging' THEN 1 ELSE 2 END,p.shipment_deadline_at_ms`).all(storeId) as Array<Record<string, unknown>>;
+      WHEN p.status='awaiting_packaging' THEN 1 ELSE 2 END,p.shipment_deadline_at_ms`).all(storeId) as Array<Record<string, unknown>>;
+    return rows.map((posting) => {
+      let prepare_block_reason: string | null = null;
+      if (posting.status !== "awaiting_packaging") prepare_block_reason = "Ozon状态已变化，请刷新订单";
+      else if (Number(posting.sku_count) !== 1) prepare_block_reason = "多SKU订单，请到Ozon后台人工备货";
+      else if (Number(posting.piece_count) !== 1) prepare_block_reason = "多件订单，请到Ozon后台人工备货";
+      else if (Number(posting.added_sku_count) !== 1) prepare_block_reason = "商品尚未标记已加购";
+      return { ...posting, can_prepare: prepare_block_reason === null, prepare_block_reason };
+    });
   }
 
   /** Releases uncertain orders only after a separate cart check confirmed no quantity was added. */
@@ -637,9 +645,16 @@ export class StockPrepService {
   }
 
   private async readMappings(source: StockPrepStoreRow): Promise<Mapping[]> {
-    const output = await this.feishu(["base", "+record-list", "--base-token", source.base_token, "--table-id", source.table_id,
-      "--field-id", "货号", "--field-id", "1688商品链接", "--field-id", "1688 SKU ID", "--format", "json", "--as", "user"]);
-    return parseRecords(output).map((row) => ({ offerId: String(row["货号"] ?? "").trim(), url: normalizeMappingUrl(row["1688商品链接"]), skuId: String(row["1688 SKU ID"] ?? "").trim() })).filter((row) => row.offerId);
+    const pageSize = 200;
+    const records: Array<Record<string, unknown>> = [];
+    for (let offset = 0; ; offset += pageSize) {
+      const output = await this.feishu(["base", "+record-list", "--base-token", source.base_token, "--table-id", source.table_id,
+        "--field-id", "货号", "--field-id", "1688商品链接", "--field-id", "1688 SKU ID", "--limit", String(pageSize), "--offset", String(offset), "--format", "json", "--as", "user"]);
+      const page = parseRecords(output);
+      records.push(...page);
+      if (page.length < pageSize) break;
+    }
+    return records.map((row) => ({ offerId: String(row["货号"] ?? "").trim(), url: normalizeMappingUrl(row["1688商品链接"]), skuId: String(row["1688 SKU ID"] ?? "").trim() })).filter((row) => row.offerId);
   }
 
   private getFeishuProfile(): string | null {
@@ -937,6 +952,29 @@ export class StockPrepService {
   /** Reads matching SKU quantities from either the legacy or the current 1688 cart layout. */
   private async cartQuantities(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>(), dropship = false): Promise<Map<string, number>> {
     await this.runBrowser(session, ["open", dropship ? "https://cart.1688.com/daixiao_cart.htm" : "https://cart.1688.com/cart.htm"]);
+    const scrollSelector = String.raw`(() => {
+      const candidates=[document.scrollingElement,...document.querySelectorAll('main,section,div')].filter((node,index,all)=>{
+        if(!(node instanceof HTMLElement)||all.indexOf(node)!==index||node.clientHeight<180||node.scrollHeight<=node.clientHeight+80)return false;
+        if(node===document.scrollingElement)return true;
+        const overflow=getComputedStyle(node).overflowY;
+        return overflow==='auto'||overflow==='scroll';
+      });
+      let moved=false;
+      for(const node of candidates){
+        const maximum=Math.max(0,node.scrollHeight-node.clientHeight);
+        const next=Math.min(maximum,node.scrollTop+Math.max(500,Math.floor(node.clientHeight*0.8)));
+        if(next>node.scrollTop+2){node.scrollTop=next;node.dispatchEvent(new Event('scroll',{bubbles:true}));moved=true;}
+      }
+      window.dispatchEvent(new Event('scroll'));
+      return {moved,scrollers:candidates.length};
+    })()`;
+    await this.runBrowser(session, ["eval", String.raw`(() => {
+      for(const node of [document.scrollingElement,...document.querySelectorAll('main,section,div')]){
+        if(node instanceof HTMLElement&&node.scrollHeight>node.clientHeight+80)node.scrollTop=0;
+      }
+      window.scrollTo(0,0);
+      return {reset:true};
+    })()`]);
     const serialized = targets.map((target) => ({ key: target.cartKey, productId: target.productId, attributes: target.attributes }));
     const selector = String.raw`(() => {
       const targets=${JSON.stringify(serialized)};
@@ -993,12 +1031,16 @@ export class StockPrepService {
     })()`;
     let loaded = false;
     let quantities: Record<string, number> = {};
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    let stableEndPasses = 0;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
       const result = parseCli<{ loaded: boolean; quantities: Record<string, number> }>(await this.runBrowser(session, ["eval", selector]));
       loaded = result.loaded;
-      quantities = result.quantities;
-      if (loaded && [...minimums].every(([key, minimum]) => (quantities[key] ?? 0) >= minimum)) break;
-      if (attempt < 11) await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(500);
+      for (const [key, quantity] of Object.entries(result.quantities)) quantities[key] = Math.max(quantities[key] ?? 0, quantity);
+      if (loaded && minimums.size > 0 && [...minimums].every(([key, minimum]) => (quantities[key] ?? 0) >= minimum)) break;
+      const scroll = parseCli<{ moved: boolean }>(await this.runBrowser(session, ["eval", scrollSelector]));
+      stableEndPasses = loaded ? (scroll.moved ? 0 : stableEndPasses + 1) : 0;
+      if (loaded && stableEndPasses >= 2) break;
+      if (attempt < 29) await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(500);
     }
     if (!loaded) throw new Error("1688 购物车页面未能加载");
     return new Map(Object.entries(quantities));

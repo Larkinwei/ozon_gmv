@@ -203,24 +203,11 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
   app.post("/api/stock-prep/stores/:storeId/fulfillment-postings/:postingNumber/prepare", { preHandler: requireSession }, async (request, reply) => {
     const { storeId } = storeParams.parse(request.params);
     const { postingNumber } = z.object({ postingNumber: z.string().min(1).max(100) }).parse(request.params);
-    const { forceIncomplete } = z.object({ forceIncomplete: z.boolean().optional() }).parse(request.body ?? {});
     try {
       const posting = service.listFulfillmentPostings(storeId).find((item) => item.posting_number === postingNumber);
-      if (!posting || posting.status !== "awaiting_packaging") throw new Error("发货单已不在等待备货状态，请刷新后重试");
-      if (posting.added_sku_count !== posting.sku_count && !forceIncomplete) throw new Error("该发货单仍有SKU未标记已加购；确认商品已采购并备齐后才能强制备货");
-      let forceMarkedKeys: Array<{ postingNumber: string; offerId: string }> = [];
-      if (forceIncomplete && posting.added_sku_count !== posting.sku_count) {
-        const scan = await service.scan(storeId);
-        const orders = scan.groups.flatMap((group) => group.orders).filter((order) => order.postingNumber === postingNumber && order.state !== "added");
-        for (const order of orders) {
-          if (order.riskLevel === "blacklist") throw new Error(`订单 ${order.postingNumber} 命中买家黑名单，不能备货`);
-          if (order.riskLevel === "review" && !order.approved) throw new Error(`发货单 ${order.postingNumber} 需先完成人工风险确认`);
-        }
-        forceMarkedKeys = orders.map(({ postingNumber: number, offerId }) => ({ postingNumber: number, offerId }));
-      }
-      const result = await syncService.markPostingPrepared(storeId, postingNumber);
-      if (forceMarkedKeys.length) await service.markOrdersAdded(storeId, forceMarkedKeys);
-      return result;
+      if (!posting) throw new Error("找不到该发货单，请刷新订单");
+      if (!posting.can_prepare) throw new Error(String(posting.prepare_block_reason ?? "该发货单当前不能自动备货"));
+      return await syncService.markPostingPrepared(storeId, postingNumber);
     }
     catch (error) { return reply.code(409).send({ error: "OZON_PREPARE_REJECTED", message: error instanceof Error ? error.message : "Ozon备货失败" }); }
   });

@@ -93,6 +93,8 @@ export class SyncService {
     const client = this.createClient(store.clientId, decryptSecret(store.apiKeyCiphertext, this.config.ENCRYPTION_KEY));
     const posting = await client.getFbsPosting(postingNumber);
     if (posting.status !== "awaiting_packaging") throw new Error(`发货单当前状态为 ${posting.status}，不能执行备货`);
+    if (posting.products.length !== 1) throw new Error("Ozon实时订单包含多个SKU，请到Ozon后台人工备货");
+    if (posting.products[0]?.quantity !== 1) throw new Error("Ozon实时订单商品数量不是1件，请到Ozon后台人工备货");
     const products = posting.products.map((product) => ({ productId: product.product_id === undefined ? "" : String(product.product_id), quantity: product.quantity }));
     if (products.some((product) => !product.productId || !Number.isInteger(product.quantity) || product.quantity < 1)) throw new Error("Ozon订单商品缺少有效SKU或数量，无法自动备货");
     let shipError: unknown;

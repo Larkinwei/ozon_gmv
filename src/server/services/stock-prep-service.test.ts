@@ -58,7 +58,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
   const service = new StockPrepService(database, new SettingsRepository(database as never), appConfig, {
     platform: "darwin",
     sleep: async () => undefined,
-    feishu: async () => JSON.stringify({ ok: true, identity: "user", data: { data: mappingRows, fields: ["货号", "1688商品链接", "1688 SKU ID"] } }),
+    feishu: async (args) => { const offset = Number(args[args.indexOf("--offset") + 1] ?? 0); const limit = Number(args[args.indexOf("--limit") + 1] ?? mappingRows.length); return JSON.stringify({ ok: true, identity: "user", data: { data: mappingRows.slice(offset, offset + limit), fields: ["货号", "1688商品链接", "1688 SKU ID"] } }); },
     browserHealth: async () => ({ ready: true, message: "connected" }),
     openCli: async (_session, args) => {
       const [action, value] = args;
@@ -74,6 +74,8 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
         const targets = serialized ? JSON.parse(serialized) as Array<{ key: string }> : [];
         return JSON.stringify({ loaded: true, quantities: Object.fromEntries(targets.map((target) => [target.key, cartQuantities[currentCart]])) });
       }
+      if (action === "eval" && script?.includes("const candidates=[document.scrollingElement")) return JSON.stringify({ moved: false, scrollers: 1 });
+      if (action === "eval" && script?.includes("return {reset:true}")) return JSON.stringify({ reset: true });
       if (action === "eval" && script?.includes("desiredSkuId")) {
         expect(script).toContain("specAttrs");
         if (script.includes("inputIndex")) {
@@ -144,6 +146,17 @@ async function waitForBatch(service: StockPrepService, id: string): Promise<Reco
 }
 
 describe("StockPrepService", () => {
+  it("reads SKU mappings beyond the first 100 Feishu records", async () => {
+    const mappings = Array.from({ length: 120 }, (_, index) => [`UNUSED-${index}`, offerUrl, skuId] as unknown[]);
+    mappings.push(["UNMAPPED", offerUrl, skuId]);
+    const { service } = fixture(mappings);
+
+    const scan = await service.scan(storeId);
+    const matched = scan.groups.find((group) => group.offerId === "UNMAPPED");
+
+    expect(matched).toMatchObject({ skuId, status: "pending", error: null });
+  });
+
   it("lists fully added awaiting-packaging postings first and counts distinct SKUs", () => {
     const { database, service } = fixture();
     database.prepare("INSERT INTO posting_items (posting_id,offer_id,name,quantity) VALUES (?,?,?,?)")
