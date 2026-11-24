@@ -19,6 +19,7 @@ vi.mock("../api", async () => {
     fetchStockPrepConnection: vi.fn(),
     fetchStockPrepState: vi.fn(),
     fetchStockPrepBlacklist: vi.fn(),
+    fetchStockPrepFulfillmentPostings: vi.fn(),
     approveStockPrepRiskOrder: vi.fn(),
     scanStockPrep: vi.fn(),
     createStockPrepBatch: vi.fn(),
@@ -46,6 +47,30 @@ function renderPage(): void {
 }
 
 describe("StockPrepPage", () => {
+  it("prioritizes and automatically selects fully added awaiting-packaging postings", async () => {
+    vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
+    vi.mocked(api.fetchUpdateStatus).mockResolvedValue({ state: "up-to-date" } as UpdateView);
+    vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: null, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
+    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [] });
+    vi.mocked(api.fetchStockPrepFulfillmentPostings).mockResolvedValue({ postings: [
+      { posting_number: "post-added", status: "awaiting_packaging", sku_count: 1, piece_count: 2, added_sku_count: 1, offer_ids: "SKU-A" },
+      { posting_number: "post-incomplete", status: "awaiting_packaging", sku_count: 1, piece_count: 1, added_sku_count: 0, offer_ids: "SKU-B" },
+      { posting_number: "post-prepared", status: "awaiting_deliver", sku_count: 1, piece_count: 1, added_sku_count: 1, offer_ids: "SKU-C" },
+    ] });
+    renderPage();
+    await screen.findByRole("option", { name: "YOGOLD" });
+    fireEvent.change(screen.getByLabelText("Ozon 店铺"), { target: { value: "store-1" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Ozon备货" }));
+
+    const readyCheckbox = await screen.findByLabelText("已加购 · 选择备货");
+    const incompleteCheckbox = screen.getByLabelText("未完成加购 · 手动选择");
+    expect(readyCheckbox).toBeChecked();
+    expect(incompleteCheckbox).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "备货所选 1 单" })).toBeEnabled();
+    expect(screen.getByText("post-added").compareDocumentPosition(screen.getByText("post-incomplete")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("preselects pending orders and recalculates the cart quantity when an order is unchecked", async () => {
     vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
     vi.mocked(api.fetchUpdateStatus).mockResolvedValue({ state: "up-to-date" } as UpdateView);
@@ -106,7 +131,7 @@ describe("StockPrepPage", () => {
     renderPage();
 
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
-    fireEvent.click(screen.getByRole("button", { name: /已加购/ }));
+    fireEvent.click(screen.getByRole("button", { name: "已加购 · 1 单 · 1 件" }));
     fireEvent.click(await screen.findByRole("button", { name: "撤回本组" }));
     await waitFor(() => expect(api.resetStockPrepOrders).toHaveBeenCalledWith("store-1", [{ postingNumber: "post-added", offerId: "1645-2-XXL" }]));
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("1688 购物车不会扣减"));

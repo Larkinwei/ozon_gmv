@@ -335,6 +335,18 @@ export async function resetStockPrepOrders(storeId: string, keys: StockPrepOrder
   return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/reset`, { method: "POST", body: JSON.stringify({ keys }) });
 }
 
+export async function markStockPrepOrdersAdded(storeId: string, keys: StockPrepOrderKey[]): Promise<{ markedCount: number }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/mark-added`, { method: "POST", body: JSON.stringify({ keys }) });
+}
+
+export async function fetchStockPrepFulfillmentPostings(storeId: string): Promise<{ postings: Array<{ posting_number: string; status: string; sku_count: number; piece_count: number; added_sku_count: number; offer_ids: string }> }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/fulfillment-postings`);
+}
+
+export async function prepareStockPrepPosting(storeId: string, postingNumber: string, forceIncomplete = false): Promise<{ status: string }> {
+  return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/fulfillment-postings/${encodeURIComponent(postingNumber)}/prepare`, { method: "POST", body: JSON.stringify({ forceIncomplete }) });
+}
+
 export async function resolveUncertainStockPrepOrders(storeId: string, keys: StockPrepOrderKey[]): Promise<{ resolvedCount: number }> {
   return apiFetch(`/api/stock-prep/stores/${encodeURIComponent(storeId)}/resolve-no-add`, { method: "POST", body: JSON.stringify({ keys }) });
 }

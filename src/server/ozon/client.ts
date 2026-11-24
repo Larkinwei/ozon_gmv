@@ -4,6 +4,7 @@ import { z, type ZodType } from "zod";
 
 import {
   postingListResponseSchema,
+  postingDetailResponseSchema,
   returnsListResponseSchema,
   descriptionCategoryTreeResponseSchema,
   descriptionCategoryAttributesResponseSchema,
@@ -394,6 +395,17 @@ export class OzonClient {
     const currency = response.company?.currency?.trim().toUpperCase() || null;
     const country = response.company?.country?.trim().toUpperCase() || null;
     return { currency, country };
+  }
+
+  /** Loads one current FBS/rFBS posting before an explicit seller-side packing action. */
+  public async getFbsPosting(postingNumber: string): Promise<import("./schemas").OzonPosting> {
+    const response = await this.request("/v3/posting/fbs/get", { posting_number: postingNumber, with: { barcodes: true, financial_data: false, translit: false } }, postingDetailResponseSchema);
+    return response.result;
+  }
+
+  /** Packs the full posting into one package and advances it to awaiting delivery. */
+  public async shipFbsPosting(postingNumber: string, products: Array<{ productId: string; quantity: number }>): Promise<void> {
+    await this.request("/v4/posting/fbs/ship", { posting_number: postingNumber, packages: [{ products: products.map(({ productId, quantity }) => ({ product_id: productId, quantity })) }], with: { additional_data: true } }, null);
   }
 
   /** Reads the Ozon balance report for the most recent 30-day reporting window. */

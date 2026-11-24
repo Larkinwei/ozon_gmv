@@ -595,6 +595,38 @@ export class StockPrepService {
     return count;
   }
 
+  /** Marks selected mapped orders as manually confirmed in the 1688 cart. */
+  public async markOrdersAdded(storeId: string, keys: Array<{ postingNumber: string; offerId: string }>): Promise<number> {
+    const snapshot = await this.scan(storeId);
+    const orders = new Map(snapshot.groups.flatMap((group) => group.orders.map((order) => [`${order.postingNumber}\u0000${order.offerId}`, order] as const)));
+    for (const key of keys) {
+      const order = orders.get(`${key.postingNumber}\u0000${key.offerId}`);
+      if (!order || !["pending", "failed", "uncertain"].includes(order.state)) throw new Error(`订单 ${key.postingNumber} 当前不能人工标记已加购`);
+      if (order.riskLevel === "blacklist") throw new Error(`订单 ${key.postingNumber} 命中买家黑名单，不能标记`);
+      if (order.riskLevel === "review" && !order.approved) throw new Error(`发货单 ${key.postingNumber} 需先完成人工风险确认`);
+    }
+    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='added',batch_id=NULL,error='人工确认已加入1688购物车',updated_at_ms=?
+      WHERE store_id=? AND posting_number=? AND offer_id=? AND state IN ('pending','failed','uncertain')`);
+    let count = 0;
+    this.database.transaction(() => { for (const key of keys) count += update.run(Date.now(), storeId, key.postingNumber, key.offerId).changes; })();
+    return count;
+  }
+
+  /** Returns current shipping units with the number of mapped SKUs in each posting. */
+  public listFulfillmentPostings(storeId: string): Array<Record<string, unknown>> {
+    return this.database.prepare(`SELECT p.posting_number, p.status, p.fulfillment_mode, p.shipment_deadline_at_ms,
+      COUNT(DISTINCT pi.offer_id) AS sku_count, SUM(pi.quantity) AS piece_count,
+      COUNT(DISTINCT CASE WHEN states.state='added' THEN pi.offer_id END) AS added_sku_count,
+      GROUP_CONCAT(pi.offer_id, '、') AS offer_ids
+      FROM postings p JOIN posting_items pi ON pi.posting_id=p.id
+      LEFT JOIN stock_prep_order_states states ON states.store_id=p.store_id AND states.posting_number=p.posting_number AND states.offer_id=pi.offer_id
+      WHERE p.store_id=? AND p.fulfillment_mode IN ('FBS','RFBS') AND p.cancelled_at_ms IS NULL
+        AND p.status IN ('awaiting_packaging','awaiting_deliver')
+      GROUP BY p.posting_number ORDER BY CASE
+        WHEN p.status='awaiting_packaging' AND COUNT(DISTINCT CASE WHEN states.state='added' THEN pi.offer_id END)=COUNT(DISTINCT pi.offer_id) THEN 0
+        WHEN p.status='awaiting_packaging' THEN 1 ELSE 2 END,p.shipment_deadline_at_ms`).all(storeId) as Array<Record<string, unknown>>;
+  }
+
   /** Releases uncertain orders only after a separate cart check confirmed no quantity was added. */
   public resolveUncertainAsFailed(storeId: string, keys: Array<{ postingNumber: string; offerId: string }>): number {
     const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='failed',error='人工核对购物车后确认未增加数量',updated_at_ms=?

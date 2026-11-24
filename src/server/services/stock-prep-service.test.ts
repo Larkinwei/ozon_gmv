@@ -20,7 +20,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
   database.exec(`
     PRAGMA foreign_keys=ON;
     CREATE TABLE stores (id TEXT PRIMARY KEY,name TEXT,platform TEXT,enabled INTEGER);
-    CREATE TABLE postings (id TEXT PRIMARY KEY,store_id TEXT,posting_number TEXT,order_number TEXT,fulfillment_mode TEXT,status TEXT,cancelled_at_ms INTEGER,order_at_ms INTEGER);
+    CREATE TABLE postings (id TEXT PRIMARY KEY,store_id TEXT,posting_number TEXT,order_number TEXT,fulfillment_mode TEXT,status TEXT,cancelled_at_ms INTEGER,order_at_ms INTEGER,shipment_deadline_at_ms INTEGER);
     CREATE TABLE posting_items (posting_id TEXT,sku TEXT,offer_id TEXT,name TEXT,quantity INTEGER);
     CREATE TABLE product_images (store_id TEXT,sku TEXT,primary_image_url TEXT);
     CREATE TABLE app_settings (key TEXT PRIMARY KEY,value TEXT,updated_at_ms INTEGER NOT NULL);
@@ -144,6 +144,21 @@ async function waitForBatch(service: StockPrepService, id: string): Promise<Reco
 }
 
 describe("StockPrepService", () => {
+  it("lists fully added awaiting-packaging postings first and counts distinct SKUs", () => {
+    const { database, service } = fixture();
+    database.prepare("INSERT INTO posting_items (posting_id,offer_id,name,quantity) VALUES (?,?,?,?)")
+      .run("p2", "1645-2-XXL", "Duplicate line", 1);
+    database.prepare("INSERT INTO stock_prep_order_states (store_id,posting_number,offer_id,state,updated_at_ms) VALUES (?,?,?,?,?)")
+      .run(storeId, "10000002-part-1", "1645-2-XXL", "added", Date.now());
+
+    const postings = service.listFulfillmentPostings(storeId);
+
+    const postingNumbers = postings.map((posting) => posting.posting_number);
+    expect(postingNumbers.indexOf("10000002-part-1")).toBeLessThan(postingNumbers.indexOf("10000001-part-1"));
+    expect(postingNumbers.indexOf("10000001-part-1")).toBeLessThan(postingNumbers.indexOf("10000004-part-1"));
+    expect(postings[0]).toMatchObject({ sku_count: 1, added_sku_count: 1 });
+  });
+
   it("keeps the Ozon order snapshot fresh for one hour per store", () => {
     const { service } = fixture();
     const refreshedAt = 1_800_000_000_000;

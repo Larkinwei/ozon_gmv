@@ -7,6 +7,7 @@ const moneySchema = z.object({
 
 const productSchema = z.object({
   sku: z.union([z.string(), z.number()]),
+  product_id: z.union([z.string(), z.number()]).optional(),
   offer_id: z.string().default(""),
   name: z.string().default(""),
   quantity: z.number().int().positive(),
@@ -33,6 +34,8 @@ export const postingListResponseSchema = z.object({
   has_next: z.boolean().default(false),
   postings: z.array(ozonPostingSchema).default([]),
 });
+
+export const postingDetailResponseSchema = z.object({ result: ozonPostingSchema }).passthrough();
 
 export const returnsListResponseSchema = z.object({
   returns: z.array(z.object({

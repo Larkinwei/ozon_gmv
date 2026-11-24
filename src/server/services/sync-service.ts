@@ -86,6 +86,27 @@ export class SyncService {
     return { expiresAt: result.expiresAt, roles: result.roles };
   }
 
+  /** Packs one live FBS posting into a single parcel and persists Ozon's confirmed status. */
+  public async markPostingPrepared(storeId: string, postingNumber: string): Promise<{ status: string }> {
+    const store = await this.stores.findById(storeId);
+    if (!store || !store.enabled || store.platform !== "ozon" || !store.fulfillmentModes.some((mode) => mode === "FBS" || mode === "RFBS")) throw new Error("店铺未启用 FBS/rFBS 订单操作");
+    const client = this.createClient(store.clientId, decryptSecret(store.apiKeyCiphertext, this.config.ENCRYPTION_KEY));
+    const posting = await client.getFbsPosting(postingNumber);
+    if (posting.status !== "awaiting_packaging") throw new Error(`发货单当前状态为 ${posting.status}，不能执行备货`);
+    const products = posting.products.map((product) => ({ productId: product.product_id === undefined ? "" : String(product.product_id), quantity: product.quantity }));
+    if (products.some((product) => !product.productId || !Number.isInteger(product.quantity) || product.quantity < 1)) throw new Error("Ozon订单商品缺少有效SKU或数量，无法自动备货");
+    let shipError: unknown;
+    try { await client.shipFbsPosting(postingNumber, products); }
+    catch (error) { shipError = error; }
+    let confirmed;
+    try { confirmed = await client.getFbsPosting(postingNumber); }
+    catch { throw new Error(shipError ? `备货请求结果待核实：${errorMessage(shipError)}` : "备货请求已发送，但无法回查Ozon状态，请人工核对后再操作"); }
+    if (shipError && confirmed.status === "awaiting_packaging") throw shipError;
+    if (confirmed.status !== "awaiting_deliver" && !["delivering", "delivered", "driver_pickup", "sent_by_seller"].includes(confirmed.status)) throw new Error(`Ozon已接收备货请求，但回查状态为 ${confirmed.status}，需要人工核对`);
+    await this.postings.upsert(storeId, normalizePosting(confirmed, "FBS"));
+    return { status: confirmed.status };
+  }
+
   public async testWildberriesCredentials(apiToken: string): Promise<{ expiresAt: string | null; externalStoreId: string | null }> {
     const result = await this.createWildberriesAdapter(apiToken).testConnection({
       id: "",
