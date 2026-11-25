@@ -101,10 +101,19 @@ export class SyncService {
     try { await client.shipFbsPosting(postingNumber, products); }
     catch (error) { shipError = error; }
     let confirmed;
-    try { confirmed = await client.getFbsPosting(postingNumber); }
-    catch { throw new Error(shipError ? `备货请求结果待核实：${errorMessage(shipError)}` : "备货请求已发送，但无法回查Ozon状态，请人工核对后再操作"); }
+    let lookupError: unknown;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        confirmed = await client.getFbsPosting(postingNumber);
+        if (confirmed.status !== "awaiting_packaging") break;
+      } catch (error) {
+        lookupError = error;
+      }
+      if (attempt < 4) await wait(1_000);
+    }
+    if (!confirmed) throw new Error(shipError ? `备货请求结果待核实：${errorMessage(shipError)}` : `备货请求已发送，但无法回查Ozon状态：${errorMessage(lookupError)}`);
     if (shipError && confirmed.status === "awaiting_packaging") throw shipError;
-    if (confirmed.status !== "awaiting_deliver" && !["delivering", "delivered", "driver_pickup", "sent_by_seller"].includes(confirmed.status)) throw new Error(`Ozon已接收备货请求，但回查状态为 ${confirmed.status}，需要人工核对`);
+    if (confirmed.status !== "awaiting_registration" && confirmed.status !== "awaiting_deliver" && !["delivering", "delivered", "driver_pickup", "sent_by_seller"].includes(confirmed.status)) throw new Error(`Ozon已接收备货请求，但回查状态为 ${confirmed.status}，需要人工核对`);
     await this.postings.upsert(storeId, normalizePosting(confirmed, "FBS"));
     return { status: confirmed.status };
   }

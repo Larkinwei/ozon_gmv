@@ -65,6 +65,28 @@ interface ResolvedSkuTarget extends StockPrepBatchItemRow {
   cartKey: string;
   supplierName: string;
   dropship: boolean;
+  availableQuantity: number | null;
+}
+
+interface CartSkuTarget extends StockPrepBatchItemRow {
+  productId: string;
+  cartKey: string;
+}
+
+interface TargetFailure {
+  item: StockPrepBatchItemRow;
+  error: string;
+}
+
+interface PreparedSkuGroup {
+  attempted: ResolvedSkuTarget[];
+  failures: TargetFailure[];
+  clickStarted: boolean;
+}
+
+interface CartMinimum {
+  mode: "wholesale" | "dropship";
+  quantity: number;
 }
 
 type CartModeQuantities = { wholesale: number; dropship: number };
@@ -93,6 +115,12 @@ interface CliEnvelope<T> {
   ok?: boolean;
   data?: T;
   error?: { message?: string; hint?: string };
+}
+
+interface CartReaderTarget {
+  key: string;
+  productId: string;
+  skuId: string;
 }
 
 const APP_ID_KEY = "stock-prep.feishu.app_id";
@@ -155,6 +183,62 @@ function normalizeMappingUrl(value: unknown): string {
 
 function extractOfferId(value: string): string | null {
   try { return new URL(value).pathname.match(/^\/offer\/(\d+)\.html$/u)?.[1] ?? null; } catch { return null; }
+}
+
+/** Builds the page-context reader shared by the legacy and current 1688 cart layouts. */
+export function buildCartQuantityReaderScript(targets: CartReaderTarget[], dropship: boolean): string {
+  return String.raw`(() => {
+    const targets=${JSON.stringify(targets)};
+    const expectedPath=${JSON.stringify(dropship ? "/daixiao_cart.htm" : "/cart.htm")};
+    const isCartPage=location.hostname==='cart.1688.com'&&location.pathname===expectedPath;
+    const oldRoot=document.querySelector('#cartV2Header');
+    const modernRoot=document.querySelector('[class*=cart--container]');
+    const modernHeader=modernRoot?.querySelector('[class*=header-bar--container]');
+    const modernTabs=[...(modernRoot?.querySelectorAll('[role=tab]')??[])];
+    const expectedTab=${JSON.stringify(dropship ? "分销" : "现货")};
+    const activeModernTab=modernTabs.find((tab)=>tab.getAttribute('aria-selected')==='true'||tab.classList.contains('active'));
+    const activeTabName=activeModernTab?.textContent?.trim().replace(/\s*\(\d+\)$/u,'')??'';
+    const modernModeMatches=modernTabs.length===0||activeTabName===expectedTab;
+    const modernLoaded=Boolean(modernRoot&&modernHeader&&modernModeMatches);
+    const oldLoaded=Boolean(oldRoot);
+    const readItemFields=(row)=>{
+      const candidates=[row,...row.querySelectorAll('*')].slice(0,120);
+      for(const candidate of candidates){
+        const fiberKey=Object.keys(candidate).find((key)=>key.startsWith('__reactFiber$'));
+        let fiber=fiberKey?candidate[fiberKey]:null;
+        for(let depth=0;fiber&&depth<12;depth+=1,fiber=fiber.return){
+          const fields=fiber.memoizedProps?.fields;
+          if(fields&&typeof fields==='object'&&fields.offerId!=null&&fields.skuId!=null)return fields;
+        }
+      }
+      return null;
+    };
+    const quantities={};
+    if(isCartPage&&(oldLoaded||modernLoaded)){
+      for(const target of targets){
+        if(oldLoaded){
+          const groups=[...document.querySelectorAll('[class*=groupRoot]')];
+          const matchingGroups=groups.filter((group)=>[...group.querySelectorAll('a[href*="detail.1688.com/offer/"]')].some((link)=>new URL(link.href).pathname==='/offer/'+target.productId+'.html'));
+          const rows=matchingGroups.flatMap((group)=>[...group.querySelectorAll('[class*=item--container]')]).filter((row)=>{const fields=readItemFields(row);return fields&&String(fields.offerId)===target.productId&&String(fields.skuId)===target.skuId});
+          quantities[target.key]=rows.map((row)=>Number(readItemFields(row)?.quantity??row.querySelector('[class*=quantityWrapper] input')?.value??NaN)).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
+          continue;
+        }
+        const rows=[...modernRoot.querySelectorAll('[class*=item--container--]')].filter((row)=>String(row.className).split(' ').some((name)=>name.startsWith('item--container--')));
+        const matchingRows=rows.filter((row)=>{
+          const fields=readItemFields(row);
+          return Boolean(fields&&String(fields.offerId)===target.productId&&String(fields.skuId)===target.skuId);
+        });
+        quantities[target.key]=matchingRows.map((row)=>{
+          const picker=row.querySelector('[class*=numberPicker]');
+          const input=picker?.querySelector('input:not([type=checkbox])');
+          const itemQuantity=Number(readItemFields(row)?.quantity??NaN);
+          const value=input?.value??picker?.getAttribute('aria-valuenow')??itemQuantity;
+          return Number(value);
+        }).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
+      }
+    }
+    return {loaded:isCartPage&&(oldLoaded||modernLoaded),quantities};
+  })()`;
 }
 
 function parseRecords(output: string): Array<Record<string, unknown>> {
@@ -587,9 +671,10 @@ export class StockPrepService {
     return batch ? this.getBatch(batch.id) : null;
   }
 
+  /** Resets operator-selected terminal cart states without changing the actual 1688 cart. */
   public resetOrders(storeId: string, keys: Array<{ postingNumber: string; offerId: string }>): number {
     const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='pending',batch_id=NULL,error=NULL,updated_at_ms=?
-      WHERE store_id=? AND posting_number=? AND offer_id=? AND state IN ('added','failed')`);
+      WHERE store_id=? AND posting_number=? AND offer_id=? AND state IN ('added','failed','uncertain')`);
     let count = 0;
     this.database.transaction(() => { for (const key of keys) count += update.run(Date.now(), storeId, key.postingNumber, key.offerId).changes; })();
     return count;
@@ -621,13 +706,15 @@ export class StockPrepService {
       FROM postings p JOIN posting_items pi ON pi.posting_id=p.id
       LEFT JOIN stock_prep_order_states states ON states.store_id=p.store_id AND states.posting_number=p.posting_number AND states.offer_id=pi.offer_id
       WHERE p.store_id=? AND p.fulfillment_mode IN ('FBS','RFBS') AND p.cancelled_at_ms IS NULL
-        AND p.status IN ('awaiting_packaging','awaiting_deliver')
+        AND p.status IN ('awaiting_packaging','awaiting_registration','awaiting_deliver')
       GROUP BY p.posting_number ORDER BY CASE
         WHEN p.status='awaiting_packaging' AND COUNT(DISTINCT CASE WHEN states.state='added' THEN pi.offer_id END)=COUNT(DISTINCT pi.offer_id) THEN 0
       WHEN p.status='awaiting_packaging' THEN 1 ELSE 2 END,p.shipment_deadline_at_ms`).all(storeId) as Array<Record<string, unknown>>;
     return rows.map((posting) => {
       let prepare_block_reason: string | null = null;
-      if (posting.status !== "awaiting_packaging") prepare_block_reason = "Ozon状态已变化，请刷新订单";
+      if (posting.status === "awaiting_registration") prepare_block_reason = "已提交备货，等待 Ozon 登记";
+      else if (posting.status === "awaiting_deliver") prepare_block_reason = "已完成备货，等待发运";
+      else if (posting.status !== "awaiting_packaging") prepare_block_reason = "该发货单已进入后续流程";
       else if (Number(posting.sku_count) !== 1) prepare_block_reason = "多SKU订单，请到Ozon后台人工备货";
       else if (Number(posting.piece_count) !== 1) prepare_block_reason = "多件订单，请到Ozon后台人工备货";
       else if (Number(posting.added_sku_count) !== 1) prepare_block_reason = "商品尚未标记已加购";
@@ -714,30 +801,35 @@ export class StockPrepService {
     let cartMutationStarted = false;
     try {
       const items = this.database.prepare("SELECT * FROM stock_prep_batch_items WHERE batch_id=? ORDER BY created_at_ms").all(batchId) as StockPrepBatchItemRow[];
-      const targets: ResolvedSkuTarget[] = [];
+      const cartTargets: CartSkuTarget[] = [];
       for (const item of items) {
-        try {
-          targets.push(await this.resolveSkuTarget(session, item));
-        } catch (error) {
-          this.finishBatchItem(batchId, storeId, item, "failed", error instanceof Error ? error.message : "1688 SKU 解析失败");
-        }
+        const productId = extractOfferId(item.offer_url);
+        if (productId) cartTargets.push({ ...item, productId, cartKey: `${productId}\u0000${item.sku_id}` });
+        else this.finishBatchItem(batchId, storeId, item, "failed", "1688 商品链接格式无效");
       }
-
-      const before = targets.length ? await this.cartQuantitiesByMode(session, targets) : new Map<string, CartModeQuantities>();
+      const before = cartTargets.length ? await this.cartQuantitiesByMode(session, cartTargets) : new Map<string, CartModeQuantities>();
       const attempted: ResolvedSkuTarget[] = [];
-      for (const target of targets) {
+      const productGroups = new Map<string, CartSkuTarget[]>();
+      for (const target of cartTargets) productGroups.set(target.productId, [...(productGroups.get(target.productId) ?? []), target]);
+      for (const group of productGroups.values()) {
+        let targets: ResolvedSkuTarget[] = [];
         try {
-          await this.addResolvedSku(session, target);
-          attempted.push(target);
-          cartMutationStarted = true;
+          const resolved = await this.resolveProductTargets(session, group);
+          targets = resolved.targets;
+          for (const failure of resolved.failures) this.finishBatchItem(batchId, storeId, failure.item, "failed", failure.error);
+          if (!targets.length) continue;
+          const prepared = await this.addResolvedSkuGroup(session, targets);
+          for (const failure of prepared.failures) this.finishBatchItem(batchId, storeId, failure.item, "failed", failure.error);
+          attempted.push(...prepared.attempted);
+          cartMutationStarted ||= prepared.clickStarted;
         } catch (error) {
           const uncertain = error instanceof Error && error.message.startsWith("UNCERTAIN:");
           const message = error instanceof Error ? error.message.replace(/^UNCERTAIN:/u, "") : "1688 加购失败";
           if (uncertain) {
-            attempted.push(target);
+            attempted.push(...targets);
             cartMutationStarted = true;
           }
-          else this.finishBatchItem(batchId, storeId, target, "failed", message);
+          else for (const target of targets.length ? targets : group) this.finishBatchItem(batchId, storeId, target, "failed", message);
         }
       }
 
@@ -747,10 +839,10 @@ export class StockPrepService {
         group.push(target);
         attemptedByCartKey.set(target.cartKey, group);
       }
-      const expectedMinimums = new Map([...attemptedByCartKey].map(([cartKey, group]) => [
-        cartKey,
-        (before.get(cartKey)?.[group[0]!.dropship ? "dropship" : "wholesale"] ?? 0) + group.reduce((sum, target) => sum + target.quantity, 0),
-      ]));
+      const expectedMinimums = new Map<string, CartMinimum>([...attemptedByCartKey].map(([cartKey, group]) => {
+        const mode = group[0]!.dropship ? "dropship" : "wholesale";
+        return [cartKey, { mode, quantity: (before.get(cartKey)?.[mode] ?? 0) + group.reduce((sum, target) => sum + target.quantity, 0) }] as const;
+      }));
       const after: Map<string, CartModeQuantities> = attempted.length ? await this.cartQuantitiesByMode(session, attempted, expectedMinimums) : new Map();
       for (const [cartKey, group] of attemptedByCartKey) {
         const dropship = group[0]!.dropship;
@@ -783,147 +875,201 @@ export class StockPrepService {
     }
   }
 
-  private async resolveSkuTarget(session: string, item: StockPrepBatchItemRow): Promise<ResolvedSkuTarget> {
-    const productId = extractOfferId(item.offer_url);
-    if (!productId) throw new Error("1688 商品链接格式无效");
+  /** Opens one offer page and resolves all requested SKU IDs from the page's authoritative SKU map. */
+  private async resolveProductTargets(session: string, items: CartSkuTarget[]): Promise<{ targets: ResolvedSkuTarget[]; failures: TargetFailure[] }> {
+    const productId = items[0]?.productId;
+    if (!productId || items.some((item) => item.productId !== productId)) throw new Error("同组商品的 1688 商品 ID 不一致");
     const pageUrl = `https://detail.1688.com/offer/${productId}.html`;
     await this.runBrowser(session, ["open", pageUrl]);
-    const detail = parseCli<{ url: string; skuId: string | null; attributes: string[]; supplierName: string }>(await this.runBrowser(session, ["eval", String.raw`(() => {
-      const desiredSkuId=${JSON.stringify(item.sku_id)};
+    const skuIds = items.map((item) => item.sku_id);
+    const detail = parseCli<{ url: string; supplierName: string; skus: Array<{ skuId: string; attributes: string[]; availableQuantity: number | null }> }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+      const desiredSkuIds=${JSON.stringify(skuIds)};
       const decode=(value)=>{const node=document.createElement('textarea');node.innerHTML=String(value??'');return node.value.trim()};
       const scripts=[...document.scripts].map((node)=>node.textContent||'').join('\n');
       const matches=scripts.match(/\{[^{}]*"skuId"\s*:\s*"?\d+"?[^{}]*\}/g)||[];
-      const sku=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).find((value)=>value&&String(value.skuId)===desiredSkuId);
+      const records=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).filter(Boolean);
       const normalizedScripts=scripts.replaceAll(String.fromCharCode(92)+'"','"');
       const supplierNames=[...new Set([...normalizedScripts.matchAll(/"companyName"\s*:\s*"([^"]+)"/gu)].map((match)=>match[1]?.trim()).filter(Boolean))];
-      const supplierName=supplierNames.length===1?supplierNames[0]:'';
-      if(!sku)return {url:location.href,skuId:null,attributes:[],supplierName};
-      const explicit=[sku.sku1,sku.sku2].map(decode).filter(Boolean);
-      const specAttrs=decode(sku.specAttrs).split(/\s*>\s*/u).map((value)=>value.trim()).filter(Boolean);
-      return {url:location.href,skuId:String(sku.skuId),attributes:explicit.length>=2?explicit:specAttrs,supplierName};
+      const skus=desiredSkuIds.flatMap((desiredSkuId)=>{
+        const sku=records.find((value)=>String(value.skuId)===desiredSkuId);
+        if(!sku)return [];
+        const explicit=[sku.sku1,sku.sku2].map(decode).filter(Boolean);
+        const specAttrs=decode(sku.specAttrs).split(/\s*>\s*/u).map((value)=>value.trim()).filter(Boolean);
+        const available=sku.canBookCount;
+        const availableQuantity=available==null||available===''||!Number.isFinite(Number(available))?null:Number(available);
+        return [{skuId:String(sku.skuId),attributes:explicit.length>=2?explicit:specAttrs,availableQuantity}];
+      });
+      return {url:location.href,supplierName:supplierNames.length===1?supplierNames[0]:'',skus};
     })()`]));
     if (detail.url !== pageUrl) throw new Error(`1688 商品页地址不匹配，目标商品 ${productId} 未能打开`);
-    if (detail.skuId !== item.sku_id) throw new Error(`未匹配到 SKU：商品页不存在 SKU ID ${item.sku_id}，请检查飞书映射`);
     if (!detail.supplierName) throw new Error("无法识别 1688 供应商名称，已阻止加购");
-    if (detail.attributes.length < 2 || detail.attributes.some((value) => !value.trim())) throw new Error(`SKU ${item.sku_id} 的颜色或尺码规格信息不完整，请检查商品页面`);
-    const attributes = detail.attributes.map((value) => value.trim());
     const dropship = this.getDropshipSuppliers().some((name) => name.localeCompare(detail.supplierName, undefined, { sensitivity: "base" }) === 0);
-    return { ...item, productId, attributes, supplierName: detail.supplierName, dropship, cartKey: `${productId}\u0000${attributes.join("\u0000")}` };
+    const resolvedBySku = new Map(detail.skus.map((sku) => [sku.skuId, sku]));
+    const targets: ResolvedSkuTarget[] = [];
+    const failures: TargetFailure[] = [];
+    for (const item of items) {
+      const sku = resolvedBySku.get(item.sku_id);
+      if (!sku) {
+        failures.push({ item, error: `未匹配到 SKU：商品页不存在 SKU ID ${item.sku_id}，请检查飞书映射` });
+        continue;
+      }
+      const attributes = sku.attributes.map((value) => value.trim()).filter(Boolean);
+      if (attributes.length < 2) {
+        failures.push({ item, error: `SKU ${item.sku_id} 的颜色或尺码规格信息不完整，请检查商品页面` });
+        continue;
+      }
+      if (sku.availableQuantity !== null && sku.availableQuantity < item.quantity) {
+        failures.push({ item, error: `库存不足：SKU ${item.sku_id} 可订购 ${sku.availableQuantity} 件，需要 ${item.quantity} 件` });
+        continue;
+      }
+      targets.push({ ...item, attributes, supplierName: detail.supplierName, dropship, availableQuantity: sku.availableQuantity });
+    }
+    return { targets, failures };
   }
 
-  private async addResolvedSku(session: string, target: ResolvedSkuTarget): Promise<void> {
-    const pageUrl = `https://detail.1688.com/offer/${target.productId}.html`;
-    const [color, size] = target.attributes;
+  /**
+   * Submits each SKU independently so a late React input update cannot make one
+   * specification disappear from a grouped cart request.
+   */
+  private async addResolvedSkuGroup(session: string, targets: ResolvedSkuTarget[]): Promise<PreparedSkuGroup> {
+    const dropship = targets[0]?.dropship ?? false;
+    if (!targets.length || targets.some((target) => target.productId !== targets[0]!.productId || target.dropship !== dropship)) {
+      throw new Error("同组商品的加购路径不一致");
+    }
+    if (targets.length > 1) return this.addResolvedSkusIndividually(session, targets);
+
+    for (const target of targets) {
+      this.database.prepare("UPDATE stock_prep_batch_items SET status='running',updated_at_ms=? WHERE id=? AND status='queued'").run(Date.now(), target.id);
+    }
+    let frameIndex: number | null = null;
+    if (dropship) {
+      const opened = parseCli<{ clicked: boolean; count: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+        const buttons=[...document.querySelectorAll('button[data-click="DX_ORDER"]')].filter((button)=>button.innerText?.trim()==='代发下单'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
+        if(buttons.length!==1)return {clicked:false,count:buttons.length};buttons[0].click();return {clicked:true,count:1};
+      })()`]));
+      if (!opened.clicked || opened.count !== 1) throw new Error(`“代发下单”入口无法唯一确认（匹配 ${opened.count} 个）`);
+      frameIndex = await this.findDropshipSkuFrame(session);
+    }
+
+    const attempted: ResolvedSkuTarget[] = [];
+    const failures: TargetFailure[] = [];
+    for (const target of targets) {
+      try {
+        await this.fillResolvedSku(session, target, frameIndex);
+        attempted.push(target);
+      } catch (error) {
+        failures.push({ item: target, error: error instanceof Error ? error.message : `SKU ${target.sku_id} 数量填写失败` });
+      }
+    }
+    if (!attempted.length) return { attempted, failures, clickStarted: false };
+
     let clickStarted = false;
     try {
-      this.database.prepare("UPDATE stock_prep_batch_items SET status='running',updated_at_ms=? WHERE id=? AND status='queued'").run(Date.now(), target.id);
-      await this.runBrowser(session, ["open", pageUrl]);
-      if (target.dropship) {
-        const opened = parseCli<{ clicked: boolean; count: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
-          const buttons=[...document.querySelectorAll('button[data-click="DX_ORDER"]')].filter((button)=>button.innerText?.trim()==='代发下单'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
-          if(buttons.length!==1)return {clicked:false,count:buttons.length};buttons[0].click();return {clicked:true,count:1};
-        })()`]));
-        if (!opened.clicked || opened.count !== 1) throw new Error(`“代发下单”入口无法唯一确认（匹配 ${opened.count} 个）`);
-        const frameIndex = await this.findDropshipSkuFrame(session);
+      if (dropship) {
         const frameArgs = (script: string): string[] => ["eval", script, "--frame", String(frameIndex)];
-        const colorResult = parseCli<{ found: boolean; active: boolean }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
-          const target=${JSON.stringify(color)};const button=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>(node.querySelector('.label-name')||node).textContent?.trim()===target);
-          if(!button)return {found:false,active:false};if(!button.classList.contains('active'))button.click();return {found:true,active:button.classList.contains('active')};
-        })()`)));
-        if (!colorResult.found) throw new Error(`未匹配到颜色规格：代发弹层中不存在“${color}”`);
-        if (!colorResult.active) throw new Error(`颜色规格选择失败：代发弹层未能选中“${color}”`);
-        await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
-        const filled = parseCli<{ color: string | null; size: string; visibleSizes: string[]; filled: boolean; actual: string }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
-          const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};const quantity=${target.quantity};
-          const active=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>node.classList.contains('active'));
-          const activeColor=(active?.querySelector('.label-name')||active)?.textContent?.trim()||null;
-          const normalizeSize=(value)=>String(value??'').trim().split(/体重/u)[0].trim();
-          const rows=[...document.querySelectorAll('.expand-view-item')];
-          const row=rows.find((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)===expectedSize);
-          const input=row?.querySelector('input.ant-input-number-input');if(!input)return {color:activeColor,size:'',visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),filled:false,actual:''};
-          const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(!setter)return {color:activeColor,size:expectedSize,visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),filled:false,actual:input.value};
-          setter.call(input,String(quantity));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:String(quantity)}));input.dispatchEvent(new Event('change',{bubbles:true}));input.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
-          return {color:activeColor,size:expectedSize,visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),filled:true,actual:input.value};
-        })()`)));
-        if (filled.color !== color) throw new Error(`颜色规格校验失败：预期“${color}”，页面当前为“${filled.color ?? "未选择"}”`);
-        if (filled.size !== size) throw new Error(`未匹配到可购买尺码“${size}”；页面可选尺码：${filled.visibleSizes?.join("、") || "无"}`);
-        if (!filled.filled) throw new Error(`数量输入失败：尺码“${size}”没有可用数量输入框`);
-        if (Number(filled.actual) !== target.quantity) throw new Error(`数量校验失败：目标 SKU ${target.sku_id} 需要 ${target.quantity} 件，页面实际为 ${filled.actual || "空"}`);
-        await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(750);
-        const prepared = parseCli<{ buttonCount: number; colorActive: boolean; sizeFound: boolean; actual: string }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
-          const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};
-          const colorButton=[...document.querySelectorAll('button.sku-filter-button')].find((node)=>(node.querySelector('.label-name')||node).textContent?.trim()===expectedColor);
-          const normalizeSize=(value)=>String(value??'').trim().split(/体重/u)[0].trim();
-          const row=[...document.querySelectorAll('.expand-view-item')].find((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)===expectedSize);
+        const prepared = parseCli<{ buttonCount: number }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
           const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
-          return {buttonCount:buttons.length,colorActive:Boolean(colorButton?.classList.contains('active')),sizeFound:Boolean(row),actual:row?.querySelector('input.ant-input-number-input')?.value??''};
+          return {buttonCount:buttons.length};
         })()`)));
         if (prepared.buttonCount !== 1) throw new Error(`加购按钮定位失败：代发弹层中找到 ${prepared.buttonCount} 个“加采购车”按钮`);
-        if (!prepared.colorActive) throw new Error(`颜色规格校验失败：提交前“${color}”未处于选中状态`);
-        if (!prepared.sizeFound) throw new Error(`尺码规格校验失败：提交前未找到“${size}”`);
-        if (Number(prepared.actual) !== target.quantity) throw new Error(`数量校验失败：目标 SKU ${target.sku_id} 需要 ${target.quantity} 件，页面实际为 ${prepared.actual || "空"}`);
         clickStarted = true;
         const click = parseCli<{ clicked: boolean; count: number }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
           const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
           if(buttons.length!==1)return {clicked:false,count:buttons.length};buttons[0].click();return {clicked:true,count:1};
         })()`)));
         if (!click.clicked || click.count !== 1) throw new Error(`代发弹层“加采购车”按钮无法唯一确认（匹配 ${click.count} 个）`);
-        return;
+      } else {
+        const prepared = parseCli<{ buttonCount: number; visible: boolean }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+          const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
+          if(buttons.length!==1)return {buttonCount:buttons.length,visible:false};
+          const button=buttons[0];button.scrollIntoView({block:'center',behavior:'instant'});const rect=button.getBoundingClientRect();
+          return {buttonCount:1,visible:rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=window.innerHeight&&rect.left>=0&&rect.right<=window.innerWidth};
+        })()`]));
+        if (prepared.buttonCount !== 1) throw new Error(`加购按钮定位失败：商品页中找到 ${prepared.buttonCount} 个“加采购车”按钮`);
+        if (!prepared.visible) throw new Error("加购按钮不可见：已尝试滚动，按钮仍未进入可视区域");
+        clickStarted = true;
+        const click = parseCli<{ clicked: boolean; count: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
+          const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
+          if(buttons.length!==1)return {clicked:false,count:buttons.length};buttons[0].click();return {clicked:true,count:1};
+        })()`]));
+        if (!click.clicked || click.count !== 1) throw new Error(`商品页“加采购车”按钮无法唯一确认（匹配 ${click.count} 个）`);
       }
-      const colorResult = parseCli<{ found: boolean }>(await this.runBrowser(session, ["eval", String.raw`(() => {
-        const target=${JSON.stringify(color)};const exact=(value)=>value?.textContent?.trim()===target;
-        const button=[...document.querySelectorAll('.sku-filter-button')].find((node)=>exact(node.querySelector('.label-name')||node));
-        if(!button)return {found:false};if(!button.classList.contains('active'))button.click();return {found:true};
-      })()`]));
-      if (!colorResult.found) throw new Error(`未匹配到颜色规格：商品页没有“${color}”`);
-      await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
-      const selected = parseCli<{ url: string; color: string | null; size: string; skuId: string | null; attributes: string[]; availableQuantity: number | null; visibleSizes: string[]; inputIndex: number }>(await this.runBrowser(session, ["eval", String.raw`(() => {
-        const expectedColor=${JSON.stringify(color)};const expectedSize=${JSON.stringify(size)};
-        const desiredSkuId=${JSON.stringify(target.sku_id)};
-        const active=[...document.querySelectorAll('.sku-filter-button')].find((node)=>node.classList.contains('active'));
-        const activeColor=(active?.querySelector('.label-name')||active)?.textContent?.trim()||null;
-        const normalizeSize=(value)=>String(value??'').trim().split(/体重/u)[0].trim();
-        const rows=[...document.querySelectorAll('.expand-view-item')];
-        const row=rows.find((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)===expectedSize);
-        const input=row?.querySelector('input.ant-input-number-input');
-        const decode=(value)=>{const node=document.createElement('textarea');node.innerHTML=String(value??'');return node.value.trim()};
-        const scripts=[...document.scripts].map((node)=>node.textContent||'').join('\n');
-        const matches=scripts.match(/\{[^{}]*"skuId"\s*:\s*"?\d+"?[^{}]*\}/g)||[];
-        const sku=matches.map((text)=>{try{return JSON.parse(text)}catch{return null}}).find((value)=>value&&String(value.skuId)===desiredSkuId);
-        const explicit=sku?[sku.sku1,sku.sku2].map(decode).filter(Boolean):[];
-        const attributes=explicit.length>=2?explicit:sku?decode(sku.specAttrs).split(/\s*>\s*/u).map((part)=>part.trim()).filter(Boolean):[];
-        const available=sku?.canBookCount;
-        const availableQuantity=available==null||available===''||!Number.isFinite(Number(available))?null:Number(available);
-        return {url:location.href,color:activeColor,size:row?normalizeSize((row.querySelector('.item-label')||row).textContent):'',skuId:sku?String(sku.skuId):null,attributes,availableQuantity,visibleSizes:rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)),inputIndex:input?[...document.querySelectorAll('input.ant-input-number-input')].indexOf(input):-1};
-      })()`]));
-      if (selected.url !== pageUrl) throw new Error(`商品页校验失败：目标商品 ${target.productId} 未能打开`);
-      if (selected.skuId !== target.sku_id) throw new Error(`未匹配到 SKU：商品页没有 SKU ID ${target.sku_id}，请检查飞书映射`);
-      if (selected.attributes.length !== target.attributes.length || selected.attributes.some((value, index) => value !== target.attributes[index])) throw new Error(`SKU 规格映射不一致：SKU ${target.sku_id} 页面规格为“${selected.attributes.join(" / ") || "未知"}”，映射规格为“${target.attributes.join(" / ") || "未知"}”`);
-      if (selected.availableQuantity !== null && selected.availableQuantity < target.quantity) throw new Error(`库存不足：SKU ${target.sku_id} 可订购 ${selected.availableQuantity} 件，需要 ${target.quantity} 件`);
-      if (selected.color !== color) throw new Error(`颜色规格选择失败：预期“${color}”，页面当前为“${selected.color ?? "未选择"}”`);
-      if (selected.size !== size) throw new Error(`未匹配到可购买尺码“${size}”；页面可选尺码：${selected.visibleSizes.join("、") || "无"}`);
-      if (selected.inputIndex < 0) throw new Error(`数量输入框未找到：SKU ${target.sku_id} 的规格“${color} / ${size}”不可输入`);
-      const filled = parseCli<{ filled: boolean; verified: boolean; actual: string }>(await this.runBrowser(session, ["fill", "--nth", String(selected.inputIndex), "input.ant-input-number-input", String(target.quantity)]));
-      if (!filled.filled || !filled.verified) throw new Error(`数量输入失败：SKU ${target.sku_id} 的输入框未能写入`);
-      if (Number(filled.actual) !== target.quantity) throw new Error(`数量校验失败：目标 SKU ${target.sku_id} 需要 ${target.quantity} 件，页面实际为 ${filled.actual || "空"}`);
-      // The fixed footer button can sit below the OpenCLI viewport until it is scrolled into view.
-      const prepared = parseCli<{ buttonCount: number; visible: boolean }>(await this.runBrowser(session, ["eval", String.raw`(() => {
-        const buttons=[...document.querySelectorAll('button')].filter((button)=>button.innerText?.trim()==='加采购车'&&!button.disabled&&(button.offsetWidth||button.offsetHeight||button.getClientRects().length));
-        if(buttons.length!==1)return {buttonCount:buttons.length,visible:false};
-        const button=buttons[0];button.scrollIntoView({block:'center',behavior:'instant'});
-        const rect=button.getBoundingClientRect();
-        return {buttonCount:1,visible:rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=window.innerHeight&&rect.left>=0&&rect.right<=window.innerWidth};
-      })()`]));
-      if (prepared.buttonCount !== 1) throw new Error(`加购按钮定位失败：商品页中找到 ${prepared.buttonCount} 个“加采购车”按钮`);
-      if (!prepared.visible) throw new Error("加购按钮不可见：已尝试滚动，按钮仍未进入可视区域");
-      await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(150);
-      clickStarted = true;
-      const click = parseCli<{ clicked: boolean }>(await this.runBrowser(session, ["click", "--role", "button", "--name", "加采购车"]));
-      if (!click.clicked) { clickStarted = false; throw new Error("加采购车按钮未匹配或未执行"); }
+      return { attempted, failures, clickStarted };
     } catch (error) {
-      if (error instanceof Error && clickStarted && !error.message.startsWith("UNCERTAIN:")) throw new Error(`UNCERTAIN:${error.message}`);
+      if (clickStarted && error instanceof Error && !error.message.startsWith("UNCERTAIN:")) throw new Error(`UNCERTAIN:${error.message}`);
       throw error;
     }
+  }
+
+  /** Reloads the offer between SKU submissions to keep every click isolated and idempotent. */
+  private async addResolvedSkusIndividually(session: string, targets: ResolvedSkuTarget[]): Promise<PreparedSkuGroup> {
+    const attempted: ResolvedSkuTarget[] = [];
+    const failures: TargetFailure[] = [];
+    let clickStarted = false;
+
+    for (const [index, target] of targets.entries()) {
+      try {
+        if (index > 0) await this.runBrowser(session, ["open", `https://detail.1688.com/offer/${target.productId}.html`]);
+        const prepared = await this.addResolvedSkuGroup(session, [target]);
+        attempted.push(...prepared.attempted);
+        failures.push(...prepared.failures);
+        clickStarted ||= prepared.clickStarted;
+      } catch (error) {
+        const uncertain = error instanceof Error && error.message.startsWith("UNCERTAIN:");
+        if (uncertain) {
+          attempted.push(target);
+          clickStarted = true;
+          continue;
+        }
+        failures.push({ item: target, error: error instanceof Error ? error.message : `SKU ${target.sku_id} 加购失败` });
+      }
+    }
+
+    return { attempted, failures, clickStarted };
+  }
+
+  /** Selects one resolved specification and changes quantity through 1688's own React controls. */
+  private async fillResolvedSku(session: string, target: ResolvedSkuTarget, frameIndex: number | null): Promise<void> {
+    const [color, size] = target.attributes;
+    const frameArgs = (script: string): string[] => frameIndex === null ? ["eval", script] : ["eval", script, "--frame", String(frameIndex)];
+    const colorResult = parseCli<{ found: boolean; active: boolean }>(await this.runBrowser(session, frameArgs(String.raw`(() => {
+      const target=${JSON.stringify(color)};
+      const buttons=[...document.querySelectorAll(${JSON.stringify(frameIndex === null ? ".sku-filter-button" : "button.sku-filter-button")})];
+      const button=buttons.find((node)=>(node.querySelector('.label-name')||node).textContent?.trim()===target);
+      if(!button)return {found:false,active:false};if(!button.classList.contains('active'))button.click();return {found:true,active:true};
+    })()`)));
+    if (!colorResult.found) throw new Error(`未匹配到颜色规格：页面中不存在“${color}”（SKU ${target.sku_id}）`);
+    await (this.runtime.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(250);
+    const adjusted = parseCli<{ sizeFound: boolean; visibleSizes: string[]; inputFound: boolean; actual: number; verified: boolean }>(await this.runBrowser(session, frameArgs(String.raw`(async() => {
+      const expectedSkuId=${JSON.stringify(target.sku_id)};const expectedSize=${JSON.stringify(size)};const targetQuantity=${target.quantity};
+      const normalizeSize=(value)=>String(value??'').trim().split(/体重/u)[0].trim();
+      const rows=[...document.querySelectorAll('.expand-view-item')];
+      const row=rows.find((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)===normalizeSize(expectedSize));
+      const input=row?.querySelector('input.ant-input-number-input');
+      const visibleSizes=rows.map((node)=>normalizeSize((node.querySelector('.item-label')||node).textContent)).filter(Boolean);
+      if(!row||!input)return {sizeFound:Boolean(row),visibleSizes,inputFound:Boolean(input),actual:0,verified:false};
+      const readQuantity=()=>Number(input.value||0);
+      const wait=()=>new Promise((resolve)=>setTimeout(resolve,100));
+      let actual=readQuantity();
+      for(let step=0;actual>targetQuantity&&step<actual+2;step+=1){
+        const minus=row.querySelector('[aria-label="minus"]:not(.disabled)');
+        if(!minus)break;
+        minus.click();
+        await wait();
+        actual=readQuantity();
+      }
+      for(let step=0;actual<targetQuantity&&step<targetQuantity+2;step+=1){
+        const plus=row.querySelector('[aria-label="plus"]:not(.disabled)');
+        if(!plus)break;
+        plus.click();
+        await wait();
+        actual=readQuantity();
+      }
+      return {sizeFound:true,visibleSizes,inputFound:true,actual,verified:actual===targetQuantity,expectedSkuId};
+    })()`)));
+    if (!adjusted.sizeFound) throw new Error(`未匹配到可购买尺码“${size}”（SKU ${target.sku_id}）；页面可选尺码：${adjusted.visibleSizes.join("、") || "无"}`);
+    if (!adjusted.inputFound) throw new Error(`数量输入框未找到：SKU ${target.sku_id} 的规格“${color} / ${size}”不可输入`);
+    if (!adjusted.verified) throw new Error(`数量设置失败：目标 SKU ${target.sku_id} 需要 ${target.quantity} 件，页面实际为 ${adjusted.actual} 件`);
   }
 
   /** Waits for the cross-origin 1688 dropship SKU drawer created by the product page. */
@@ -937,12 +1083,11 @@ export class StockPrepService {
     throw new Error("1688 代发规格 iframe 未打开");
   }
 
-  private async cartQuantitiesByMode(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>()): Promise<Map<string, CartModeQuantities>> {
+  private async cartQuantitiesByMode(session: string, targets: CartSkuTarget[], minimums = new Map<string, CartMinimum>()): Promise<Map<string, CartModeQuantities>> {
     const result = new Map(targets.map((target) => [target.cartKey, { wholesale: 0, dropship: 0 }]));
-    const modes = new Set(targets.flatMap((target) => target.dropship ? [false, true] : [false]));
-    for (const dropship of modes) {
+    for (const dropship of [false, true]) {
       const mode = dropship ? "dropship" : "wholesale";
-      const modeMinimums = new Map([...minimums].filter(([key]) => targets.some((target) => target.cartKey === key && target.dropship === dropship)));
+      const modeMinimums = new Map([...minimums].filter(([, minimum]) => minimum.mode === mode).map(([key, minimum]) => [key, minimum.quantity]));
       const quantities = await this.cartQuantities(session, targets, modeMinimums, dropship);
       for (const [key, quantity] of quantities) result.get(key)![mode] = quantity;
     }
@@ -950,7 +1095,7 @@ export class StockPrepService {
   }
 
   /** Reads matching SKU quantities from either the legacy or the current 1688 cart layout. */
-  private async cartQuantities(session: string, targets: ResolvedSkuTarget[], minimums = new Map<string, number>(), dropship = false): Promise<Map<string, number>> {
+  private async cartQuantities(session: string, targets: CartSkuTarget[], minimums = new Map<string, number>(), dropship = false): Promise<Map<string, number>> {
     await this.runBrowser(session, ["open", dropship ? "https://cart.1688.com/daixiao_cart.htm" : "https://cart.1688.com/cart.htm"]);
     const scrollSelector = String.raw`(() => {
       const candidates=[document.scrollingElement,...document.querySelectorAll('main,section,div')].filter((node,index,all)=>{
@@ -975,60 +1120,8 @@ export class StockPrepService {
       window.scrollTo(0,0);
       return {reset:true};
     })()`]);
-    const serialized = targets.map((target) => ({ key: target.cartKey, productId: target.productId, attributes: target.attributes }));
-    const selector = String.raw`(() => {
-      const targets=${JSON.stringify(serialized)};
-      const normalize=(value)=>String(value??'').split(/\s*(?:;|；|>)\s*/u).map((part)=>part.trim()).filter(Boolean);
-      const expectedPath=${JSON.stringify(dropship ? "/daixiao_cart.htm" : "/cart.htm")};
-      const isCartPage=location.hostname==='cart.1688.com'&&location.pathname===expectedPath;
-      const oldRoot=document.querySelector('#cartV2Header');
-      const modernRoot=document.querySelector('[class*=cart--container]');
-      const modernHeader=modernRoot?.querySelector('[class*=header-bar--container]');
-      const modernTabs=[...(modernRoot?.querySelectorAll('[role=tab]')??[])];
-      const expectedTab=${JSON.stringify(dropship ? "分销" : "现货")};
-      const activeModernTab=modernTabs.find((tab)=>tab.getAttribute('aria-selected')==='true'||tab.classList.contains('active'));
-      const activeTabName=activeModernTab?.textContent?.trim().replace(/\s*\(\d+\)$/u,'')??'';
-      const modernModeMatches=modernTabs.length===0||activeTabName===expectedTab;
-      const modernLoaded=Boolean(modernRoot&&modernHeader&&modernModeMatches);
-      const oldLoaded=Boolean(oldRoot);
-      const readItemFields=(row)=>{
-        const fiberKey=Object.keys(row).find((key)=>key.startsWith('__reactFiber$'));
-        let fiber=fiberKey?row[fiberKey]:null;
-        for(let depth=0;fiber&&depth<12;depth++,fiber=fiber.return){
-          const fields=fiber.memoizedProps?.fields;
-          if(fields&&typeof fields==='object'&&fields.offerId!=null&&fields.skuId!=null&&fields.skuTitle!=null)return fields;
-        }
-        return null;
-      };
-      const quantities={};
-      if(isCartPage&&(oldLoaded||modernLoaded)){
-        for(const target of targets){
-          if(oldLoaded){
-            const groups=[...document.querySelectorAll('[class*=groupRoot]')];
-            const matchingGroups=groups.filter((group)=>[...group.querySelectorAll('a[href*="detail.1688.com/offer/"]')].some((link)=>new URL(link.href).pathname==='/offer/'+target.productId+'.html'));
-            const rows=matchingGroups.flatMap((group)=>[...group.querySelectorAll('[class*=item--container]')]).filter((row)=>{const labels=normalize([...row.querySelectorAll('[class*=skuTitle]')].map((node)=>node.textContent?.trim()??'').join(';'));return labels.length===target.attributes.length&&labels.every((label,index)=>label===target.attributes[index])});
-            quantities[target.key]=rows.map((row)=>Number(row.querySelector('[class*=quantityWrapper] input')?.value??NaN)).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
-            continue;
-          }
-          const rows=[...modernRoot.querySelectorAll('[class*=item--container--]')].filter((row)=>String(row.className).split(' ').some((name)=>name.startsWith('item--container--')));
-          const matchingRows=rows.filter((row)=>{
-            // New cart rows omit offer links; read the rendered Item component fields attached to the row.
-            const fields=readItemFields(row);
-            if(!fields||String(fields.offerId)!==target.productId)return false;
-            const labels=normalize(fields.skuTitle);
-            return labels.length===target.attributes.length&&labels.every((label,index)=>label===target.attributes[index]);
-          });
-          quantities[target.key]=matchingRows.map((row)=>{
-            const picker=row.querySelector('[class*=numberPicker]');
-            const input=picker?.querySelector('input:not([type=checkbox])');
-            const itemQuantity=Number(readItemFields(row)?.quantity??NaN);
-            const value=input?.value??picker?.getAttribute('aria-valuenow')??itemQuantity;
-            return Number(value);
-          }).filter(Number.isFinite).reduce((sum,value)=>sum+value,0);
-        }
-      }
-      return {loaded:isCartPage&&(oldLoaded||modernLoaded),quantities};
-    })()`;
+    const serialized = targets.map((target) => ({ key: target.cartKey, productId: target.productId, skuId: target.sku_id }));
+    const selector = buildCartQuantityReaderScript(serialized, dropship);
     let loaded = false;
     let quantities: Record<string, number> = {};
     let stableEndPasses = 0;

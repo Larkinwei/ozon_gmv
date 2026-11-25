@@ -1,20 +1,29 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
+import { createRequire } from "node:module";
 
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AppConfig } from "../config";
 import { SettingsRepository } from "../db/settings-repository";
-import { StockPrepService } from "./stock-prep-service";
+import { buildCartQuantityReaderScript, StockPrepService } from "./stock-prep-service";
 
 const storeId = "5bb97f32-b358-4303-8163-d500a4bcdd54";
 const offerUrl = "https://detail.1688.com/offer/747713283348.html";
 const skuId = "6103279203988";
+const missingSkuId = "9999999999999";
+const outOfStockSkuId = "8888888888888";
 const databases: BetterSqlite3.Database[] = [];
+const require = createRequire(import.meta.url);
+const { JSDOM } = require("jsdom") as {
+  JSDOM: new (html: string, options: { runScripts: "outside-only"; url: string }) => {
+    window: { document: Document; eval: (script: string) => unknown; close: () => void };
+  };
+};
 
-function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId]] as unknown[][], behavior: "success" | "pre-click-failure" | "dropship-button-missing" | "uncertain" | "wrong-cart" = "success", autoApprove = true) {
+function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId]] as unknown[][], behavior: "success" | "pre-click-failure" | "dropship-button-missing" | "uncertain" | "wrong-cart" | "grouped-fill-race" | "react-input-desync" = "success", autoApprove = true) {
   const database = new BetterSqlite3(":memory:");
   databases.push(database);
   database.exec(`
@@ -48,10 +57,17 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
   }
   const appConfig = { ENCRYPTION_KEY: "a".repeat(64) } as AppConfig;
   const cartQuantities = { wholesale: 2, dropship: 0 };
+  const cartQuantitiesByKey = {
+    wholesale: new Map([[`747713283348\u0000${skuId}`, 2]]),
+    dropship: new Map<string, number>(),
+  };
   let currentCart: "wholesale" | "dropship" = "wholesale";
   let cartOpenCount = 0;
+  let detailOpenCount = 0;
   let addClickCount = 0;
   let pendingQuantity = 0;
+  let selectedSkuId = skuId;
+  const pendingQuantities = new Map<string, number>();
   const selectedModes: string[] = [];
   const addActions: string[] = [];
   let dropshipDialog = false;
@@ -67,16 +83,35 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       if (action === "open") {
         if (value === "https://cart.1688.com/cart.htm") { cartOpenCount += 1; currentCart = "wholesale"; }
         if (value === "https://cart.1688.com/daixiao_cart.htm") currentCart = "dropship";
+        if (value?.startsWith("https://detail.1688.com/offer/")) {
+          detailOpenCount += 1;
+          pendingQuantities.clear();
+        }
         return JSON.stringify({ url: value });
       }
       if (action === "eval" && script?.includes("const targets=")) {
-        const serialized = script.match(/const targets=(\[.*?\]);\s*const normalize/su)?.[1];
+        expect(script).toContain("String(fields.skuId)===target.skuId");
+        expect(script).not.toContain("skuTitle");
+        const serialized = script.match(/const targets=(\[.*?\]);/su)?.[1];
         const targets = serialized ? JSON.parse(serialized) as Array<{ key: string }> : [];
-        return JSON.stringify({ loaded: true, quantities: Object.fromEntries(targets.map((target) => [target.key, cartQuantities[currentCart]])) });
+        return JSON.stringify({ loaded: true, quantities: Object.fromEntries(targets.map((target) => [target.key, cartQuantitiesByKey[currentCart].get(target.key) ?? 0])) });
       }
       if (action === "eval" && script?.includes("const candidates=[document.scrollingElement")) return JSON.stringify({ moved: false, scrollers: 1 });
       if (action === "eval" && script?.includes("return {reset:true}")) return JSON.stringify({ reset: true });
-      if (action === "eval" && script?.includes("desiredSkuId")) {
+      if (action === "eval" && script?.includes("desiredSkuIds")) {
+        const desired = script.match(/const desiredSkuIds=(\[[^;]+\]);/u)?.[1];
+        const desiredSkuIds = desired ? JSON.parse(desired) as string[] : [skuId];
+        return JSON.stringify({
+          url: "https://detail.1688.com/offer/747713283348.html",
+          supplierName: "安丘市鑫达尔服装厂",
+          skus: desiredSkuIds.flatMap((desiredSkuId, index) => desiredSkuId === missingSkuId ? [] : [{
+            skuId: desiredSkuId,
+            attributes: index === 0 ? ["蓝底叶子", "XXL"] : ["红底大花", "XL"],
+            availableQuantity: desiredSkuId === outOfStockSkuId ? 0 : null,
+          }]),
+        });
+      }
+      if (action === "eval" && script?.includes("desiredSkuId") && script.includes("specAttrs")) {
         expect(script).toContain("specAttrs");
         if (script.includes("inputIndex")) {
           return JSON.stringify({ url: "https://detail.1688.com/offer/747713283348.html", color: "蓝底叶子", size: "XXL", skuId, attributes: ["蓝底叶子", "XXL"], availableQuantity: null, visibleSizes: ["M", "L", "XL", "XXL"], inputIndex: 3 });
@@ -97,9 +132,20 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       if (action === "eval" && args.includes("--frame") && script?.includes("found:false,active:false")) {
         return JSON.stringify({ found: true, active: true });
       }
-      if (action === "eval" && args.includes("--frame") && script?.includes("HTMLInputElement.prototype")) {
+      if (action === "eval" && args.includes("--frame") && script?.includes("HTMLInputElement.prototype") && script.includes("expectedColor")) {
         pendingQuantity = Number(script.match(/const quantity=(\d+)/u)?.[1] ?? 0);
         return JSON.stringify({ color: "蓝底叶子", size: "XXL", filled: behavior !== "pre-click-failure", actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity) });
+      }
+      if (action === "eval" && args.includes("--frame") && script?.includes("HTMLInputElement.prototype") && script.includes("const expectedSize=")) {
+        pendingQuantity = Number(script.match(/const quantity=(\d+)/u)?.[1] ?? 0);
+        pendingQuantities.set(selectedSkuId, pendingQuantity);
+        return JSON.stringify({ actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity), verified: behavior !== "pre-click-failure" });
+      }
+      if (action === "eval" && script?.includes("const expectedSize=") && script.includes("const write=(value)")) {
+        pendingQuantity = Number(script.match(/const quantity=(\d+)/u)?.[1] ?? 0);
+        const desiredSkuId = script.match(/const desiredSkuId="([^"]+)"/u)?.[1] ?? skuId;
+        pendingQuantities.set(desiredSkuId, pendingQuantity);
+        return JSON.stringify({ sizeFound: true, visibleSizes: ["M", "L", "XL", "XXL"], actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity), verified: behavior !== "pre-click-failure" });
       }
       if (action === "eval" && args.includes("--frame") && script?.includes("buttonCount:buttons.length")) {
         return JSON.stringify({ buttonCount: behavior === "dropship-button-missing" ? 0 : 1, colorActive: true, sizeFound: true, actual: String(pendingQuantity) });
@@ -107,15 +153,52 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
       if (action === "eval" && args.includes("--frame") && script?.includes("buttons[0].click()")) {
         addClickCount += 1;
         addActions.push("弹层加采购车");
-        if (behavior === "success") cartQuantities.dropship += pendingQuantity;
-        if (behavior === "wrong-cart") cartQuantities.wholesale += pendingQuantity;
+        const mode = behavior === "wrong-cart" ? "wholesale" : "dropship";
+        if (behavior === "success" || behavior === "wrong-cart" || behavior === "grouped-fill-race" || behavior === "react-input-desync") {
+          for (const [pendingSkuId, quantity] of pendingQuantities) {
+            const key = `747713283348\u0000${pendingSkuId}`;
+            cartQuantitiesByKey[mode].set(key, (cartQuantitiesByKey[mode].get(key) ?? 0) + quantity);
+            cartQuantities[mode] += quantity;
+          }
+        }
         return JSON.stringify({ clicked: true, count: 1 });
       }
       if (action === "eval" && script?.includes("const target=") && script?.includes("sku-filter-button")) return JSON.stringify({ found: true });
+      if (action === "eval" && script?.includes("const desiredSkuId=") && script.includes("const expectedSize=") && script.includes("inputIndex")) {
+        selectedSkuId = script.match(/const desiredSkuId="([^"]+)"/u)?.[1] ?? skuId;
+        return JSON.stringify({ sizeFound: true, visibleSizes: ["M", "L", "XL", "XXL"], inputIndex: selectedSkuId === skuId ? 3 : 1, skuId: selectedSkuId });
+      }
+      if (action === "eval" && script?.includes("aria-label=\"plus\"") && script.includes("targetQuantity")) {
+        const targetQuantity = Number(script.match(/const targetQuantity=(\d+)/u)?.[1] ?? 0);
+        selectedSkuId = script.match(/const expectedSkuId="([^"]+)"/u)?.[1] ?? selectedSkuId;
+        if (behavior !== "pre-click-failure") pendingQuantities.set(selectedSkuId, targetQuantity);
+        return JSON.stringify({
+          sizeFound: true,
+          visibleSizes: ["M", "L", "XL", "XXL"],
+          inputFound: true,
+          actual: behavior === "pre-click-failure" ? 0 : targetQuantity,
+          verified: behavior !== "pre-click-failure",
+        });
+      }
       if (action === "eval" && script?.includes("expectedColor")) return JSON.stringify({ url: "https://detail.1688.com/offer/747713283348.html", color: "蓝底叶子", size: "XXL", skuId, inputIndex: 3 });
       if (action === "eval" && script?.includes("button.scrollIntoView")) return JSON.stringify({ buttonCount: 1, visible: true });
+      if (action === "eval" && !args.includes("--frame") && script?.includes("buttons[0].click()") && script.includes("加采购车")) {
+        addClickCount += 1;
+        addActions.push("加采购车");
+        const mode = behavior === "wrong-cart" ? "dropship" : "wholesale";
+        if (behavior === "success" || behavior === "wrong-cart" || behavior === "grouped-fill-race" || behavior === "react-input-desync") {
+          for (const [pendingSkuId, quantity] of pendingQuantities) {
+            const key = `747713283348\u0000${pendingSkuId}`;
+            cartQuantitiesByKey[mode].set(key, (cartQuantitiesByKey[mode].get(key) ?? 0) + quantity);
+            cartQuantities[mode] += quantity;
+          }
+        }
+        return JSON.stringify({ clicked: true, count: 1 });
+      }
       if (action === "fill") {
         pendingQuantity = Number(args.at(-1));
+        // 复现同页连续填写时，最后一个输入尚未进入 1688 提交状态的竞态。
+        if (behavior !== "react-input-desync" && (behavior !== "grouped-fill-race" || pendingQuantities.size === 0)) pendingQuantities.set(selectedSkuId, pendingQuantity);
         return JSON.stringify({ filled: true, verified: behavior !== "pre-click-failure", actual: behavior === "pre-click-failure" ? "0" : String(pendingQuantity) });
       }
       if (action === "click" && pendingQuantity > 0 && (args.includes("加采购车") || args.includes("button"))) {
@@ -131,7 +214,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
     },
   });
   if (autoApprove) service.approveRiskOrder(storeId, "10000002");
-  return { database, service, metrics: { cartOpenCount: () => cartOpenCount, addClickCount: () => addClickCount, selectedModes, addActions, cartQuantities } };
+  return { database, service, metrics: { cartOpenCount: () => cartOpenCount, detailOpenCount: () => detailOpenCount, addClickCount: () => addClickCount, selectedModes, addActions, cartQuantities } };
 }
 
 afterEach(() => { for (const database of databases.splice(0)) database.close(); });
@@ -146,6 +229,25 @@ async function waitForBatch(service: StockPrepService, id: string): Promise<Reco
 }
 
 describe("StockPrepService", () => {
+  it.each([
+    { layout: "legacy", dropship: false, tab: "批发", quantity: 2 },
+    { layout: "legacy", dropship: true, tab: "代发", quantity: 3 },
+    { layout: "modern", dropship: false, tab: "现货(4)", quantity: 4 },
+    { layout: "modern", dropship: true, tab: "分销(5)", quantity: 5 },
+  ])("reads $layout $tab cart quantities by offer ID and SKU ID", ({ layout, dropship, tab, quantity }) => {
+    const item = layout === "legacy"
+      ? `<div id="cartV2Header"></div><div class="groupRoot-test"><a href="${offerUrl}"></a><div class="item--container-test"><div class="quantityWrapper-test"><input value="${quantity}"></div><span class="fiber-anchor"></span></div></div>`
+      : `<div class="cart--container-test"><div class="header-bar--container-test"></div><div role="tab" aria-selected="true">${tab}</div><div class="item--container--test"><div class="numberPicker-test"><input value="${quantity}"></div><span class="fiber-anchor"></span></div></div>`;
+    const path = dropship ? "daixiao_cart.htm" : "cart.htm";
+    const dom = new JSDOM(item, { runScripts: "outside-only", url: `https://cart.1688.com/${path}` });
+    const anchor = dom.window.document.querySelector(".fiber-anchor") as HTMLElement & Record<string, unknown>;
+    anchor.__reactFiber$test = { memoizedProps: { fields: { offerId: "747713283348", skuId, quantity } }, return: null };
+
+    const result = dom.window.eval(buildCartQuantityReaderScript([{ key: "target", productId: "747713283348", skuId }], dropship)) as { loaded: boolean; quantities: Record<string, number> };
+    expect(result).toEqual({ loaded: true, quantities: { target: quantity } });
+    dom.window.close();
+  });
+
   it("reads SKU mappings beyond the first 100 Feishu records", async () => {
     const mappings = Array.from({ length: 120 }, (_, index) => [`UNUSED-${index}`, offerUrl, skuId] as unknown[]);
     mappings.push(["UNMAPPED", offerUrl, skuId]);
@@ -163,6 +265,7 @@ describe("StockPrepService", () => {
       .run("p2", "1645-2-XXL", "Duplicate line", 1);
     database.prepare("INSERT INTO stock_prep_order_states (store_id,posting_number,offer_id,state,updated_at_ms) VALUES (?,?,?,?,?)")
       .run(storeId, "10000002-part-1", "1645-2-XXL", "added", Date.now());
+    database.prepare("UPDATE postings SET status='awaiting_registration' WHERE id='p4'").run();
 
     const postings = service.listFulfillmentPostings(storeId);
 
@@ -170,6 +273,11 @@ describe("StockPrepService", () => {
     expect(postingNumbers.indexOf("10000002-part-1")).toBeLessThan(postingNumbers.indexOf("10000001-part-1"));
     expect(postingNumbers.indexOf("10000001-part-1")).toBeLessThan(postingNumbers.indexOf("10000004-part-1"));
     expect(postings[0]).toMatchObject({ sku_count: 1, added_sku_count: 1 });
+    expect(postings.find((posting) => posting.posting_number === "10000004-part-1")).toMatchObject({
+      status: "awaiting_registration",
+      can_prepare: false,
+      prepare_block_reason: "已提交备货，等待 Ozon 登记",
+    });
   });
 
   it("keeps the Ozon order snapshot fresh for one hour per store", () => {
@@ -345,11 +453,8 @@ describe("StockPrepService", () => {
       const result = await waitForBatch(service, batch.id);
       const expected = behavior === "pre-click-failure" ? "failed" : "uncertain";
       expect((result.items as Array<{ status: string }>)[0]?.status).toBe(expected);
-      expect(service.resetOrders(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).toBe(behavior === "pre-click-failure" ? 2 : 0);
-      if (behavior === "uncertain") {
-        expect(service.resolveUncertainAsFailed(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).toBe(2);
-        expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='failed'").get()).toMatchObject({ count: 2 });
-      }
+      expect(service.resetOrders(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).toBe(2);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM stock_prep_order_states WHERE state='pending'").get()).toMatchObject({ count: 2 });
     }
   });
 
@@ -365,6 +470,62 @@ describe("StockPrepService", () => {
     expect(result.status).toBe("completed");
     expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 4, cart_before: 2, cart_after: 6 })]);
     expect(metrics.cartOpenCount()).toBe(2);
+    expect(metrics.addClickCount()).toBe(1);
+  });
+
+  it("submits each SKU independently when the same product contains multiple target SKU IDs", async () => {
+    const secondSkuId = "6103279203999";
+    const { service, metrics } = fixture([
+      ["1645-2-XXL", `[${offerUrl}](${offerUrl})`, skuId],
+      ["UNMAPPED", `[${offerUrl}](${offerUrl})`, secondSkuId],
+    ], "grouped-fill-race");
+    const scan = await service.scan(storeId);
+    const orders = scan.groups.flatMap((group) => group.orders).filter((order) => order.state === "pending");
+    const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
+
+    const result = await waitForBatch(service, batch.id);
+
+    expect(result.status).toBe("completed");
+    expect(result.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sku_id: skuId, quantity: 3, status: "added", cart_before: 2, cart_after: 5 }),
+      expect.objectContaining({ sku_id: secondSkuId, quantity: 1, status: "added", cart_before: 0, cart_after: 1 }),
+    ]));
+    expect(metrics.detailOpenCount()).toBe(2);
+    expect(metrics.addClickCount()).toBe(2);
+    expect(metrics.addActions).toEqual(["加采购车", "加采购车"]);
+  });
+
+  it("uses the page quantity controls when a filled input value does not update React state", async () => {
+    const { service, metrics } = fixture(undefined, "react-input-desync");
+    const scan = await service.scan(storeId);
+    const orders = scan.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
+
+    const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
+    const result = await waitForBatch(service, batch.id);
+
+    expect(result.status).toBe("completed");
+    expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 3, cart_before: 2, cart_after: 5 })]);
+    expect(metrics.addClickCount()).toBe(1);
+  });
+
+  it("keeps valid SKUs addable when another SKU is missing or out of stock", async () => {
+    const { service, metrics } = fixture([
+      ["1645-2-XXL", offerUrl, skuId],
+      ["UNMAPPED", offerUrl, missingSkuId],
+      ["DUPLICATE", offerUrl, outOfStockSkuId],
+    ]);
+    const scan = await service.scan(storeId);
+    const orders = scan.groups.flatMap((group) => group.orders).filter((order) => order.state === "pending");
+    const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
+
+    const result = await waitForBatch(service, batch.id);
+    const items = result.items as Array<{ sku_id: string; status: string; error: string | null }>;
+
+    expect(result.status).toBe("completed_with_errors");
+    expect(items.find((item) => item.sku_id === skuId)).toMatchObject({ status: "added", error: null });
+    expect(items.find((item) => item.sku_id === missingSkuId)).toMatchObject({ status: "failed", error: expect.stringContaining("未匹配到 SKU") });
+    expect(items.find((item) => item.sku_id === outOfStockSkuId)).toMatchObject({ status: "failed", error: expect.stringContaining("库存不足") });
+    expect(metrics.detailOpenCount()).toBe(1);
     expect(metrics.addClickCount()).toBe(1);
   });
 });

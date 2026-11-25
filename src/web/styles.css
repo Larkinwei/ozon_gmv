@@ -6880,6 +6880,13 @@ td {
 .stock-prep-summary > div { display: flex; align-items: center; gap: 7px; padding: 7px 10px; color: var(--muted); background: var(--surface-soft); border-radius: 7px; font-size: 12px; }
 .stock-prep-summary > div strong { color: var(--text); }
 .stock-prep-summary-action { margin-left: auto; }
+.stock-prep-bulk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 10px; }
+.stock-prep-bulk-actions > small { flex-basis: 100%; color: #fcd34d; font-size: 11px; line-height: 1.5; }
+.stock-prep-selection-count { color: var(--muted); font-size: 12px; }
+.stock-prep-bulk-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.stock-prep-row-hint { color: var(--muted); white-space: nowrap; }
+.stock-prep-ready-label { color: #86efac; }
+.stock-prep-prepare-cell { display: grid; justify-items: start; gap: 6px; min-width: 150px; }
 .stock-prep-agent-docs { display: grid; gap: 18px; padding: 20px; }
 .stock-prep-agent-docs > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .stock-prep-agent-docs > header h3 { margin: 3px 0; }
@@ -6963,7 +6970,5 @@ td {
 .stock-prep-orders td { padding: 9px; border-top: 1px solid var(--border-soft); }
 .stock-prep-orders td:nth-child(2) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .stock-prep-orders input[type="checkbox"] { width: 16px; height: 16px; accent-color: #3b82f6; }
-.stock-prep-prepare-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.stock-prep-prepare-actions label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .stock-prep-orders td > .field-error { display: block; margin-top: 6px; }
-@media (max-width: 700px) { .stock-prep-title { align-items: stretch; flex-direction: column; } .stock-prep-store-picker { min-width: 0; width: 100%; } .stock-prep-store-picker .field { min-width: 0; } .stock-prep-health { grid-column: auto; } .stock-prep-summary-action { flex-basis: 100%; margin-left: 0; } .stock-prep-feishu-config { grid-template-columns: 1fr; } .stock-prep-feishu-config > p { grid-column: auto; } .stock-prep-auth { align-items: flex-start; flex-direction: column; } .stock-prep-risk-card { flex-direction: column; } .stock-prep-risk-approve { width: 100%; } .stock-prep-agent-meta { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .stock-prep-title { align-items: stretch; flex-direction: column; } .stock-prep-store-picker { min-width: 0; width: 100%; } .stock-prep-store-picker .field { min-width: 0; } .stock-prep-health { grid-column: auto; } .stock-prep-summary-action { flex-basis: 100%; margin-left: 0; } .stock-prep-bulk-buttons { width: 100%; margin-left: 0; } .stock-prep-bulk-buttons button { flex: 1 1 160px; } .stock-prep-feishu-config { grid-template-columns: 1fr; } .stock-prep-feishu-config > p { grid-column: auto; } .stock-prep-auth { align-items: flex-start; flex-direction: column; } .stock-prep-risk-card { flex-direction: column; } .stock-prep-risk-approve { width: 100%; } .stock-prep-agent-meta { grid-template-columns: 1fr; } }
