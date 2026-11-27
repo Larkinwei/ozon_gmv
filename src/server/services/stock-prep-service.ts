@@ -16,7 +16,7 @@ export type BuyerRiskLevel = "none" | "review" | "blacklist";
 export interface StockPrepOrderView {
   postingNumber: string; orderNumber: string; buyerPrefix: string | null; offerId: string; productName: string; imageUrl: string | null;
   quantity: number; orderQuantity: number; riskLevel: BuyerRiskLevel; blacklistStatus: string | null;
-  currentOrderCount: number; currentOrderIndex: number | null; buyerHistory: BuyerHistorySummary;
+  currentOrderCount: number; currentOrderIndex: number | null; shipmentDeadlineAt: number | null; buyerHistory: BuyerHistorySummary;
   approved: boolean; state: StockPrepState; error: string | null; selectedByDefault: boolean;
 }
 export interface StockPrepGroupView { offerUrl: string | null; offerId: string; skuId: string | null; imageUrl: string | null; status: StockPrepState; quantity: number; orders: StockPrepOrderView[]; error: string | null }
@@ -36,6 +36,7 @@ interface OrderRow {
   posting_number: string;
   order_number: string;
   order_at_ms: number;
+  shipment_deadline_at_ms: number | null;
   offer_id: string;
   name: string;
   quantity: number;
@@ -57,6 +58,8 @@ interface StockPrepBatchItemRow {
   sku_id: string;
   quantity: number;
   order_keys_json: string;
+  supplier_name?: string | null;
+  cart_mode?: "wholesale" | "dropship" | null;
 }
 
 interface ResolvedSkuTarget extends StockPrepBatchItemRow {
@@ -147,6 +150,7 @@ function buyerSnapshotHash(database: AppDatabase, storeId: string, buyerPrefix: 
   return items.length ? createHash("sha256").update(JSON.stringify(items)).digest("hex") : null;
 }
 
+/** Returns a stable empty history object when a posting number has no buyer prefix. */
 function emptyBuyerHistory(): BuyerHistorySummary {
   return { syncState: "not_started", syncError: null, ordersInYear: 0, deliveredOrders: 0, cancelledOrders: 0, refusalOrders: 0, returnCount: 0, returnedPieces: 0, latestOutcome: null, latestAt: null, orderSequenceByPostingNumber: {}, recentOrders: [] };
 }
@@ -453,7 +457,7 @@ export class StockPrepService {
   public async scan(storeId: string): Promise<StockPrepScanView> {
     const source = this.database.prepare("SELECT source_url,base_token,table_id FROM store_sku_sources WHERE store_id=?").get(storeId) as StockPrepStoreRow | undefined;
     if (!source) throw new Error("请先为该店铺配置飞书 SKU 映射表");
-    const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,p.order_number,p.order_at_ms,pi.offer_id,pi.name,pi.quantity,
+    const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,p.order_number,p.order_at_ms,p.shipment_deadline_at_ms,pi.offer_id,pi.name,pi.quantity,
         image.primary_image_url AS image_url,states.state,states.error
       FROM postings p JOIN stores s ON s.id=p.store_id JOIN posting_items pi ON pi.posting_id=p.id
       LEFT JOIN product_images image ON image.store_id=p.store_id AND image.sku=pi.sku
@@ -487,7 +491,7 @@ export class StockPrepService {
     const riskByBuyerOrder = new Map<string, { level: BuyerRiskLevel; blacklistStatus: string | null; approved: boolean; currentOrderCount: number; currentOrderIndex: number | null }>();
     for (const row of rows) {
       const prefix = buyerPrefixFromPostingNumber(row.posting_number);
-      const riskKey = prefix ?? `@${row.posting_number}`;
+      const riskKey = prefix ? `${prefix}\u0000${row.order_number}` : `@${row.posting_number}`;
       const currentOrderCount = prefix ? buyerOrders.get(prefix)?.size ?? 1 : 1;
       const currentOrderIndex = prefix ? currentOrderIndexes.get(`${prefix}\u0000${row.order_number}`) ?? null : null;
       if (prefix && !historyByBuyer.has(prefix)) historyByBuyer.set(prefix, this.getBuyerHistorySummary(storeId, prefix, currentOrdersByBuyer.get(prefix) ?? []));
@@ -520,12 +524,12 @@ export class StockPrepService {
       const groupKey = validMapping ? `${validMapping.url}\u0000${validMapping.skuId}` : `unmatched:${row.offer_id}`;
       const currentError = mapped ? (state === "pending" ? null : row.error) : mappingError;
       const prefix = buyerPrefixFromPostingNumber(row.posting_number);
-      const risk = riskByBuyerOrder.get(prefix ?? `@${row.posting_number}`)!;
+      const risk = riskByBuyerOrder.get(prefix ? `${prefix}\u0000${row.order_number}` : `@${row.posting_number}`)!;
       const risky = orderTotals.get(row.order_number)! >= 2;
       const group = groups.get(groupKey) ?? { offerUrl: validMapping?.url ?? null, offerId: row.offer_id, skuId: validMapping?.skuId ?? null, imageUrl: row.image_url, status: state, quantity: 0, orders: [], error: currentError };
       group.imageUrl ??= row.image_url;
       group.quantity += row.quantity;
-      group.orders.push({ postingNumber: row.posting_number, orderNumber: row.order_number, buyerPrefix: prefix, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, orderQuantity: orderTotals.get(row.order_number)!, riskLevel: risk.level, blacklistStatus: risk.blacklistStatus, currentOrderCount: risk.currentOrderCount, currentOrderIndex: risk.currentOrderIndex, buyerHistory: prefix ? historyByBuyer.get(prefix)! : emptyBuyerHistory(), approved: risk.approved, state, error: currentError, selectedByDefault: state === "pending" && risk.level !== "blacklist" && (!risky && risk.currentOrderCount <= 1 || risk.approved) });
+      group.orders.push({ postingNumber: row.posting_number, orderNumber: row.order_number, buyerPrefix: prefix, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, orderQuantity: orderTotals.get(row.order_number)!, riskLevel: risk.level, blacklistStatus: risk.blacklistStatus, currentOrderCount: risk.currentOrderCount, currentOrderIndex: risk.currentOrderIndex, shipmentDeadlineAt: row.shipment_deadline_at_ms, buyerHistory: prefix ? historyByBuyer.get(prefix)! : emptyBuyerHistory(), approved: risk.approved, state, error: currentError, selectedByDefault: state === "pending" && risk.level !== "blacklist" && (!risky && risk.currentOrderCount <= 1 || risk.approved) });
       if (group.status !== state) group.status = group.status === "unmatched" || state === "unmatched" ? "unmatched" : "pending";
       groups.set(groupKey, group);
     }
@@ -533,6 +537,7 @@ export class StockPrepService {
     return { storeId, groups: [...groups.values()], buyerHistorySync: buyerHistorySync ?? null, lastOrderSyncAt: this.getLastOrderSyncAt(storeId) };
   }
 
+  /** Builds a one-year buyer summary while excluding every order in the current awaiting-packaging set. */
   private getBuyerHistorySummary(storeId: string, buyerPrefix: string, currentOrders: OrderRow[]): BuyerHistorySummary {
     const since = Date.now() - 365 * 24 * 60 * 60 * 1000;
     const posts = this.database.prepare(`SELECT posting_number,order_number,status,order_at_ms,cancellation_initiator,cancellation_type
@@ -904,6 +909,7 @@ export class StockPrepService {
     if (detail.url !== pageUrl) throw new Error(`1688 商品页地址不匹配，目标商品 ${productId} 未能打开`);
     if (!detail.supplierName) throw new Error("无法识别 1688 供应商名称，已阻止加购");
     const dropship = this.getDropshipSuppliers().some((name) => name.localeCompare(detail.supplierName, undefined, { sensitivity: "base" }) === 0);
+    this.recordBatchRoute(items, detail.supplierName, dropship ? "dropship" : "wholesale");
     const resolvedBySku = new Map(detail.skus.map((sku) => [sku.skuId, sku]));
     const targets: ResolvedSkuTarget[] = [];
     const failures: TargetFailure[] = [];
@@ -925,6 +931,15 @@ export class StockPrepService {
       targets.push({ ...item, attributes, supplierName: detail.supplierName, dropship, availableQuantity: sku.availableQuantity });
     }
     return { targets, failures };
+  }
+
+  /** Persists the supplier and selected cart route for the final batch report. */
+  private recordBatchRoute(items: StockPrepBatchItemRow[], supplierName: string, cartMode: "wholesale" | "dropship"): void {
+    const update = this.database.prepare("UPDATE stock_prep_batch_items SET supplier_name=?,cart_mode=?,updated_at_ms=? WHERE id=?");
+    const updatedAt = Date.now();
+    this.database.transaction(() => {
+      for (const item of items) update.run(supplierName, cartMode, updatedAt, item.id);
+    })();
   }
 
   /**

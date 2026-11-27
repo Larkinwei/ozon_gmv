@@ -38,6 +38,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
   database.exec(readFileSync(join(process.cwd(), "migrations/033_stock_prep_buyer_risk.sql"), "utf8"));
   database.exec(readFileSync(join(process.cwd(), "migrations/034_stock_prep_buyer_blacklist.sql"), "utf8"));
   database.exec(readFileSync(join(process.cwd(), "migrations/035_stock_prep_buyer_prefix_history.sql"), "utf8"));
+  database.exec(readFileSync(join(process.cwd(), "migrations/037_stock_prep_batch_route.sql"), "utf8"));
   database.prepare("INSERT INTO stores VALUES (?,?,?,?)").run(storeId, "YOGOLD", "ozon", 1);
   database.prepare("INSERT INTO store_sku_sources VALUES (?,?,?,?,?)").run(storeId, "https://feishu/base", "base-token", "tbl-stock", Date.now());
   const addPosting = database.prepare("INSERT INTO postings (id,store_id,posting_number,order_number,fulfillment_mode,status,cancelled_at_ms) VALUES (?,?,?,?,?,?,?)");
@@ -350,7 +351,7 @@ describe("StockPrepService", () => {
     await expect(service.createBatch(storeId, [{ postingNumber: "12345678-part1-1", offerId: "1645-2-XXL" }])).rejects.toThrow("黑名单");
   });
 
-  it("groups open orders by the first posting-number segment and shows synced delivery and refusal history", async () => {
+  it("groups open orders by buyer prefix and excludes current orders from synced history", async () => {
     const { database, service } = fixture(undefined, "success", false);
     const now = Date.now();
     database.prepare(`UPDATE postings SET posting_number=CASE id WHEN 'p1' THEN '12345678-part1-1' WHEN 'p2' THEN '12345678-part2-1' ELSE posting_number END,
@@ -364,8 +365,10 @@ describe("StockPrepService", () => {
     const before = (await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
     expect(before.map((order) => order.riskLevel)).toEqual(["review", "review"]);
     expect(before.every((order) => order.currentOrderCount === 2 && !order.selectedByDefault)).toBe(true);
+    expect(before.map((order) => order.currentOrderIndex)).toEqual([1, 2]);
     expect(before[0]!.buyerHistory).toMatchObject({ ordersInYear: 1, deliveredOrders: 1, returnCount: 1, refusalOrders: 1, returnedPieces: 1 });
     expect(before[0]!.buyerHistory.recentOrders.map((order) => order.postingNumber)).toEqual(["12345678-old-1"]);
+    expect(before[0]!.buyerHistory.recentOrders.some((order) => order.postingNumber.includes("part"))).toBe(false);
     expect(before[0]!.buyerHistory.orderSequenceByPostingNumber).toMatchObject({ "12345678-part1-1": 2, "12345678-part2-1": 3 });
 
     service.approveRiskOrder(storeId, "12345678");
@@ -389,7 +392,7 @@ describe("StockPrepService", () => {
     const batch = await service.createBatch(storeId, orders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })));
     const result = await waitForBatch(service, batch.id);
     expect(result.status).toBe("completed");
-    expect((result.items as Array<{ quantity: number; cart_before: number; cart_after: number }>)[0]).toMatchObject({ quantity: 3, cart_before: 2, cart_after: 5 });
+    expect((result.items as Array<{ quantity: number; cart_before: number; cart_after: number; supplier_name: string; cart_mode: string }>)[0]).toMatchObject({ quantity: 3, cart_before: 2, cart_after: 5, supplier_name: "安丘市鑫达尔服装厂", cart_mode: "wholesale" });
     expect(metrics.cartOpenCount()).toBe(2);
     expect(metrics.addClickCount()).toBe(1);
     expect(metrics.addActions).toEqual(["加采购车"]);
@@ -413,7 +416,7 @@ describe("StockPrepService", () => {
     expect(metrics.addActions).toEqual(["弹层加采购车"]);
     expect(metrics.addClickCount()).toBe(1);
     expect(metrics.cartQuantities).toEqual({ wholesale: 2, dropship: 3 });
-    expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 3, cart_before: 0, cart_after: 3 })]);
+    expect(result.items).toEqual([expect.objectContaining({ status: "added", quantity: 3, cart_before: 0, cart_after: 3, supplier_name: "安丘市鑫达尔服装厂", cart_mode: "dropship" })]);
   });
 
   it("marks the batch uncertain if a dropship add increases the wholesale cart", async () => {

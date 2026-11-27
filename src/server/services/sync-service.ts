@@ -217,8 +217,7 @@ export class SyncService {
       for (const [windowStart, windowEnd] of dateWindows(since, to)) {
         for await (const page of client.iteratePostingPages("FBS", windowStart, windowEnd)) {
           for (const posting of page.postings) {
-            const normalized = normalizePosting(posting, "FBS");
-            await this.postings.upsert(storeId, normalized);
+            await this.postings.upsert(storeId, normalizePosting(posting, "FBS"));
             processed += 1;
           }
           db.prepare("UPDATE stock_prep_risk_sync SET processed_count=?,updated_at_ms=? WHERE store_id=?").run(processed, Date.now(), storeId);
@@ -233,7 +232,7 @@ export class SyncService {
       for (const dateField of returnDateFields) {
         for (const [windowStart, windowEnd] of dateWindows(since, to)) {
           for await (const page of client.iterateReturnPages(windowStart, windowEnd, dateField)) {
-            const upsertPage = db.transaction(() => {
+            db.transaction(() => {
               for (const record of page.returns) {
                 if (!record.posting_number) continue;
                 const returnedAt = record.logistic?.return_date ?? record.logistic?.final_moment ?? null;
@@ -242,8 +241,7 @@ export class SyncService {
                   record.return_reason_name ?? null, record.visual?.status?.display_name ?? record.visual?.status?.sys_name ?? null);
                 returnCount += 1;
               }
-            });
-            upsertPage();
+            })();
             db.prepare("UPDATE stock_prep_risk_sync SET return_count=?,updated_at_ms=? WHERE store_id=?").run(returnCount, Date.now(), storeId);
           }
         }

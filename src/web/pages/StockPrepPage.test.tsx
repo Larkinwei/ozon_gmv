@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -39,6 +39,7 @@ beforeEach(() => {
     clear: () => values.clear(),
   } });
   vi.mocked(api.fetchStockPrepBlacklist).mockResolvedValue([]);
+  vi.mocked(api.fetchStockPrepFulfillmentPostings).mockResolvedValue({ postings: [] });
 });
 afterEach(() => { cleanup(); window.localStorage.clear(); vi.clearAllMocks(); });
 
@@ -79,8 +80,8 @@ describe("StockPrepPage", () => {
     expect(rowPrepareButton).toBeEnabled();
     fireEvent.click(rowPrepareButton);
     await waitFor(() => expect(api.prepareStockPrepPosting).toHaveBeenCalledWith("store-1", "post-added"));
-    await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledTimes(2));
-    expect(api.scanStockPrep).toHaveBeenLastCalledWith("store-1", false);
+    await waitFor(() => expect(api.fetchStockPrepFulfillmentPostings).toHaveBeenCalled());
+    expect(api.scanStockPrep).toHaveBeenCalledTimes(1);
     expect(screen.getByText("商品尚未标记已加购")).toBeInTheDocument();
     expect(screen.getAllByText("post-added")).toHaveLength(1);
     expect(screen.getAllByRole("columnheader", { name: "Ozon 备货" })).toHaveLength(2);
@@ -102,6 +103,7 @@ describe("StockPrepPage", () => {
     await waitFor(() => expect(api.fetchStockPrepState).toHaveBeenCalledWith("store-1"));
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
     expect(await screen.findByText(/最近订单同步：2026-11-18 12:34:56/u)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 2 单 · 3 件" }));
 
     await screen.findByRole("button", { name: "加入采购车 (2)" });
     expect(screen.getAllByText("1 组")).toHaveLength(2);
@@ -110,6 +112,10 @@ describe("StockPrepPage", () => {
     expect(screen.getByRole("checkbox", { name: "选择订单 post-2" })).toBeChecked();
     fireEvent.click(screen.getByRole("checkbox", { name: "选择订单 post-2" }));
     expect(screen.getByRole("button", { name: "加入采购车 (1)" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "加入采购车 (1)" }));
+    expect(screen.getByRole("dialog", { name: "确认加入 1688 采购车" })).toBeInTheDocument();
+    expect(screen.getByText("预计件数").nextElementSibling).toHaveTextContent("1");
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
     fireEvent.click(screen.getByRole("button", { name: "刷新订单" }));
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", true));
   });
@@ -128,6 +134,7 @@ describe("StockPrepPage", () => {
     fireEvent.change(screen.getByLabelText("Ozon 店铺"), { target: { value: "store-1" } });
     await waitFor(() => expect(api.fetchStockPrepState).toHaveBeenCalledWith("store-1"));
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 2 单 · 2 件" }));
     const failed = await screen.findByRole("checkbox", { name: "选择订单 post-failed" });
     expect(failed).not.toBeChecked();
     expect(failed).toBeEnabled();
@@ -150,6 +157,7 @@ describe("StockPrepPage", () => {
 
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
     fireEvent.click(screen.getByRole("button", { name: "已加购 · 1 单 · 1 件" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择订单 post-added" }));
     fireEvent.click(await screen.findByRole("button", { name: "撤回状态 (1)" }));
     await waitFor(() => expect(api.resetStockPrepOrders).toHaveBeenCalledWith("store-1", [{ postingNumber: "post-added", offerId: "1645-2-XXL" }]));
     expect(confirm).not.toHaveBeenCalled();
@@ -170,6 +178,7 @@ describe("StockPrepPage", () => {
     await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
     expect(screen.queryByText("核对未增加")).not.toBeInTheDocument();
     expect(screen.queryByText("核对购物车未增加")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 1 单 · 1 件" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "选择订单 post-uncertain" }));
     fireEvent.click(screen.getByRole("button", { name: "撤回状态 (1)" }));
     await waitFor(() => expect(api.resetStockPrepOrders).toHaveBeenCalledWith("store-1", [{ postingNumber: "post-uncertain", offerId: "SKU-A" }]));
@@ -181,18 +190,33 @@ describe("StockPrepPage", () => {
     vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
     vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
     vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: "https://detail.1688.com/offer/747713283348.html", offerId: "1645-2-XXL", skuId: "6103279203988", imageUrl: null, status: "pending", quantity: 2, error: null, orders: [
-      { postingNumber: "12345678-order-1", orderNumber: "order-risk", buyerPrefix: "12345678", currentOrderCount: 1, currentOrderIndex: 1, offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 2, orderQuantity: 2, riskLevel: "review", approved: false, state: "pending", error: null, selectedByDefault: false, buyerHistory: { syncState: "failed", syncError: "Ozon API 400: PERIOD_IS_TOO_LONG", ordersInYear: 1, deliveredOrders: 0, cancelledOrders: 0, refusalOrders: 0, returnCount: 0, returnedPieces: 0, latestOutcome: "awaiting_packaging", latestAt: Date.now(), orderSequenceByPostingNumber: {}, recentOrders: [{ postingNumber: "12345678-order-1", status: "awaiting_packaging", orderAt: Date.now(), cancellationInitiator: null, cancellationType: null, returns: [] }] } },
+      { postingNumber: "12345678-order-1", orderNumber: "order-risk", buyerPrefix: "12345678", currentOrderCount: 1, currentOrderIndex: 1, offerId: "1645-2-XXL", imageUrl: null, productName: "蓝底叶子XXL", quantity: 2, orderQuantity: 2, riskLevel: "review", approved: false, state: "pending", error: null, selectedByDefault: false, buyerHistory: { syncState: "complete", syncError: null, ordersInYear: 1, deliveredOrders: 1, cancelledOrders: 0, refusalOrders: 0, returnCount: 0, returnedPieces: 0, latestOutcome: "delivered", latestAt: Date.now() - 86400000, orderSequenceByPostingNumber: { "12345678-order-1": 2 }, recentOrders: [{ postingNumber: "12345678-old-1", status: "delivered", orderAt: Date.now() - 86400000, cancellationInitiator: null, cancellationType: null, returns: [] }] } },
     ] }] });
     vi.mocked(api.approveStockPrepRiskOrder).mockResolvedValue({ approved: true });
     renderPage();
-    const checkbox = await screen.findByRole("checkbox", { name: "选择订单 12345678-order-1" });
-    expect(checkbox).toBeDisabled();
-    expect(screen.getAllByText(/该订单购买多件，需人工确认/)).toHaveLength(2);
-    expect(screen.getAllByText("等待打包").length).toBeGreaterThan(0);
-    expect(screen.getByText("失败原因：Ozon API 400: PERIOD_IS_TOO_LONG")).toBeInTheDocument();
-    expect(screen.queryByText("awaiting_packaging")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "人工放行买家订单组" }));
+    expect(await screen.findByText(/该订单购买多件，需人工确认/)).toBeInTheDocument();
+    expect(screen.getByText(/近一年历史 · 已同步/)).toBeInTheDocument();
+    expect(screen.getByText("1 笔订单")).toBeInTheDocument();
+    expect(screen.queryByText("12345678-old-1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看历史明细" }));
+    expect(screen.getByText("12345678-old-1")).toBeInTheDocument();
+    expect(screen.getAllByText(/已送达/).length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(screen.getByRole("button", { name: "查看风险详情" }));
+    const riskDrawer = screen.getByRole("dialog", { name: "买家风险详情" });
+    expect(within(riskDrawer).getByText("买家编号")).toBeInTheDocument();
+    expect(within(riskDrawer).getByText("12345678-order-1")).toBeInTheDocument();
+    expect(within(riskDrawer).getByText("Ozon 订单号：order-risk")).toBeInTheDocument();
+    expect(within(riskDrawer).getByRole("button", { name: "人工放行 1 单 · 2 件" })).toBeEnabled();
+    fireEvent.click(within(riskDrawer).getByRole("button", { name: "关闭" }));
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 1 单 · 2 件" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看风险详情" }));
+    expect(screen.getByRole("dialog", { name: "买家风险详情" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    fireEvent.click(screen.getByRole("button", { name: "需要处理 · 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "人工放行" }));
     await waitFor(() => expect(api.approveStockPrepRiskOrder).toHaveBeenCalledWith("store-1", "12345678"));
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 1 单 · 2 件" }));
+    expect(await screen.findByRole("checkbox", { name: "选择订单 12345678-order-1" })).toBeEnabled();
   });
 
 });
