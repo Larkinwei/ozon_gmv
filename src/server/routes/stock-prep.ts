@@ -195,6 +195,13 @@ export function registerStockPrepRoutes(app: FastifyInstance, service: StockPrep
     return { markedCount: await service.markOrdersAdded(storeId, orderKeys.parse(request.body).keys) };
   });
 
+  app.post("/api/stock-prep/stores/:storeId/mark-unmatched-added", { preHandler: requireSession }, async (request, reply) => {
+    const { storeId } = storeParams.parse(request.params);
+    const input = z.object({ keys: orderKeys.shape.keys.max(500), note: z.string().trim().min(1).max(500) }).parse(request.body);
+    try { return { markedCount: await service.markUnmatchedOrdersAdded(storeId, input.keys, input.note) }; }
+    catch (error) { return reply.code(409).send({ error: "UNMATCHED_PURCHASE_REJECTED", message: error instanceof Error ? error.message : "无法确认未匹配SKU已采购" }); }
+  });
+
   app.get("/api/stock-prep/stores/:storeId/fulfillment-postings", { preHandler: requireSession }, async (request) => {
     const { storeId } = storeParams.parse(request.params);
     return { postings: service.listFulfillmentPostings(storeId) };

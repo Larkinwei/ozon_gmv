@@ -12,12 +12,15 @@ import { runOpenCli, defaultOpenCliPath } from "./opencli-runtime";
 
 export type StockPrepState = "pending" | "adding" | "added" | "failed" | "uncertain" | "unmatched";
 export type BuyerRiskLevel = "none" | "review" | "blacklist";
+export type StockPrepCompletionMethod = "automatic" | "manual_mapped" | "manual_unmapped";
 
 export interface StockPrepOrderView {
   postingNumber: string; orderNumber: string; buyerPrefix: string | null; offerId: string; productName: string; imageUrl: string | null;
   quantity: number; orderQuantity: number; riskLevel: BuyerRiskLevel; blacklistStatus: string | null;
   currentOrderCount: number; currentOrderIndex: number | null; shipmentDeadlineAt: number | null; buyerHistory: BuyerHistorySummary;
   approved: boolean; state: StockPrepState; error: string | null; selectedByDefault: boolean;
+  postingSkuCount: number; postingPieceCount: number; postingCanAdd: boolean; postingBlockReason: string | null;
+  completionMethod: StockPrepCompletionMethod | null; completionNote: string | null;
 }
 export interface StockPrepGroupView { offerUrl: string | null; offerId: string; skuId: string | null; imageUrl: string | null; status: StockPrepState; quantity: number; orders: StockPrepOrderView[]; error: string | null }
 export interface BuyerHistorySummary {
@@ -43,6 +46,8 @@ interface OrderRow {
   image_url: string | null;
   state: StockPrepState | null;
   error: string | null;
+  completion_method: StockPrepCompletionMethod | null;
+  completion_note: string | null;
 }
 
 interface Mapping {
@@ -458,7 +463,7 @@ export class StockPrepService {
     const source = this.database.prepare("SELECT source_url,base_token,table_id FROM store_sku_sources WHERE store_id=?").get(storeId) as StockPrepStoreRow | undefined;
     if (!source) throw new Error("请先为该店铺配置飞书 SKU 映射表");
     const rows = this.database.prepare(`SELECT p.store_id,s.name AS store_name,p.posting_number,p.order_number,p.order_at_ms,p.shipment_deadline_at_ms,pi.offer_id,pi.name,pi.quantity,
-        image.primary_image_url AS image_url,states.state,states.error
+        image.primary_image_url AS image_url,states.state,states.error,states.completion_method,states.completion_note
       FROM postings p JOIN stores s ON s.id=p.store_id JOIN posting_items pi ON pi.posting_id=p.id
       LEFT JOIN product_images image ON image.store_id=p.store_id AND image.sku=pi.sku
       LEFT JOIN stock_prep_order_states states ON states.store_id=p.store_id AND states.posting_number=p.posting_number AND states.offer_id=pi.offer_id
@@ -518,7 +523,7 @@ export class StockPrepService {
         this.database.prepare(`INSERT INTO stock_prep_order_states (store_id,posting_number,offer_id,state,error,updated_at_ms) VALUES (?,?,?,?,?,?)`)
           .run(storeId, row.posting_number, row.offer_id, state, mapped ? null : mappingError, Date.now());
       } else if (orderState === "pending" || orderState === "unmatched") {
-        this.database.prepare("UPDATE stock_prep_order_states SET state=?,error=?,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=?")
+        this.database.prepare("UPDATE stock_prep_order_states SET state=?,error=?,completion_method=NULL,completion_note=NULL,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=?")
           .run(state, mapped ? null : mappingError, Date.now(), storeId, row.posting_number, row.offer_id);
       }
       const groupKey = validMapping ? `${validMapping.url}\u0000${validMapping.skuId}` : `unmatched:${row.offer_id}`;
@@ -529,9 +534,47 @@ export class StockPrepService {
       const group = groups.get(groupKey) ?? { offerUrl: validMapping?.url ?? null, offerId: row.offer_id, skuId: validMapping?.skuId ?? null, imageUrl: row.image_url, status: state, quantity: 0, orders: [], error: currentError };
       group.imageUrl ??= row.image_url;
       group.quantity += row.quantity;
-      group.orders.push({ postingNumber: row.posting_number, orderNumber: row.order_number, buyerPrefix: prefix, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, orderQuantity: orderTotals.get(row.order_number)!, riskLevel: risk.level, blacklistStatus: risk.blacklistStatus, currentOrderCount: risk.currentOrderCount, currentOrderIndex: risk.currentOrderIndex, shipmentDeadlineAt: row.shipment_deadline_at_ms, buyerHistory: prefix ? historyByBuyer.get(prefix)! : emptyBuyerHistory(), approved: risk.approved, state, error: currentError, selectedByDefault: state === "pending" && risk.level !== "blacklist" && (!risky && risk.currentOrderCount <= 1 || risk.approved) });
+      const completionMethod = row.completion_method ?? (state === "added" ? row.error?.includes("无飞书映射") ? "manual_unmapped" : row.error?.startsWith("人工确认") ? "manual_mapped" : "automatic" : null);
+      group.orders.push({ postingNumber: row.posting_number, orderNumber: row.order_number, buyerPrefix: prefix, offerId: row.offer_id, productName: row.name, imageUrl: row.image_url, quantity: row.quantity, orderQuantity: orderTotals.get(row.order_number)!, riskLevel: risk.level, blacklistStatus: risk.blacklistStatus, currentOrderCount: risk.currentOrderCount, currentOrderIndex: risk.currentOrderIndex, shipmentDeadlineAt: row.shipment_deadline_at_ms, buyerHistory: prefix ? historyByBuyer.get(prefix)! : emptyBuyerHistory(), approved: risk.approved, state, error: currentError, selectedByDefault: state === "pending" && risk.level !== "blacklist" && (!risky && risk.currentOrderCount <= 1 || risk.approved), postingSkuCount: 0, postingPieceCount: 0, postingCanAdd: false, postingBlockReason: null, completionMethod, completionNote: row.completion_note });
       if (group.status !== state) group.status = group.status === "unmatched" || state === "unmatched" ? "unmatched" : "pending";
       groups.set(groupKey, group);
+    }
+    const entriesByPosting = new Map<string, Array<{ group: StockPrepGroupView; order: StockPrepOrderView }>>();
+    for (const group of groups.values()) {
+      for (const order of group.orders) {
+        const entries = entriesByPosting.get(order.postingNumber) ?? [];
+        entries.push({ group, order });
+        entriesByPosting.set(order.postingNumber, entries);
+      }
+    }
+    for (const entries of entriesByPosting.values()) {
+      const skuCount = new Set(entries.map(({ order }) => order.offerId)).size;
+      const pieceCount = entries.reduce((sum, { order }) => sum + order.quantity, 0);
+      const blocked = entries.find(({ group, order }) => {
+        if (order.riskLevel === "blacklist" || order.riskLevel === "review" && !order.approved) return true;
+        if (order.state === "added") return false;
+        if (!group.offerUrl || !group.skuId || order.state === "unmatched") return true;
+        return !["pending", "failed"].includes(order.state);
+      });
+      const actionable = entries.some(({ group, order }) => Boolean(group.offerUrl && group.skuId) && ["pending", "failed"].includes(order.state));
+      let blockReason: string | null = null;
+      if (blocked) {
+        const { group, order } = blocked;
+        if (order.riskLevel === "blacklist") blockReason = `同一发货单中的货号 ${order.offerId} 命中买家黑名单`;
+        else if (order.riskLevel === "review" && !order.approved) blockReason = `同一发货单中的货号 ${order.offerId} 尚未完成人工风险确认`;
+        else if (!group.offerUrl || !group.skuId || order.state === "unmatched") blockReason = `同一发货单中的货号 ${order.offerId} ${order.error ?? group.error ?? "没有有效飞书映射"}`;
+        else if (order.state === "uncertain") blockReason = `同一发货单中的货号 ${order.offerId} 加购结果待核实`;
+        else if (order.state === "adding") blockReason = `同一发货单中的货号 ${order.offerId} 正在加购`;
+        else blockReason = `同一发货单中的货号 ${order.offerId} 当前不能加购`;
+      } else if (!actionable) blockReason = "该发货单所有商品均已标记已加购";
+      const canAdd = blockReason === null;
+      for (const { order } of entries) {
+        order.postingSkuCount = skuCount;
+        order.postingPieceCount = pieceCount;
+        order.postingCanAdd = canAdd;
+        order.postingBlockReason = blockReason;
+        order.selectedByDefault = order.selectedByDefault && canAdd;
+      }
     }
     const buyerHistorySync = this.database.prepare("SELECT state,from_at_ms,to_at_ms,processed_count,return_count,error,updated_at_ms FROM stock_prep_risk_sync WHERE store_id=?").get(storeId) as Record<string, unknown> | undefined;
     return { storeId, groups: [...groups.values()], buyerHistorySync: buyerHistorySync ?? null, lastOrderSyncAt: this.getLastOrderSyncAt(storeId) };
@@ -610,6 +653,15 @@ export class StockPrepService {
     const scan = await this.scan(storeId);
     const orderMap = new Map<string, { group: { offerUrl: string | null; skuId: string | null; offerId: string }; order: StockPrepOrderView }>();
     for (const group of scan.groups) for (const order of group.orders) orderMap.set(`${order.postingNumber}\u0000${order.offerId}`, { group, order });
+    const selectedIds = new Set(uniqueKeys.map((key) => `${key.postingNumber}\u0000${key.offerId}`));
+    const selectedPostingNumbers = new Set(uniqueKeys.map((key) => key.postingNumber));
+    for (const postingNumber of selectedPostingNumbers) {
+      const postingEntries = [...orderMap.values()].filter(({ order }) => order.postingNumber === postingNumber);
+      const reference = postingEntries[0]?.order;
+      if (!reference?.postingCanAdd) throw new Error(`发货单 ${postingNumber} 暂停加购：${reference?.postingBlockReason ?? "整单条件不完整"}`);
+      const missing = postingEntries.filter(({ group, order }) => group.offerUrl && group.skuId && ["pending", "failed"].includes(order.state) && !selectedIds.has(`${order.postingNumber}\u0000${order.offerId}`));
+      if (missing.length) throw new Error(`发货单 ${postingNumber} 必须整单加购，尚未选择货号 ${missing.map(({ order }) => order.offerId).join("、")}`);
+    }
     const itemGroups = new Map<string, { url: string; skuId: string; offerId: string; quantity: number; keys: string[] }>();
     for (const key of uniqueKeys) {
       const match = orderMap.get(`${key.postingNumber}\u0000${key.offerId}`);
@@ -629,7 +681,7 @@ export class StockPrepService {
         .run(batchId, storeId, itemGroups.size, now);
       const insert = this.database.prepare(`INSERT INTO stock_prep_batch_items (id,batch_id,offer_url,offer_id,sku_id,quantity,order_keys_json,status,created_at_ms,updated_at_ms)
         VALUES (?,?,?,?,?,?,?,'queued',?,?)`);
-      const update = this.database.prepare("UPDATE stock_prep_order_states SET state='adding',batch_id=?,error=NULL,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND state IN ('pending','failed')");
+      const update = this.database.prepare("UPDATE stock_prep_order_states SET state='adding',batch_id=?,error=NULL,completion_method=NULL,completion_note=NULL,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND state IN ('pending','failed')");
       for (const item of itemGroups.values()) {
         insert.run(randomUUID(), batchId, item.url, item.offerId, item.skuId, item.quantity, JSON.stringify(item.keys), now, now);
         for (const key of item.keys) {
@@ -678,7 +730,7 @@ export class StockPrepService {
 
   /** Resets operator-selected terminal cart states without changing the actual 1688 cart. */
   public resetOrders(storeId: string, keys: Array<{ postingNumber: string; offerId: string }>): number {
-    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='pending',batch_id=NULL,error=NULL,updated_at_ms=?
+    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='pending',batch_id=NULL,error=NULL,completion_method=NULL,completion_note=NULL,updated_at_ms=?
       WHERE store_id=? AND posting_number=? AND offer_id=? AND state IN ('added','failed','uncertain')`);
     let count = 0;
     this.database.transaction(() => { for (const key of keys) count += update.run(Date.now(), storeId, key.postingNumber, key.offerId).changes; })();
@@ -695,10 +747,31 @@ export class StockPrepService {
       if (order.riskLevel === "blacklist") throw new Error(`订单 ${key.postingNumber} 命中买家黑名单，不能标记`);
       if (order.riskLevel === "review" && !order.approved) throw new Error(`发货单 ${key.postingNumber} 需先完成人工风险确认`);
     }
-    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='added',batch_id=NULL,error='人工确认已加入1688购物车',updated_at_ms=?
+    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='added',batch_id=NULL,error='人工确认已加入1688购物车',
+      completion_method='manual_mapped',completion_note=NULL,updated_at_ms=?
       WHERE store_id=? AND posting_number=? AND offer_id=? AND state IN ('pending','failed','uncertain')`);
     let count = 0;
     this.database.transaction(() => { for (const key of keys) count += update.run(Date.now(), storeId, key.postingNumber, key.offerId).changes; })();
+    return count;
+  }
+
+  /** Separately records an operator-confirmed purchase for an SKU that has no valid Feishu mapping. */
+  public async markUnmatchedOrdersAdded(storeId: string, keys: Array<{ postingNumber: string; offerId: string }>, note: string): Promise<number> {
+    const normalizedNote = note.trim();
+    if (!normalizedNote || normalizedNote.length > 500) throw new Error("人工采购备注不能为空且不能超过500个字符");
+    const snapshot = await this.scan(storeId);
+    const orders = new Map(snapshot.groups.flatMap((group) => group.orders.map((order) => [`${order.postingNumber}\u0000${order.offerId}`, order] as const)));
+    for (const key of keys) {
+      const order = orders.get(`${key.postingNumber}\u0000${key.offerId}`);
+      if (!order || order.state !== "unmatched") throw new Error(`订单 ${key.postingNumber} 不是未匹配SKU，不能使用人工采购确认`);
+      if (order.riskLevel === "blacklist") throw new Error(`订单 ${key.postingNumber} 命中买家黑名单，不能标记`);
+      if (order.riskLevel === "review" && !order.approved) throw new Error(`发货单 ${key.postingNumber} 需先完成人工风险确认`);
+    }
+    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='added',batch_id=NULL,error='人工确认已采购（无飞书映射）',
+      completion_method='manual_unmapped',completion_note=?,updated_at_ms=?
+      WHERE store_id=? AND posting_number=? AND offer_id=? AND state='unmatched'`);
+    let count = 0;
+    this.database.transaction(() => { for (const key of keys) count += update.run(normalizedNote, Date.now(), storeId, key.postingNumber, key.offerId).changes; })();
     return count;
   }
 
@@ -729,7 +802,7 @@ export class StockPrepService {
 
   /** Releases uncertain orders only after a separate cart check confirmed no quantity was added. */
   public resolveUncertainAsFailed(storeId: string, keys: Array<{ postingNumber: string; offerId: string }>): number {
-    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='failed',error='人工核对购物车后确认未增加数量',updated_at_ms=?
+    const update = this.database.prepare(`UPDATE stock_prep_order_states SET state='failed',error='人工核对购物车后确认未增加数量',completion_method=NULL,completion_note=NULL,updated_at_ms=?
       WHERE store_id=? AND posting_number=? AND offer_id=? AND state='uncertain'`);
     let count = 0;
     this.database.transaction(() => { for (const key of keys) count += update.run(Date.now(), storeId, key.postingNumber, key.offerId).changes; })();
@@ -1158,10 +1231,12 @@ export class StockPrepService {
     const updated = this.database.prepare("UPDATE stock_prep_batch_items SET status=?,cart_before=?,cart_after=?,error=?,updated_at_ms=? WHERE id=? AND status IN ('queued','running')")
       .run(status, cartBefore, cartAfter, error, Date.now(), item.id);
     if (!updated.changes) return;
-    const updateOrder = this.database.prepare("UPDATE stock_prep_order_states SET state=?,error=?,updated_at_ms=? WHERE store_id=? AND posting_number=? AND offer_id=? AND batch_id=?");
+    const updateOrder = this.database.prepare(`UPDATE stock_prep_order_states SET state=?,error=?,
+      completion_method=CASE WHEN ?='added' THEN 'automatic' ELSE NULL END,completion_note=NULL,updated_at_ms=?
+      WHERE store_id=? AND posting_number=? AND offer_id=? AND batch_id=?`);
     for (const key of JSON.parse(item.order_keys_json) as string[]) {
       const [postingNumber, offerId] = key.split("\u0000") as [string, string];
-      updateOrder.run(status, error, Date.now(), storeId, postingNumber, offerId, batchId);
+      updateOrder.run(status, error, status, Date.now(), storeId, postingNumber, offerId, batchId);
     }
     this.database.prepare("UPDATE stock_prep_batches SET completed_count=completed_count+1 WHERE id=?").run(batchId);
   }

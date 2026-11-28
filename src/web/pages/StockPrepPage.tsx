@@ -1,10 +1,10 @@
 import { AlertTriangle, Check, Clock3, Link2, PackageCheck, RefreshCw, Search, ShoppingCart } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { OrderImagePreview } from "../components/OrderImagePreview";
 import { StockPrepRiskDrawer } from "../components/StockPrepRiskDrawer";
-import { addStockPrepBlacklistBuyer, addStockPrepOrderBuyerToBlacklist, approveStockPrepRiskOrder, beginStockPrepFeishuAuthorization, createStockPrepBatch, fetchStockPrepBatch, fetchStockPrepBlacklist, fetchStockPrepConnection, fetchStockPrepFulfillmentPostings, fetchStockPrepState, fetchStores, markStockPrepOrdersAdded, prepareStockPrepPosting, resetStockPrepOrders, revokeStockPrepRiskOrder, saveStockPrepDropshipSuppliers, saveStockPrepFeishuApp, saveStockPrepSource, scanStockPrep, updateStockPrepBlacklistEntry, type StockPrepBatch, type StockPrepOrderKey, type StockPrepScan } from "../api";
+import { addStockPrepBlacklistBuyer, addStockPrepOrderBuyerToBlacklist, approveStockPrepRiskOrder, beginStockPrepFeishuAuthorization, createStockPrepBatch, fetchStockPrepBatch, fetchStockPrepBlacklist, fetchStockPrepConnection, fetchStockPrepFulfillmentPostings, fetchStockPrepState, fetchStores, markStockPrepOrdersAdded, markUnmatchedStockPrepOrdersAdded, prepareStockPrepPosting, resetStockPrepOrders, revokeStockPrepRiskOrder, saveStockPrepDropshipSuppliers, saveStockPrepFeishuApp, saveStockPrepSource, scanStockPrep, updateStockPrepBlacklistEntry, type StockPrepBatch, type StockPrepOrderKey, type StockPrepScan } from "../api";
 
 const statusNames: Record<string, string> = { pending: "待采购", adding: "加购中", added: "已加购", failed: "加购失败", uncertain: "待核实", unmatched: "未匹配", queued: "排队中", running: "执行中", completed: "已完成", completed_with_errors: "部分异常" };
 const ozonStatusNames: Record<string, string> = {
@@ -17,6 +17,8 @@ type StockPrepTab = "action" | "pending" | "added" | "blacklist" | "config";
 type ActionFilter = "all" | "risk" | "mapping" | "failed" | "uncertain" | "ozon";
 type PendingFilter = "all" | "pending" | "unmatched" | "failed" | "uncertain";
 type SortMode = "deadline" | "offer";
+type PrepareTaskStatus = "queued" | "running" | "success" | "failed";
+interface PrepareRunState { active: boolean; total: number; completed: number; succeeded: number; failed: number }
 const LAST_STORE_KEY = "ozon-gmv.stock-prep.last-store";
 
 /** Formats the persisted synchronization time to seconds in the browser's local timezone. */
@@ -60,10 +62,10 @@ function batchOrderKeys(item: StockPrepBatch["items"][number]): StockPrepOrderKe
     });
   } catch { return []; }
 }
-function updateScanOrders(scan: StockPrepScan, keys: StockPrepOrderKey[], state: string, error: string | null = null): StockPrepScan {
+function updateScanOrders(scan: StockPrepScan, keys: StockPrepOrderKey[], state: string, error: string | null = null, completionMethod?: "automatic" | "manual_mapped" | "manual_unmapped" | null, completionNote: string | null = null): StockPrepScan {
   const changed = new Set(keys.map(keyOf));
   const groups = scan.groups.map((group) => {
-    const orders = group.orders.map((order) => changed.has(keyOf(order)) ? { ...order, state, error, selectedByDefault: state === "pending" && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true) } : order);
+    const orders = group.orders.map((order) => changed.has(keyOf(order)) ? { ...order, state, error, completionMethod: completionMethod === undefined ? order.completionMethod : completionMethod, completionNote: completionMethod === undefined ? order.completionNote : completionNote, selectedByDefault: state === "pending" && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true) } : order);
     const states = new Set(orders.map((order) => order.state));
     const status = states.size === 1 ? orders[0]?.state ?? group.status : states.has("unmatched") ? "unmatched" : states.has("adding") ? "adding" : "pending";
     return { ...group, orders, status, quantity: orders.reduce((sum, order) => sum + order.quantity, 0) };
@@ -108,8 +110,10 @@ export default function StockPrepPage(): React.JSX.Element {
   const [authorizationLink, setAuthorizationLink] = useState<{ url: string; qrCode: string } | null>(null);
   const [scan, setScan] = useState<StockPrepScan | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [preparingPosting, setPreparingPosting] = useState<string | null>(null);
+  const [prepareTasks, setPrepareTasks] = useState<Record<string, PrepareTaskStatus>>({});
+  const [prepareRun, setPrepareRun] = useState<PrepareRunState>({ active: false, total: 0, completed: 0, succeeded: 0, failed: 0 });
   const [prepareErrors, setPrepareErrors] = useState<Record<string, string>>({});
+  const prepareScheduler = useRef({ storeId: "", queue: [] as string[], active: new Set<string>(), running: false, total: 0, completed: 0, succeeded: 0, failed: 0 });
   const [expandedHistoryBuyers, setExpandedHistoryBuyers] = useState<Set<string>>(new Set());
   const [riskDrawerTarget, setRiskDrawerTarget] = useState<{ buyerPrefix: string | null; postingNumber: string } | null>(null);
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -163,9 +167,9 @@ export default function StockPrepPage(): React.JSX.Element {
   const addBlacklistMutation = useMutation({ mutationFn: () => addStockPrepBlacklistBuyer(storeId, blacklistBuyerPrefix.trim(), blacklistReason.trim()), onSuccess: async () => { setBlacklistBuyerPrefix(""); setBlacklistReason(""); setMessage("买家已加入黑名单"); await client.invalidateQueries({ queryKey: ["stock-prep-blacklist", storeId] }); } , onError: (error) => setMessage(error.message) });
   const addOrderBuyerMutation = useMutation({ mutationFn: ({ postingNumber, reason }: { postingNumber: string; reason: string }) => addStockPrepOrderBuyerToBlacklist(storeId, postingNumber, reason), onSuccess: async () => { setRiskDrawerTarget(null); setMessage("该发货单对应买家已加入黑名单；重新扫描后会被拦截"); await client.invalidateQueries({ queryKey: ["stock-prep-blacklist", storeId] }); setScan(null); setScannedStoreId(null); }, onError: (error) => setMessage(error.message) });
   const updateBlacklistMutation = useMutation({ mutationFn: ({ id, status }: { id: string; status: "active" | "inactive" }) => updateStockPrepBlacklistEntry(storeId, id, status), onSuccess: async () => { setMessage("黑名单状态已更新"); await client.invalidateQueries({ queryKey: ["stock-prep-blacklist", storeId] }); setScan(null); setScannedStoreId(null); } });
-  const resetMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => resetStockPrepOrders(storeId, keys), onSuccess: (result, keys) => { setMessage(`已撤回 ${result.resetCount} 条明细的 GMV 状态；1688 购物车数量未变`); setScan((current) => { if (!current) return current; return updateScanOrders(current, keys, "pending"); }); setSelected(new Set()); }, onError: (error) => setMessage(error.message) });
-  const markAddedMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => markStockPrepOrdersAdded(storeId, keys), onSuccess: (result, keys) => { setScan((current) => current ? updateScanOrders(current, keys, "added", "人工确认已加入1688购物车") : current); setSelected(new Set()); setMessage(`已人工标记 ${result.markedCount} 条SKU明细为已加购`); }, onError: (error) => setMessage(error.message) });
-  const preparePostingMutation = useMutation({ mutationFn: async (postingNumbers: string[]) => { let completed = 0; const errors: Record<string, string> = {}; for (const postingNumber of postingNumbers) { setPreparingPosting(postingNumber); setPrepareErrors((current) => { const next = { ...current }; delete next[postingNumber]; return next; }); try { await prepareStockPrepPosting(storeId, postingNumber); completed += 1; } catch (error) { errors[postingNumber] = error instanceof Error ? error.message : "Ozon备货失败"; } } return { completed, errors, total: postingNumbers.length }; }, onSuccess: async ({ completed, errors, total }) => { setPreparingPosting(null); setPrepareErrors((current) => ({ ...current, ...errors })); setSelected(new Set()); setMessage(Object.keys(errors).length ? `备货提交完成：成功 ${completed}/${total} 单；失败原因已显示在对应订单行` : `已提交 ${completed} 单 Ozon 备货，并进入等待发运`); await client.invalidateQueries({ queryKey: ["stock-prep-fulfillment", storeId] }); }, onError: (error) => { setPreparingPosting(null); setMessage(error.message); } });
+  const resetMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => resetStockPrepOrders(storeId, keys), onSuccess: (result, keys) => { setMessage(`已撤回 ${result.resetCount} 条明细的 GMV 状态；1688 购物车数量未变`); setScan((current) => { if (!current) return current; return updateScanOrders(current, keys, "pending", null, null); }); setSelected(new Set()); }, onError: (error) => setMessage(error.message) });
+  const markAddedMutation = useMutation({ mutationFn: (keys: StockPrepOrderKey[]) => markStockPrepOrdersAdded(storeId, keys), onSuccess: (result, keys) => { setScan((current) => current ? updateScanOrders(current, keys, "added", "人工确认已加入1688购物车", "manual_mapped") : current); setSelected(new Set()); setMessage(`已人工标记 ${result.markedCount} 条SKU明细为已加购`); }, onError: (error) => setMessage(error.message) });
+  const markUnmatchedMutation = useMutation({ mutationFn: ({ keys, note }: { keys: StockPrepOrderKey[]; note: string }) => markUnmatchedStockPrepOrdersAdded(storeId, keys, note), onSuccess: (result, { keys, note }) => { setScan((current) => current ? updateScanOrders(current, keys, "added", "人工确认已采购（无飞书映射）", "manual_unmapped", note) : current); setSelected(new Set()); setMessage(`已人工确认 ${result.markedCount} 条未匹配SKU完成采购`); }, onError: (error) => setMessage(error.message) });
   const feishuAppMutation = useMutation({ mutationFn: () => saveStockPrepFeishuApp(appId, appSecret), onSuccess: async () => { setAppSecret(""); setMessage("飞书应用凭证已加密保存"); await client.invalidateQueries({ queryKey: ["stock-prep-connection"] }); }, onError: (error) => setMessage(error.message) });
   const dropshipSuppliersMutation = useMutation({ mutationFn: () => saveStockPrepDropshipSuppliers((dropshipSupplierText ?? connection?.dropshipSuppliers.join("\n") ?? "").split(/\r?\n/u)), onSuccess: async ({ suppliers }) => { setDropshipSupplierText(suppliers.join("\n")); setMessage("代发供应商名单已保存"); await client.invalidateQueries({ queryKey: ["stock-prep-connection"] }); }, onError: (error) => setMessage(error.message) });
   const feishuAuthMutation = useMutation({ mutationFn: beginStockPrepFeishuAuthorization, onSuccess: (value) => { setAuthorizationLink({ url: value.verificationUrl, qrCode: value.qrCode }); setMessage("已发起飞书设备授权，请用当前飞书账号扫码或打开链接确认"); void client.invalidateQueries({ queryKey: ["stock-prep-connection"] }); }, onError: (error) => setMessage(error.message) });
@@ -195,12 +199,13 @@ export default function StockPrepPage(): React.JSX.Element {
   const addedEntries = useMemo(() => addedGroups.flatMap((group) => group.orders.map((order) => ({ group, order, key: { postingNumber: order.postingNumber, offerId: order.offerId } }))), [addedGroups]);
   const postingByNumber = useMemo(() => new Map((fulfillmentQuery.data?.postings ?? []).map((posting) => [posting.posting_number, posting])), [fulfillmentQuery.data]);
   const selectablePendingEntries = useMemo(() => pendingEntries.filter(({ group, order }) => {
+    if (order.riskLevel === "blacklist" || order.riskLevel === "review" && order.approved !== true) return false;
     if (["failed", "uncertain"].includes(order.state)) return true;
-    return order.state === "pending" && Boolean(group.skuId) && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true);
+    return order.state === "pending" && Boolean(group.skuId);
   }), [pendingEntries]);
   const selectedPendingEntries = selectablePendingEntries.filter(({ key }) => selected.has(keyOf(key)));
-  const cartEntries = selectedPendingEntries.filter(({ group, order }) => ["pending", "failed"].includes(order.state) && Boolean(group.skuId) && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true));
-  const markAddedEntries = selectedPendingEntries.filter(({ group, order }) => ["pending", "failed", "uncertain"].includes(order.state) && Boolean(group.skuId) && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true));
+  const cartEntries = selectedPendingEntries.filter(({ group, order }) => ["pending", "failed"].includes(order.state) && Boolean(group.skuId) && order.postingCanAdd !== false && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true));
+  const markAddedEntries = selectedPendingEntries.filter(({ order }) => ["pending", "failed", "uncertain"].includes(order.state) && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true));
   const resetPendingEntries = selectedPendingEntries.filter(({ order }) => ["failed", "uncertain"].includes(order.state));
   const allPendingSelected = selectablePendingEntries.length > 0 && selectedPendingEntries.length === selectablePendingEntries.length;
   const selectedAddedOrders = addedOrders.filter((order) => selected.has(keyOf(order)));
@@ -261,7 +266,11 @@ export default function StockPrepPage(): React.JSX.Element {
     });
     return result.sort((left, right) => sortMode === "offer" ? left.offerId.localeCompare(right.offerId, "zh-CN", { numeric: true }) : Math.min(...left.orders.map((order) => order.shipmentDeadlineAt ?? Number.MAX_SAFE_INTEGER)) - Math.min(...right.orders.map((order) => order.shipmentDeadlineAt ?? Number.MAX_SAFE_INTEGER)));
   }, [pendingGroups, pendingFilter, normalizedSearch, sortMode]);
-  const visibleAddedGroups = useMemo(() => addedGroups.flatMap((group) => { const orders = group.orders.filter((order) => !normalizedSearch || [order.postingNumber, order.offerId, order.productName, group.skuId ?? ""].some((value) => value.toLowerCase().includes(normalizedSearch))); return orders.length ? [{ ...group, orders, quantity: orders.reduce((sum, order) => sum + order.quantity, 0) }] : []; }).sort((left, right) => sortMode === "offer" ? left.offerId.localeCompare(right.offerId, "zh-CN", { numeric: true }) : Math.min(...left.orders.map((order) => order.shipmentDeadlineAt ?? Number.MAX_SAFE_INTEGER)) - Math.min(...right.orders.map((order) => order.shipmentDeadlineAt ?? Number.MAX_SAFE_INTEGER))), [addedGroups, normalizedSearch, sortMode]);
+  const visibleAddedGroups = useMemo(() => addedGroups.flatMap((group) => { const orders = group.orders.filter((order) => {
+    const posting = postingByNumber.get(order.postingNumber);
+    if (prepareTasks[order.postingNumber] === "success" || posting && posting.status !== "awaiting_packaging") return false;
+    return !normalizedSearch || [order.postingNumber, order.offerId, order.productName, group.skuId ?? ""].some((value) => value.toLowerCase().includes(normalizedSearch));
+  }); return orders.length ? [{ ...group, orders, quantity: orders.reduce((sum, order) => sum + order.quantity, 0) }] : []; }).sort((left, right) => sortMode === "offer" ? left.offerId.localeCompare(right.offerId, "zh-CN", { numeric: true }) : Math.min(...left.orders.map((order) => order.shipmentDeadlineAt ?? Number.MAX_SAFE_INTEGER)) - Math.min(...right.orders.map((order) => order.shipmentDeadlineAt ?? Number.MAX_SAFE_INTEGER))), [addedGroups, normalizedSearch, sortMode, postingByNumber, prepareTasks]);
   const previewEntries = batchPreviewKeys ? pendingEntries.filter(({ key }) => batchPreviewKeys.some((previewKey) => keyOf(previewKey) === keyOf(key))) : [];
 
   useEffect(() => { if (source && !sourceUrl) setSourceUrl(source.url); }, [source, sourceUrl]);
@@ -300,15 +309,88 @@ export default function StockPrepPage(): React.JSX.Element {
         let updated = current;
         for (const item of itemStates) {
           const [postingNumber, offerId] = item.key.split("\u0000");
-          if (postingNumber && offerId) updated = updateScanOrders(updated, [{ postingNumber, offerId }], item.state, item.error);
+          if (postingNumber && offerId) updated = updateScanOrders(updated, [{ postingNumber, offerId }], item.state, item.error, item.state === "added" ? "automatic" : null);
         }
         return updated;
       });
     }
   }, [batchQuery.data?.status]);
 
+  /** Runs Ozon preparation with a bounded three-request pool and keeps per-posting progress visible. */
+  function pumpPrepareQueue(): void {
+    const scheduler = prepareScheduler.current;
+    while (scheduler.running && scheduler.active.size < 3 && scheduler.queue.length > 0) {
+      const postingNumber = scheduler.queue.shift()!;
+      scheduler.active.add(postingNumber);
+      setPrepareTasks((current) => ({ ...current, [postingNumber]: "running" }));
+      void prepareStockPrepPosting(scheduler.storeId, postingNumber)
+        .then(() => {
+          scheduler.succeeded += 1;
+          setPrepareTasks((current) => ({ ...current, [postingNumber]: "success" }));
+        })
+        .catch((error: unknown) => {
+          scheduler.failed += 1;
+          const message = error instanceof Error ? error.message : "Ozon备货失败";
+          setPrepareTasks((current) => ({ ...current, [postingNumber]: "failed" }));
+          setPrepareErrors((current) => ({ ...current, [postingNumber]: message }));
+        })
+        .finally(() => {
+          scheduler.active.delete(postingNumber);
+          scheduler.completed += 1;
+          const snapshot = { active: true, total: scheduler.total, completed: scheduler.completed, succeeded: scheduler.succeeded, failed: scheduler.failed };
+          if (scheduler.queue.length === 0 && scheduler.active.size === 0) {
+            scheduler.running = false;
+            setPrepareRun({ ...snapshot, active: false });
+            setSelected(new Set());
+            setMessage(scheduler.failed > 0
+              ? `备货提交完成：成功 ${scheduler.succeeded}/${scheduler.total} 单，失败 ${scheduler.failed} 单；可在对应订单行重试`
+              : `已提交 ${scheduler.succeeded} 单 Ozon 备货，并进入等待发运`);
+            void client.invalidateQueries({ queryKey: ["stock-prep-fulfillment", scheduler.storeId] });
+          } else {
+            setPrepareRun(snapshot);
+            pumpPrepareQueue();
+          }
+        });
+    }
+  }
+
+  /** Adds unique postings to the active preparation queue; failed postings may be enqueued again. */
+  function enqueuePrepare(postingNumbers: string[]): void {
+    const scheduler = prepareScheduler.current;
+    if (scheduler.running && scheduler.storeId !== storeId) {
+      setMessage("另一店铺的备货任务仍在执行，请等待完成");
+      return;
+    }
+    const unique = [...new Set(postingNumbers)].filter((postingNumber) => !scheduler.active.has(postingNumber) && !scheduler.queue.includes(postingNumber));
+    if (!unique.length) return;
+    if (!scheduler.running) {
+      scheduler.storeId = storeId;
+      scheduler.queue = [];
+      scheduler.active.clear();
+      scheduler.total = 0;
+      scheduler.completed = 0;
+      scheduler.succeeded = 0;
+      scheduler.failed = 0;
+      scheduler.running = true;
+    }
+    scheduler.queue.push(...unique);
+    scheduler.total += unique.length;
+    setPrepareErrors((current) => {
+      const next = { ...current };
+      for (const postingNumber of unique) delete next[postingNumber];
+      return next;
+    });
+    setPrepareTasks((current) => ({ ...current, ...Object.fromEntries(unique.map((postingNumber) => [postingNumber, "queued" as const])) }));
+    setPrepareRun({ active: true, total: scheduler.total, completed: scheduler.completed, succeeded: scheduler.succeeded, failed: scheduler.failed });
+    pumpPrepareQueue();
+  }
+
   function toggleOrder(key: StockPrepOrderKey, checked: boolean): void {
-    setSelected((current) => { const next = new Set(current); const id = keyOf(key); if (checked) next.add(id); else next.delete(id); return next; });
+    const entry = pendingEntries.find((candidate) => keyOf(candidate.key) === keyOf(key));
+    const linkedKeys = entry && entry.group.skuId && ["pending", "failed"].includes(entry.order.state) && entry.order.postingCanAdd !== false
+      ? pendingEntries.filter((candidate) => candidate.order.postingNumber === key.postingNumber && candidate.group.skuId && ["pending", "failed"].includes(candidate.order.state)).map((candidate) => candidate.key)
+      : [key];
+    toggleOrders(linkedKeys, checked);
   }
 
   /** Updates the single selection model used by every bulk action in the active tab. */
@@ -347,13 +429,23 @@ export default function StockPrepPage(): React.JSX.Element {
     if (keys.length) setBatchPreviewKeys(keys);
   }
 
+  /** Keeps unmapped manual procurement separate from normal selection and requires an auditable note. */
+  function confirmUnmatchedPurchase(keys: StockPrepOrderKey[], offerId?: string): void {
+    if (!keys.length) return;
+    const scope = keys.length > 1 ? `货号 ${offerId ?? keys[0]!.offerId} 的 ${keys.length} 张发货单` : `货号 ${keys[0]!.offerId}`;
+    const note = window.prompt(`${scope}没有飞书映射，GMV 无法核验采购商品。请输入实际采购方式或备注（例如：1688手动采购、线下采购、替代商品）：`);
+    if (!note?.trim()) return;
+    if (!window.confirm(`确认${scope}均已人工采购完成吗？\n\n本次将确认 ${keys.length} 张发货单。\n采购备注：${note.trim()}`)) return;
+    markUnmatchedMutation.mutate({ keys, note: note.trim() });
+  }
+
   /** Resets GMV state immediately; the persistent action-bar hint explains that the 1688 cart is unchanged. */
   function resetOrders(keys: StockPrepOrderKey[]): void {
     if (keys.length) resetMutation.mutate(keys);
   }
 
   return <main className="admin-main stock-prep-main">
-      <div className="page-title-row stock-prep-title"><div><p className="eyebrow">STOCK PREPARATION</p><h2>采购备货</h2><p>扫描待打包订单，按 1688 规格汇总后人工确认加入采购车。</p><small className="stock-prep-cache-hint">最近订单同步：{formatSyncTimestamp(lastOrderSyncAt)}；缓存有效 1 小时，需要最新订单时可手动刷新。</small></div><div className="stock-prep-store-picker"><label className="field"><span>Ozon 店铺</span><select aria-label="Ozon 店铺" value={storeId} onChange={(event) => { const nextStoreId = event.target.value; setStoreId(nextStoreId); setSourceUrl(""); setScan(null); setScannedStoreId(null); setSelected(new Set()); setBatchId(null); setRiskDrawerTarget(null); }}><option value="">选择店铺</option>{stores.map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label><button className="secondary-button" type="button" disabled={!storeId || scanMutation.isPending || !source} onClick={() => scanMutation.mutate({ targetStoreId: storeId, forceRefresh: true })}><RefreshCw size={16} className={scanMutation.isPending ? "sync-spinner" : undefined}/>{scanMutation.isPending ? "正在扫描…" : "刷新订单"}</button></div></div>
+      <div className="page-title-row stock-prep-title"><div><p className="eyebrow">STOCK PREPARATION</p><h2>采购备货</h2><p>扫描待打包订单，按 1688 规格汇总后人工确认加入采购车。</p><small className="stock-prep-cache-hint">最近订单同步：{formatSyncTimestamp(lastOrderSyncAt)}；缓存有效 1 小时，需要最新订单时可手动刷新。</small></div><div className="stock-prep-store-picker"><label className="field"><span>Ozon 店铺</span><select aria-label="Ozon 店铺" value={storeId} disabled={prepareRun.active} onChange={(event) => { const nextStoreId = event.target.value; setStoreId(nextStoreId); setSourceUrl(""); setScan(null); setScannedStoreId(null); setSelected(new Set()); setBatchId(null); setRiskDrawerTarget(null); setPrepareTasks({}); setPrepareErrors({}); }}><option value="">选择店铺</option>{stores.map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label><button className="secondary-button" type="button" disabled={!storeId || scanMutation.isPending || !source || prepareRun.active} onClick={() => scanMutation.mutate({ targetStoreId: storeId, forceRefresh: true })}><RefreshCw size={16} className={scanMutation.isPending ? "sync-spinner" : undefined}/>{scanMutation.isPending ? "正在扫描…" : "刷新订单"}</button></div></div>
       {message && <div className="notice notice--success" role="status">{message}</div>}
       {storesQuery.isError && <div className="field-error" role="alert">{storesQuery.error.message}</div>}
       <nav className="stock-prep-tabs" aria-label="采购备货页面"><button className={activeTab === "action" ? "is-active" : ""} onClick={() => switchTab("action")} type="button">需要处理{scan ? ` · ${actionCount}` : ""}</button><button className={activeTab === "pending" ? "is-active" : ""} onClick={() => switchTab("pending")} type="button">待采购{scan ? ` · ${pendingOrderCount} 单 · ${pendingPieceCount} 件` : ""}</button><button className={activeTab === "added" ? "is-active" : ""} onClick={() => switchTab("added")} type="button">已加购{scan ? ` · ${addedOrderCount} 单 · ${addedPieceCount} 件` : ""}</button><button className={activeTab === "blacklist" ? "is-active" : ""} onClick={() => switchTab("blacklist")} type="button">买家黑名单</button><button className={activeTab === "config" ? "is-active" : ""} onClick={() => switchTab("config")} type="button">配置</button></nav>
@@ -416,7 +508,7 @@ export default function StockPrepPage(): React.JSX.Element {
             </article>;
           })}</div>
         </section>}
-        {filteredActionIssues.length > 0 ? <section className="settings-card stock-prep-action-list"><header><div><p className="eyebrow">WORKFLOW EXCEPTIONS</p><h3>异常与人工决策</h3></div><span>{filteredActionIssues.length} 条</span></header>{filteredActionIssues.map((issue) => <article className={`stock-prep-action-item stock-prep-action-item--${issue.type}`} key={`${issue.type}-${keyOf(issue.key)}`}><OrderImagePreview src={issue.order.imageUrl} alt={`${issue.order.offerId} 商品图`} fallbackLabel="暂无商品图" width={52} height={52} className="stock-prep-product-image" placeholderClassName="stock-prep-product-image stock-prep-product-image--empty"/><div className="stock-prep-action-main"><div><span className="stock-prep-step-chip">{issue.title}</span><strong>{issue.order.postingNumber} · {issue.order.offerId}</strong><span className={`stock-prep-deadline ${issue.order.shipmentDeadlineAt && issue.order.shipmentDeadlineAt < Date.now() ? "is-overdue" : ""}`}><Clock3 size={14}/>{deadlineLabel(issue.order.shipmentDeadlineAt)}</span></div><p>{issue.order.productName}</p><small>{issue.reason}</small><em>下一步：{issue.step}</em></div><div className="stock-prep-action-controls">{issue.type === "uncertain" && <><button className="secondary-button compact-button" type="button" disabled={markAddedMutation.isPending} onClick={() => markAddedMutation.mutate([issue.key])}>标记已加购</button><button className="secondary-button compact-button" type="button" disabled={resetMutation.isPending} onClick={() => resetMutation.mutate([issue.key])}>撤回状态</button></>}{issue.type === "failed" && <button className="primary-button compact-button" type="button" onClick={() => setBatchPreviewKeys([issue.key])}>安全重试</button>}<button className="secondary-button compact-button" type="button" onClick={() => { if (issue.type === "ozon") { setActiveTab("added"); setSelected(new Set([keyOf(issue.key)])); } else { setActiveTab("pending"); setSelected(new Set([keyOf(issue.key)])); setPendingFilter(issue.type === "mapping" ? "unmatched" : issue.type); } }}>打开详情</button></div></article>)}</section> : filteredRiskOrders.length === 0 && <div className="empty-store-state"><Check size={34}/><h3>当前没有需要人工处理的事项</h3><p>正常待采购订单保留在“待采购”，不会混入异常列表。</p></div>}
+        {filteredActionIssues.length > 0 ? <section className="settings-card stock-prep-action-list"><header><div><p className="eyebrow">WORKFLOW EXCEPTIONS</p><h3>异常与人工决策</h3></div><span>{filteredActionIssues.length} 条</span></header>{filteredActionIssues.map((issue) => <article className={`stock-prep-action-item stock-prep-action-item--${issue.type}`} key={`${issue.type}-${keyOf(issue.key)}`}><OrderImagePreview src={issue.order.imageUrl} alt={`${issue.order.offerId} 商品图`} fallbackLabel="暂无商品图" width={52} height={52} className="stock-prep-product-image" placeholderClassName="stock-prep-product-image stock-prep-product-image--empty"/><div className="stock-prep-action-main"><div><span className="stock-prep-step-chip">{issue.title}</span><strong>{issue.order.postingNumber} · {issue.order.offerId}</strong><span className={`stock-prep-deadline ${issue.order.shipmentDeadlineAt && issue.order.shipmentDeadlineAt < Date.now() ? "is-overdue" : ""}`}><Clock3 size={14}/>{deadlineLabel(issue.order.shipmentDeadlineAt)}</span></div><p>{issue.order.productName}</p><small>{issue.reason}</small><em>下一步：{issue.step}</em></div><div className="stock-prep-action-controls">{issue.type === "mapping" && <button className="secondary-button compact-button stock-prep-manual-unmatched" type="button" disabled={markUnmatchedMutation.isPending} onClick={() => confirmUnmatchedPurchase([issue.key])}>人工确认已采购</button>}{issue.type === "uncertain" && <><button className="secondary-button compact-button" type="button" disabled={markAddedMutation.isPending} onClick={() => markAddedMutation.mutate([issue.key])}>标记已加购</button><button className="secondary-button compact-button" type="button" disabled={resetMutation.isPending} onClick={() => resetMutation.mutate([issue.key])}>撤回状态</button></>}{issue.type === "failed" && <button className="primary-button compact-button" type="button" onClick={() => setBatchPreviewKeys([issue.key])}>安全重试</button>}<button className="secondary-button compact-button" type="button" onClick={() => { if (issue.type === "ozon") { setActiveTab("added"); setSelected(new Set([keyOf(issue.key)])); } else { setActiveTab("pending"); setSelected(new Set([keyOf(issue.key)])); setPendingFilter(issue.type === "mapping" ? "unmatched" : issue.type); } }}>打开详情</button></div></article>)}</section> : filteredRiskOrders.length === 0 && <div className="empty-store-state"><Check size={34}/><h3>当前没有需要人工处理的事项</h3><p>正常待采购订单保留在“待采购”，不会混入异常列表。</p></div>}
       </>}
       {activeTab === "pending" && scan && <>
         <section className="stock-prep-summary"><button className={pendingFilter === "all" ? "is-active" : ""} type="button" onClick={() => setPendingFilter("all")}><PackageCheck size={19}/><span>全部待处理</span><strong>{pendingSummary.total.groupCount} 组</strong><small>{pendingSummary.total.orderCount} 张发货单 · {pendingSummary.total.pieceCount} 件</small></button>{pendingSummary.statuses.map((summary) => <button className={pendingFilter === summary.status ? "is-active" : ""} type="button" key={summary.status} onClick={() => setPendingFilter(summary.status as PendingFilter)}><span>{statusNames[summary.status] ?? summary.status}</span><strong>{summary.groupCount} 组</strong><small>{summary.orderCount} 张发货单 · {summary.pieceCount} 件</small></button>)}</section>
@@ -431,20 +523,26 @@ export default function StockPrepPage(): React.JSX.Element {
           <small>撤回只修改 GMV 状态，不会扣减 1688 购物车数量；再次加购会继续累加。不同操作只处理当前选中且符合条件的明细。</small>
         </section>
         <p className="field-hint">SKU 组按采购规格汇总；发货单按 Ozon 发货单号去重。同一张多商品发货单可能同时出现在不同状态中。</p>
-        <div className="stock-prep-groups">{visiblePendingGroups.map((group, index) => <section className="settings-card stock-prep-group" key={`${group.offerUrl}-${group.skuId}-${index}`}>
-          <header><div><p className="eyebrow">{statusNames[group.status] ?? group.status}</p><h3>{group.offerId} <small>· {group.orders.length} 单 · {group.quantity} 件待备</small></h3></div><span className={`stock-prep-state stock-prep-state--${group.status}`}>{statusNames[group.status] ?? group.status}</span>{group.offerUrl && <a href={group.offerUrl} target="_blank" rel="noreferrer">1688 商品</a>}</header>
+        <div className="stock-prep-groups">{visiblePendingGroups.map((group, index) => {
+          const manualUnmatchedKeys = group.orders
+            .filter((order) => order.state === "unmatched" && order.riskLevel !== "blacklist" && (order.riskLevel !== "review" || order.approved === true))
+            .map(({ postingNumber, offerId }) => ({ postingNumber, offerId }));
+          return <section className="settings-card stock-prep-group" key={`${group.offerUrl}-${group.skuId}-${index}`}>
+          <header><div><p className="eyebrow">{statusNames[group.status] ?? group.status}</p><h3>{group.offerId} <small>· {group.orders.length} 单 · {group.quantity} 件待备</small></h3></div><span className={`stock-prep-state stock-prep-state--${group.status}`}>{statusNames[group.status] ?? group.status}</span>{manualUnmatchedKeys.length > 1 && <button className="secondary-button compact-button stock-prep-manual-unmatched" type="button" disabled={markUnmatchedMutation.isPending} onClick={() => confirmUnmatchedPurchase(manualUnmatchedKeys, group.offerId)}>{markUnmatchedMutation.isPending ? "批量确认中…" : `批量人工确认已采购（${manualUnmatchedKeys.length} 单）`}</button>}{group.offerUrl && <a href={group.offerUrl} target="_blank" rel="noreferrer">1688 商品</a>}</header>
           <div className="stock-prep-product"><OrderImagePreview src={group.imageUrl} alt={`${group.offerId} 商品主图`} fallbackLabel="暂无商品图" width={58} height={58} className="stock-prep-product-image" placeholderClassName="stock-prep-product-image stock-prep-product-image--empty"/><div>{group.skuId ? <p className="stock-prep-sku">1688 SKU ID：<code>{group.skuId}</code></p> : <p className="stock-prep-warning"><AlertTriangle size={16}/>{group.error}</p>}</div></div>
-          <div className="table-scroll"><table className="stock-prep-orders"><thead><tr><th>选择</th><th>Ozon 发货单号</th><th>货号</th><th>商品</th><th>件数</th><th>发货时限</th><th>状态与风险</th><th>操作</th></tr></thead><tbody>{group.orders.map((order) => { const key = { postingNumber: order.postingNumber, offerId: order.offerId }; const approved = Boolean(order.approved); const blocked = order.riskLevel === "blacklist"; const reviewRequired = order.riskLevel === "review"; const selectable = ["failed", "uncertain"].includes(order.state) || (order.state === "pending" && Boolean(group.skuId) && !blocked && (!reviewRequired || approved)); const riskLabel = buyerRiskLabel(order); return <tr key={keyOf(key)}><td><input type="checkbox" checked={selected.has(keyOf(key))} disabled={!selectable} onChange={(event) => toggleOrder(key, event.target.checked)} aria-label={`选择订单 ${order.postingNumber}`}/></td><td>{order.postingNumber}</td><td>{order.offerId}</td><td>{order.productName}</td><td>{order.quantity}</td><td>{deadlineLabel(order.shipmentDeadlineAt)}</td><td>{statusNames[order.state] ?? order.state}{order.error ? ` · ${order.error}` : ""}{riskLabel ? ` · ${riskLabel}` : ""}</td><td>{(reviewRequired || blocked) && !approved ? <button className="secondary-button compact-button" type="button" onClick={() => setRiskDrawerTarget({ buyerPrefix: order.buyerPrefix ?? null, postingNumber: order.postingNumber })}>查看风险详情</button> : <span className="stock-prep-row-hint">使用上方批量操作</span>}</td></tr>; })}</tbody></table></div>
-        </section>)}</div>
+          <div className="table-scroll"><table className="stock-prep-orders"><thead><tr><th>选择</th><th>Ozon 发货单号</th><th>货号</th><th>商品</th><th>件数</th><th>发货时限</th><th>状态与风险</th><th>操作</th></tr></thead><tbody>{group.orders.map((order) => { const key = { postingNumber: order.postingNumber, offerId: order.offerId }; const approved = Boolean(order.approved); const blocked = order.riskLevel === "blacklist"; const reviewRequired = order.riskLevel === "review"; const riskAllowed = !blocked && (!reviewRequired || approved); const selectable = riskAllowed && (["failed", "uncertain"].includes(order.state) || order.state === "pending" && Boolean(group.skuId)); const riskLabel = buyerRiskLabel(order); const postingHold = group.skuId && order.postingCanAdd === false && order.postingBlockReason ? ` · 整单暂停：${order.postingBlockReason}` : ""; return <tr key={keyOf(key)}><td>{order.state === "unmatched" ? <span className="stock-prep-row-hint">单独或分组确认</span> : <input type="checkbox" checked={selected.has(keyOf(key))} disabled={!selectable} onChange={(event) => toggleOrder(key, event.target.checked)} aria-label={`选择订单 ${order.postingNumber}`}/>}</td><td>{order.postingNumber}{(order.postingSkuCount ?? 1) > 1 ? <><br/><small>{order.postingSkuCount} 个 SKU，整单联动</small></> : null}</td><td>{order.offerId}</td><td>{order.productName}</td><td>{order.quantity}</td><td>{deadlineLabel(order.shipmentDeadlineAt)}</td><td>{statusNames[order.state] ?? order.state}{order.error ? ` · ${order.error}` : ""}{riskLabel ? ` · ${riskLabel}` : ""}{postingHold}</td><td>{(reviewRequired || blocked) && !approved ? <button className="secondary-button compact-button" type="button" onClick={() => setRiskDrawerTarget({ buyerPrefix: order.buyerPrefix ?? null, postingNumber: order.postingNumber })}>查看风险详情</button> : order.state === "unmatched" ? <button className="secondary-button compact-button stock-prep-manual-unmatched" type="button" disabled={markUnmatchedMutation.isPending} onClick={() => confirmUnmatchedPurchase([key])}>{markUnmatchedMutation.isPending ? "确认中…" : "人工确认已采购"}</button> : <span className="stock-prep-row-hint">{order.postingCanAdd === false ? "整单不可自动加购" : "使用上方批量操作"}</span>}</td></tr>; })}</tbody></table></div>
+        </section>;
+        })}</div>
       </>}
       {activeTab === "added" && (() => {
         const postings = fulfillmentQuery.data?.postings ?? [];
         const addedPostingNumbers = new Set(addedGroups.flatMap((group) => group.orders.map((order) => order.postingNumber)));
         const visiblePostings = postings.filter((posting) => addedPostingNumbers.has(posting.posting_number));
-        const readyPostings = visiblePostings.filter((posting) => posting.can_prepare);
+        const readyPostings = visiblePostings.filter((posting) => posting.can_prepare && prepareTasks[posting.posting_number] !== "success");
         const manualPostings = visiblePostings.filter((posting) => posting.status === "awaiting_packaging" && !posting.can_prepare);
         const selectedPostingNumbers = new Set(selectedAddedOrders.map((order) => order.postingNumber));
         const selectedReadyPostings = readyPostings.filter((posting) => selectedPostingNumbers.has(posting.posting_number));
+        const enqueueableSelectedPostings = selectedReadyPostings.filter((posting) => !["queued", "running"].includes(prepareTasks[posting.posting_number] ?? ""));
         const selectedAddedOrderCount = selectedPostingNumbers.size;
 
         return <>
@@ -463,9 +561,10 @@ export default function StockPrepPage(): React.JSX.Element {
             <span className="stock-prep-selection-count">已选 {selectedAddedOrders.length} 条明细 · {selectedAddedOrderCount} 单 · {selectedQuantity} 件</span>
             <div className="stock-prep-bulk-buttons">
               <button className="secondary-button" type="button" disabled={!selectedAddedOrders.length || resetMutation.isPending} onClick={() => resetOrders(selectedAddedOrders)}>{resetMutation.isPending ? "撤回中…" : `撤回状态 ${selectedAddedOrders.length ? `(${selectedAddedOrders.length})` : ""}`}</button>
-              <button className="primary-button" disabled={!selectedReadyPostings.length || preparePostingMutation.isPending} onClick={() => preparePostingMutation.mutate(selectedReadyPostings.map((posting) => posting.posting_number))} type="button">{preparePostingMutation.isPending ? `正在提交 ${preparingPosting ?? ""}` : `批量提交 Ozon 备货 ${selectedReadyPostings.length ? `(${selectedReadyPostings.length} 单)` : ""}`}</button>
+              <button className="primary-button" disabled={!enqueueableSelectedPostings.length} onClick={() => enqueuePrepare(enqueueableSelectedPostings.map((posting) => posting.posting_number))} type="button">{prepareRun.active ? <><RefreshCw size={16} className="sync-spinner"/>正在提交 {prepareRun.completed} / {prepareRun.total}</> : `批量提交 Ozon 备货 ${selectedReadyPostings.length ? `(${selectedReadyPostings.length} 单)` : ""}`}</button>
             </div>
             <small>可提交备货 {readyPostings.length} 单 / 待人工处理 {manualPostings.length} 单。撤回只修改 GMV 状态，不会扣减 1688 购物车数量。</small>
+            {prepareRun.active && <div className="stock-prep-prepare-progress" role="status" aria-live="polite" aria-busy="true"><progress max={Math.max(prepareRun.total, 1)} value={prepareRun.completed}/><span>成功 {prepareRun.succeeded} · 处理中 {Math.min(3, prepareRun.total - prepareRun.completed)} · 等待 {Math.max(0, prepareRun.total - prepareRun.completed - Math.min(3, prepareRun.total - prepareRun.completed))} · 失败 {prepareRun.failed}</span></div>}
           </section>
           {scan && (visibleAddedGroups.length ? <div className="stock-prep-groups">
             {visibleAddedGroups.map((group, index) => <section className="settings-card stock-prep-group" key={`${group.offerUrl}-${group.skuId}-${index}`}>
@@ -483,15 +582,16 @@ export default function StockPrepPage(): React.JSX.Element {
                 <tbody>{group.orders.map((order) => {
                   const posting = postingByNumber.get(order.postingNumber);
                   const prepareError = prepareErrors[order.postingNumber];
+                  const prepareStatus = prepareTasks[order.postingNumber];
                   return <tr key={keyOf(order)}>
                     <td><input type="checkbox" checked={selected.has(keyOf(order))} onChange={(event) => toggleOrder(order, event.target.checked)} aria-label={`选择订单 ${order.postingNumber}`}/></td>
                     <td>{order.postingNumber}</td>
                     <td>{order.offerId}</td>
                     <td>{order.productName}</td>
                     <td>{order.quantity}</td>
-                    <td>已加购</td>
+                    <td>{order.completionMethod === "manual_unmapped" ? <><strong>人工采购完成（无映射）</strong>{order.completionNote && <small>{order.completionNote}</small>}</> : order.completionMethod === "manual_mapped" ? "人工确认已加购" : "系统加购并核验"}</td>
                     <td className="stock-prep-prepare-cell">
-                      {posting?.can_prepare ? <><small className="stock-prep-ready-label">可提交备货</small><button className="secondary-button compact-button" type="button" aria-label={`提交 Ozon 备货 ${order.postingNumber}`} disabled={preparePostingMutation.isPending} onClick={() => preparePostingMutation.mutate([order.postingNumber])}>{preparingPosting === order.postingNumber ? "提交中…" : "提交 Ozon 备货"}</button></> : <small>{posting?.prepare_block_reason ?? (fulfillmentQuery.isLoading ? "正在读取备货状态…" : "请刷新订单状态")}</small>}
+                      {prepareStatus === "queued" ? <small><RefreshCw size={14} className="sync-spinner"/>等待提交</small> : prepareStatus === "running" ? <small><RefreshCw size={14} className="sync-spinner"/>提交中…</small> : posting?.can_prepare ? <><small className="stock-prep-ready-label">{prepareStatus === "failed" ? "提交失败，可重试" : "可提交备货"}</small><button className="secondary-button compact-button" type="button" aria-label={`提交 Ozon 备货 ${order.postingNumber}`} onClick={() => enqueuePrepare([order.postingNumber])}>{prepareStatus === "failed" ? "重试 Ozon 备货" : "提交 Ozon 备货"}</button></> : <small>{posting?.prepare_block_reason ?? (fulfillmentQuery.isLoading ? "正在读取备货状态…" : "请刷新订单状态")}</small>}
                       {prepareError && <small className="field-error">{prepareError}</small>}
                     </td>
                   </tr>;

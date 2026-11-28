@@ -39,6 +39,7 @@ function fixture(mappingRows = [["1645-2-XXL", `[${offerUrl}](${offerUrl})`, sku
   database.exec(readFileSync(join(process.cwd(), "migrations/034_stock_prep_buyer_blacklist.sql"), "utf8"));
   database.exec(readFileSync(join(process.cwd(), "migrations/035_stock_prep_buyer_prefix_history.sql"), "utf8"));
   database.exec(readFileSync(join(process.cwd(), "migrations/037_stock_prep_batch_route.sql"), "utf8"));
+  database.exec(readFileSync(join(process.cwd(), "migrations/038_stock_prep_completion_method.sql"), "utf8"));
   database.prepare("INSERT INTO stores VALUES (?,?,?,?)").run(storeId, "YOGOLD", "ozon", 1);
   database.prepare("INSERT INTO store_sku_sources VALUES (?,?,?,?,?)").run(storeId, "https://feishu/base", "base-token", "tbl-stock", Date.now());
   const addPosting = database.prepare("INSERT INTO postings (id,store_id,posting_number,order_number,fulfillment_mode,status,cancelled_at_ms) VALUES (?,?,?,?,?,?,?)");
@@ -322,6 +323,46 @@ describe("StockPrepService", () => {
     expect(mapped.orders.every((order) => order.error === null)).toBe(true);
   });
 
+  it("blocks every mapped SKU in a posting while one sibling has no mapping, then accepts manual procurement", async () => {
+    const { database, service } = fixture();
+    database.prepare("INSERT INTO posting_items (posting_id,offer_id,name,quantity) VALUES (?,?,?,?)")
+      .run("p1", "UNMAPPED", "Missing sibling", 1);
+    service.approveRiskOrder(storeId, "10000001");
+
+    const before = await service.scan(storeId);
+    const mapped = before.groups.find((group) => group.offerId === "1645-2-XXL")!.orders.find((order) => order.postingNumber === "10000001-part-1")!;
+    const unmatched = before.groups.find((group) => group.offerId === "UNMAPPED")!.orders[0]!;
+    expect(mapped).toMatchObject({ postingSkuCount: 2, postingPieceCount: 2, postingCanAdd: false, selectedByDefault: false });
+    expect(mapped.postingBlockReason).toContain("UNMAPPED");
+    await expect(service.createBatch(storeId, [{ postingNumber: mapped.postingNumber, offerId: mapped.offerId }])).rejects.toThrow("暂停加购");
+
+    await expect(service.markOrdersAdded(storeId, [{ postingNumber: unmatched.postingNumber, offerId: unmatched.offerId }])).rejects.toThrow("不能人工标记已加购");
+    await expect(service.markUnmatchedOrdersAdded(storeId, [{ postingNumber: unmatched.postingNumber, offerId: unmatched.offerId }], "1688手动采购")).resolves.toBe(1);
+    expect(database.prepare("SELECT state,error,completion_method,completion_note FROM stock_prep_order_states WHERE store_id=? AND posting_number=? AND offer_id=?").get(storeId, unmatched.postingNumber, unmatched.offerId))
+      .toMatchObject({ state: "added", error: "人工确认已采购（无飞书映射）", completion_method: "manual_unmapped", completion_note: "1688手动采购" });
+    const after = await service.scan(storeId);
+    expect(after.groups.find((group) => group.offerId === "1645-2-XXL")!.orders.find((order) => order.postingNumber === "10000001-part-1"))
+      .toMatchObject({ postingCanAdd: true, postingBlockReason: null });
+  });
+
+  it("rejects a partially selected posting even when every SKU has a valid mapping", async () => {
+    const secondSkuId = "6103279203999";
+    const { database, service } = fixture([
+      ["1645-2-XXL", offerUrl, skuId],
+      ["UNMAPPED", offerUrl, secondSkuId],
+    ]);
+    database.prepare("INSERT INTO posting_items (posting_id,offer_id,name,quantity) VALUES (?,?,?,?)")
+      .run("p1", "UNMAPPED", "Mapped sibling", 1);
+    service.approveRiskOrder(storeId, "10000001");
+    const scan = await service.scan(storeId);
+    const postingOrders = scan.groups.flatMap((group) => group.orders).filter((order) => order.postingNumber === "10000001-part-1");
+    expect(postingOrders).toHaveLength(2);
+    expect(postingOrders.every((order) => order.postingCanAdd)).toBe(true);
+
+    await expect(service.createBatch(storeId, [{ postingNumber: postingOrders[0]!.postingNumber, offerId: postingOrders[0]!.offerId }]))
+      .rejects.toThrow("必须整单加购");
+  });
+
   it("requires manual confirmation for every order with multiple pieces", async () => {
     const { database, service } = fixture(undefined, "success", false);
     database.prepare("UPDATE postings SET posting_number=CASE posting_number WHEN '10000001-part-1' THEN '12345678-part1-1' WHEN '10000002-part-1' THEN '12345678-part2-1' ELSE posting_number END,order_number='order-shared',buyer_key_hash='buyer-a' WHERE posting_number IN ('10000001-part-1','10000002-part-1')").run();
@@ -330,7 +371,7 @@ describe("StockPrepService", () => {
     const beforeApproval = await service.scan(storeId);
     const riskyOrders = beforeApproval.groups.find((group) => group.offerId === "1645-2-XXL")!.orders;
     expect(riskyOrders.every((order) => order.orderQuantity === 3 && order.riskLevel === "review" && !order.selectedByDefault)).toBe(true);
-    await expect(service.createBatch(storeId, riskyOrders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).rejects.toThrow("请先人工确认");
+    await expect(service.createBatch(storeId, riskyOrders.map(({ postingNumber, offerId }) => ({ postingNumber, offerId })))).rejects.toThrow("人工风险确认");
     service.approveRiskOrder(storeId, "12345678");
     expect((await service.scan(storeId)).groups.find((group) => group.offerId === "1645-2-XXL")!.orders.every((order) => order.approved && order.selectedByDefault)).toBe(true);
     database.prepare("UPDATE posting_items SET quantity=3 WHERE posting_id='p2'").run();

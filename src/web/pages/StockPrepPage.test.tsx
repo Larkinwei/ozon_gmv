@@ -26,6 +26,8 @@ vi.mock("../api", async () => {
     createStockPrepBatch: vi.fn(),
     fetchStockPrepBatch: vi.fn(),
     resetStockPrepOrders: vi.fn(),
+    markStockPrepOrdersAdded: vi.fn(),
+    markUnmatchedStockPrepOrdersAdded: vi.fn(),
     logout: vi.fn(),
   };
 });
@@ -83,9 +85,95 @@ describe("StockPrepPage", () => {
     await waitFor(() => expect(api.fetchStockPrepFulfillmentPostings).toHaveBeenCalled());
     expect(api.scanStockPrep).toHaveBeenCalledTimes(1);
     expect(screen.getByText("商品尚未标记已加购")).toBeInTheDocument();
-    expect(screen.getAllByText("post-added")).toHaveLength(1);
-    expect(screen.getAllByRole("columnheader", { name: "Ozon 备货" })).toHaveLength(2);
-    expect(screen.getByText("post-added").compareDocumentPosition(screen.getByText("post-incomplete")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("post-added")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("columnheader", { name: "Ozon 备货" })).toHaveLength(1);
+    expect(screen.getByText("post-incomplete")).toBeInTheDocument();
+  });
+
+  it("limits Ozon preparation to three concurrent postings and reports progress", async () => {
+    vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
+    vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
+    const postingNumbers = ["post-1", "post-2", "post-3", "post-4"];
+    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: postingNumbers.map((postingNumber, index) => ({ offerUrl: `https://detail.1688.com/offer/${index + 1}.html`, offerId: `SKU-${index + 1}`, skuId: `1688-${index + 1}`, imageUrl: null, status: "added", quantity: 1, error: null, orders: [{ postingNumber, offerId: `SKU-${index + 1}`, imageUrl: null, productName: `商品 ${index + 1}`, quantity: 1, state: "added", error: null, selectedByDefault: false }] })) });
+    vi.mocked(api.fetchStockPrepFulfillmentPostings).mockResolvedValue({ postings: postingNumbers.map((postingNumber, index) => ({ posting_number: postingNumber, status: "awaiting_packaging", sku_count: 1, piece_count: 1, added_sku_count: 1, offer_ids: `SKU-${index + 1}`, can_prepare: true, prepare_block_reason: null })) });
+    let active = 0;
+    let maximumActive = 0;
+    const resolvers: Array<() => void> = [];
+    vi.mocked(api.prepareStockPrepPosting).mockImplementation(() => new Promise((resolve) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      resolvers.push(() => { active -= 1; resolve({ status: "awaiting_registration" }); });
+    }));
+    renderPage();
+    await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
+    fireEvent.click(screen.getByRole("button", { name: "已加购 · 4 单 · 4 件" }));
+    await screen.findByText((_content, element) => element?.tagName === "SMALL" && element.textContent?.startsWith("可提交备货 4 单") === true);
+    fireEvent.click(screen.getByRole("button", { name: "批量提交 Ozon 备货 (4 单)" }));
+
+    await waitFor(() => expect(api.prepareStockPrepPosting).toHaveBeenCalledTimes(3));
+    expect(maximumActive).toBe(3);
+    expect(screen.getByText(/成功 0 · 处理中 3 · 等待 1 · 失败 0/)).toBeInTheDocument();
+    resolvers[0]!();
+    await waitFor(() => expect(api.prepareStockPrepPosting).toHaveBeenCalledTimes(4));
+    expect(maximumActive).toBe(3);
+    for (const resolve of resolvers.slice(1)) resolve();
+    await waitFor(() => expect(screen.getByText("已提交 4 单 Ozon 备货，并进入等待发运")).toBeInTheDocument());
+  });
+
+  it("selects every purchasable SKU in the same posting together", async () => {
+    vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
+    vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
+    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: ["A", "B"].map((offerId, index) => ({ offerUrl: `https://detail.1688.com/offer/${index + 1}.html`, offerId, skuId: `1688-${offerId}`, imageUrl: null, status: "pending", quantity: 1, error: null, orders: [{ postingNumber: "post-multi", offerId, imageUrl: null, productName: `商品 ${offerId}`, quantity: 1, state: "pending", error: null, selectedByDefault: false, postingSkuCount: 2, postingPieceCount: 2, postingCanAdd: true, postingBlockReason: null }] })) });
+    renderPage();
+    await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 1 单 · 2 件" }));
+    const checkboxes = await screen.findAllByRole("checkbox", { name: "选择订单 post-multi" });
+    expect(checkboxes.every((checkbox) => !checkbox.hasAttribute("checked"))).toBe(true);
+    fireEvent.click(checkboxes[0]!);
+    expect(checkboxes[0]).toBeChecked();
+    expect(checkboxes[1]).toBeChecked();
+    expect(screen.getByRole("button", { name: "加入采购车 (2)" })).toBeEnabled();
+  });
+
+  it("allows an unmatched SKU to be manually confirmed as procured", async () => {
+    vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
+    vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
+    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: null, offerId: "MISSING", skuId: null, imageUrl: null, status: "unmatched", quantity: 1, error: "飞书未找到该货号", orders: [{ postingNumber: "post-missing", offerId: "MISSING", imageUrl: null, productName: "未映射商品", quantity: 1, state: "unmatched", error: "飞书未找到该货号", selectedByDefault: false, postingSkuCount: 1, postingPieceCount: 1, postingCanAdd: false, postingBlockReason: "同一发货单中的货号 MISSING 飞书未找到该货号" }] }] });
+    vi.mocked(api.markUnmatchedStockPrepOrdersAdded).mockResolvedValue({ markedCount: 1 });
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("1688手动采购");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 1 单 · 1 件" }));
+    expect(screen.queryByRole("checkbox", { name: "选择订单 post-missing" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "人工确认已采购" }));
+
+    expect(prompt).toHaveBeenCalledWith(expect.stringContaining("没有飞书映射"));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("采购备注：1688手动采购"));
+    await waitFor(() => expect(api.markUnmatchedStockPrepOrdersAdded).toHaveBeenCalledWith("store-1", [{ postingNumber: "post-missing", offerId: "MISSING" }], "1688手动采购"));
+  });
+
+  it("confirms every eligible order in an unmatched SKU group together", async () => {
+    vi.mocked(api.fetchStores).mockResolvedValue([{ id: "store-1", name: "YOGOLD", platform: "ozon", enabled: true } as StoreView]);
+    vi.mocked(api.fetchStockPrepConnection).mockResolvedValue({ platform: "darwin", feishu: { connected: true, profile: "ozon-team-wiki", userName: "刘建伟", message: "ok", appIdConfigured: false, appSecretConfigured: false, authorization: null }, configuredStoreCount: 1, browserBridge: { ready: true, message: "connected" }, dropshipSuppliers: [] });
+    vi.mocked(api.fetchStockPrepState).mockResolvedValue({ source: { url: "https://feishu/base" }, latestBatch: null, connection: {} as api.StockPrepConnection, lastOrderSyncAt: null });
+    const orders = ["post-missing-1", "post-missing-2"].map((postingNumber) => ({ postingNumber, offerId: "MISSING", imageUrl: null, productName: "未映射商品", quantity: 1, state: "unmatched", error: "飞书未找到该货号", selectedByDefault: false, postingSkuCount: 1, postingPieceCount: 1, postingCanAdd: false, postingBlockReason: "同一发货单中的货号 MISSING 飞书未找到该货号" }));
+    vi.mocked(api.scanStockPrep).mockResolvedValue({ storeId: "store-1", groups: [{ offerUrl: null, offerId: "MISSING", skuId: null, imageUrl: null, status: "unmatched", quantity: 2, error: "飞书未找到该货号", orders }] });
+    vi.mocked(api.markUnmatchedStockPrepOrdersAdded).mockResolvedValue({ markedCount: 2 });
+    vi.spyOn(window, "prompt").mockReturnValue("线下统一采购");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    await waitFor(() => expect(api.scanStockPrep).toHaveBeenCalledWith("store-1", false));
+    fireEvent.click(screen.getByRole("button", { name: "待采购 · 2 单 · 2 件" }));
+    fireEvent.click(screen.getByRole("button", { name: "批量人工确认已采购（2 单）" }));
+
+    await waitFor(() => expect(api.markUnmatchedStockPrepOrdersAdded).toHaveBeenCalledWith("store-1", [
+      { postingNumber: "post-missing-1", offerId: "MISSING" },
+      { postingNumber: "post-missing-2", offerId: "MISSING" },
+    ], "线下统一采购"));
   });
 
   it("preselects pending orders and recalculates the cart quantity when an order is unchecked", async () => {
